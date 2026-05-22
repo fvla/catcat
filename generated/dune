@@ -1,0 +1,6 @@
+(library
+ (name catcat_generated)
+ (wrapped false)
+ (modules Catcat_Core)
+ (flags (:standard -w -27))
+ (libraries fstar.lib zarith))

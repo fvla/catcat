@@ -1,0 +1,9 @@
+{
+    "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
+    "nixEnvSelector.useFlakes": true,
+    "nixEnvSelector.flakeShell": "default",
+    "ocaml.sandbox": {
+        "kind": "global"
+    },
+    "makefile.configureOnOpen": false
+}
