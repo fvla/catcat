@@ -1,0 +1,177 @@
+module E03_Parser
+
+/// P03, module 03: tokens to surface AST.
+///
+/// SUMMARY
+///   A hand-written recursive-descent parser. Concatenative syntax has almost
+///   no grammar — a program is a flat sequence of terms — so the only real
+///   nesting is `{ … }` blocks and `( … )` signatures.
+///
+/// Every parse function returns the remaining tokens alongside its result, and
+/// carries a length refinement so F* can see the recursion terminates. That
+/// refinement is load-bearing rather than decorative: without it the block
+/// parser has no structural argument to descend on.
+///
+/// ERROR REPORTING
+///   Errors are plain strings. Source positions would need the lexer to carry
+///   spans, which is worth doing when the language server work starts (P06) and
+///   is not worth doing now.
+
+open FStar.List.Tot
+open E01_Lexer
+open E02_Ast
+
+/// Parse result: either an error, or a value plus strictly-bounded remainder.
+noeq type presult (a:Type) =
+  | PErr : string -> presult a
+  | POk  : a -> list token -> presult a
+
+(* ------------------------------------------------------------------------ *)
+(* Types                                                                    *)
+(* ------------------------------------------------------------------------ *)
+
+/// `Box[i64]` / `Rc[i64]` use the generic brackets; anything else is a name.
+let rec parse_ty (ts:list token)
+  : Tot (r:presult sty { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | [] -> PErr "expected a type, found end of input"
+  | TkHash n :: rest -> POk (StyVar n) rest
+  | TkWord w :: rest ->
+    if w = "Box" || w = "Rc" then
+      (match rest with
+       | TkLBrack :: inner ->
+         (match parse_ty inner with
+          | PErr e -> PErr e
+          | POk t after ->
+            (match after with
+             | TkRBrack :: tail -> POk (if w = "Box" then StyBox t else StyRc t) tail
+             | _ -> PErr ("expected ']' closing " ^ w)))
+       | _ -> PErr (w ^ " needs a type argument, as in " ^ w ^ "[i64]"))
+    else POk (StyName w) rest
+  | t :: _ -> PErr ("expected a type, found " ^ render_token t)
+
+(* ------------------------------------------------------------------------ *)
+(* Signatures                                                               *)
+(* ------------------------------------------------------------------------ *)
+
+/// Inputs: everything up to `--`. A `$x:ty` pair yields a named parameter.
+let rec parse_inputs (acc:list sparam) (ts:list token)
+  : Tot (r:presult (list sparam) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | [] -> PErr "expected '--' in signature, found end of input"
+  | TkArrow :: rest -> POk (rev acc) rest
+  | TkDollar n :: TkColon :: rest ->
+    (match parse_ty rest with
+     | PErr e -> PErr e
+     | POk t after -> parse_inputs ({ sp_name = Some n; sp_ty = t } :: acc) after)
+  | TkDollar n :: _ ->
+    PErr ("named parameter $" ^ n ^ " needs a type, as in $" ^ n ^ ":i64")
+  | _ ->
+    (match parse_ty ts with
+     | PErr e -> PErr e
+     | POk t after ->
+       if length after < length ts
+       then parse_inputs ({ sp_name = None; sp_ty = t } :: acc) after
+       else PErr "signature made no progress")
+
+/// Outputs: types and `!Eff` markers up to the closing paren.
+let rec parse_outputs (acc:list sty) (effs:list string) (ts:list token)
+  : Tot (r:presult (list sty & list string)
+         { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | [] -> PErr "expected ')' closing signature, found end of input"
+  | TkRParen :: rest -> POk (rev acc, rev effs) rest
+  | TkBang n :: rest -> parse_outputs acc (n :: effs) rest
+  | _ ->
+    (match parse_ty ts with
+     | PErr e -> PErr e
+     | POk t after ->
+       if length after < length ts
+       then parse_outputs (t :: acc) effs after
+       else PErr "signature made no progress")
+
+/// A whole `( … -- … )`, with the opening paren already consumed.
+let parse_sig_body (ts:list token)
+  : Tot (r:presult ssig { POk? r ==> length (POk?._1 r) <= length ts }) =
+  match parse_inputs [] ts with
+  | PErr e -> PErr e
+  | POk ins after ->
+    (match parse_outputs [] [] after with
+     | PErr e -> PErr e
+     | POk (outs, effs) tail ->
+       POk ({ ss_in = ins; ss_out = outs; ss_eff = effs }) tail)
+
+(* ------------------------------------------------------------------------ *)
+(* Terms                                                                    *)
+(* ------------------------------------------------------------------------ *)
+
+/// Parse terms until `}` (when `closing` is true) or end of input.
+let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
+  : Tot (r:presult (list sterm) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | [] -> if closing
+          then PErr "expected '}' closing block, found end of input"
+          else POk (rev acc) []
+  | TkRBrace :: rest -> if closing
+                        then POk (rev acc) rest
+                        else PErr "unexpected '}'"
+  | TkInt n :: rest -> parse_terms closing (StInt n :: acc) rest
+  | TkWord w :: rest -> parse_terms closing (StWord w :: acc) rest
+  | TkDollar n :: rest -> parse_terms closing (StVar n :: acc) rest
+  | TkLBrace :: rest ->
+    (match parse_terms true [] rest with
+     | PErr e -> PErr e
+     | POk inner after -> parse_terms closing (StBlock inner :: acc) after)
+  | t :: _ -> PErr ("unexpected " ^ render_token t ^ " in a term sequence")
+
+(* ------------------------------------------------------------------------ *)
+(* Declarations                                                             *)
+(* ------------------------------------------------------------------------ *)
+
+/// `define name ( sig ) { body }`, with `define` already consumed.
+let parse_define (ts:list token) : Tot (presult sdecl) =
+  match ts with
+  | TkWord name :: TkLParen :: rest ->
+    (match parse_sig_body rest with
+     | PErr e -> PErr e
+     | POk sg after ->
+       (match after with
+        | TkLBrace :: body_ts ->
+          (match parse_terms true [] body_ts with
+           | PErr e -> PErr e
+           | POk body tail -> POk (SdDefine name sg body) tail)
+        | _ -> PErr ("expected '{' opening the body of " ^ name)))
+  | TkWord name :: _ ->
+    PErr ("expected '(' and a signature after 'define " ^ name ^ "'")
+  | _ -> PErr "expected a name after 'define'"
+
+/// One declaration. A leading `define` starts a definition; anything else is
+/// an expression run to the end of input.
+let parse_decl (ts:list token) : Tot (presult sdecl) =
+  match ts with
+  | TkWord "define" :: rest -> parse_define rest
+  | _ -> (match parse_terms false [] ts with
+          | PErr e -> PErr e
+          | POk body tail -> POk (SdExpr body) tail)
+
+let rec parse_decls (acc:list sdecl) (ts:list token)
+  : Tot (either string (list sdecl)) (decreases (length ts)) =
+  match ts with
+  | [] -> Inr (rev acc)
+  | _ ->
+    (match parse_decl ts with
+     | PErr e -> Inl e
+     | POk d rest ->
+       if length rest < length ts
+       then parse_decls (d :: acc) rest
+       else Inr (rev (d :: acc)))
+
+/// Lex and parse a whole source string.
+let parse (src:string) : Tot (either string (list sdecl)) =
+  match lex src with
+  | Inl e   -> Inl e
+  | Inr tks -> parse_decls [] tks

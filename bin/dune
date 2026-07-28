@@ -1,3 +1,16 @@
 (executable
  (name main)
+ (modules main)
  (libraries catcat_generated))
+
+(executable
+ (name interp)
+ (modules interp)
+ (flags (:standard -w -a))
+ (libraries catcat_reference zarith))
+
+(executable
+ (name catcat)
+ (modules catcat)
+ (flags (:standard -w -a))
+ (libraries catcat_reference zarith))

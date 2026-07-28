@@ -1,0 +1,190 @@
+module M05_Terms
+
+/// catcat core specification, module 05: core term syntax.
+///
+/// This is the CORE language, not the surface language. Locals (`$x`), sigils,
+/// namespacing, generics and macros are all elaborated away before a term
+/// reaches this type -- see D05. In particular there is no `local` form here,
+/// because `$x` compiles to stack shuffles and the core never learns that
+/// locals existed.
+///
+/// One structural decision, from D02: quotations are NOT values. Code is
+/// first-class at elaboration time, but there are no runtime function values,
+/// so a `{}` block never appears on the value stack. It appears only as a
+/// syntactic argument to a construct that consumes it -- `TCase`, `THandle`,
+/// `TSpecialize`. This is what lets every block be inlined and keeps closures
+/// out of the core entirely.
+///
+/// This type is also the interface between the specification and the compiler.
+/// Because F* is the source of truth (D06), compiler passes are F* functions
+/// over `term`, and self-hosting is extraction of those passes rather than a
+/// separately written catcat compiler.
+
+open FStar.List.Tot
+open M01_Kinds
+open M04_Effects
+
+(* ------------------------------------------------------------------------ *)
+(* Literals and stack primitives                                            *)
+(* ------------------------------------------------------------------------ *)
+
+/// `noeq` because `prim_rep` may be an abstract float type.
+noeq type lit =
+  | LPrim : p:prim -> prim_rep p -> lit
+
+let lit_type (l:lit) : dtype =
+  match l with
+  | LPrim p _ -> TPrim p
+
+/// The stack shuffles. Each carries the type it operates at: the core is
+/// monomorphic, and generic `dup`/`pop` are instantiated during elaboration.
+///
+/// `SDup` and `SPop` are the only operations gated on capabilities, and that
+/// gating is the entire enforcement mechanism for linearity. `SSwap` needs no
+/// capability because moving a value is always permitted.
+/// `SPick` and `SRoll` reach past the top of the stack. They carry the segment
+/// ABOVE the target slot, which is what makes an n-deep access expressible
+/// without a variadic rule: the stack is `above @ [d] @ rest`, head = top.
+///
+///   `SPick above d`  ( above d -- d above d )   copy;  requires Copy
+///   `SRoll above d`  ( above d -- d above )     move;  no capability needed
+///
+/// These exist because `$x` locals (D05) compile to deep access, and `SDup` /
+/// `SPop` / `SSwap` only reach the top two slots — no composition of them can
+/// touch a third. Adding them here rather than inventing a fixed `rot` keeps
+/// the rule uniform at every depth.
+type sop =
+  | SDup  : dtype -> sop
+  | SPop  : dtype -> sop
+  | SSwap : dtype -> dtype -> sop
+  | SPick : seg -> dtype -> sop
+  | SRoll : seg -> dtype -> sop
+
+type word_id = nat
+
+(* ------------------------------------------------------------------------ *)
+(* Terms                                                                    *)
+(* ------------------------------------------------------------------------ *)
+
+noeq type term =
+  /// The empty program. Identity of composition.
+  | TNil     : term
+  /// Juxtaposition. The ONLY sequencing construct: `a b` and nothing else.
+  | TSeq     : term -> term -> term
+  | TLit     : lit -> term
+  | TStack   : sop -> term
+  /// A named word, or an interface operation. The typing rules do not
+  /// distinguish them -- that is the unification of D03 made concrete.
+  | TWord    : word_id -> term
+  /// Bundle a representation segment into a nominal type, and its inverse.
+  /// Named `TPack`/`TUnpack` rather than `TSeal`/`TUnseal` to stay clear of
+  /// the `dtype` constructor `M01_Kinds.TSeal`.
+  /// `TUnpack` is well typed only inside the class body (D03).
+  | TPack    : nom_id -> list cap -> seg -> term
+  | TUnpack  : nom_id -> list cap -> seg -> term
+  /// Sum introduction: build variant `tag` of `variants`.
+  | TInj     : variants:list seg -> tag:nat -> term
+  /// Sum elimination: one `{}` block per variant, all with the same result.
+  | TCase    : variants:list seg -> branches:list term -> term
+  /// Install a handler for `eff`, giving an implementation block per
+  /// operation, then run the body. Deep handlers: the block receives the
+  /// continuation implicitly, which is why every effect is reentrant.
+  | THandle  : eff:eff_id -> impls:list (op_id & term) -> body:term -> term
+  /// Resolve the static effects of the body against the ambient dictionary,
+  /// producing a residual program. Invoked at elaboration time this is
+  /// specialization; invoked at runtime it is the JIT. One construct, one
+  /// theorem (M11).
+  | TSpecialize : body:term -> term
+  /// Pointer operations. `TBoxOpen` consumes the box and yields the payload;
+  /// there is no discard, because `TBox` lacks `CDrop` and the payload must be
+  /// dealt with explicitly.
+  | TBoxNew   : dtype -> term
+  | TBoxOpen  : dtype -> term
+  /// `TRcClone` is the `Clone` interface word and `TRcDrop` is `release` --
+  /// neither is `dup` or `pop`, which is exactly why `TRc` carries no
+  /// capabilities. `TRcRead` needs a copyable payload; the alternative is
+  /// borrowing, deliberately deferred.
+  | TRcNew    : dtype -> term
+  | TRcClone  : dtype -> term
+  | TRcDrop   : dtype -> term
+  | TRcRead   : dtype -> term
+  /// Roll and unroll an incomplete type. Runtime no-ops; they exist so that
+  /// the type system can cross a `TName` boundary explicitly rather than by
+  /// silent coercion.
+  | TRoll     : nom_id -> dtype -> term
+  | TUnroll   : nom_id -> dtype -> term
+
+(* ------------------------------------------------------------------------ *)
+(* Structural measures                                                      *)
+(* ------------------------------------------------------------------------ *)
+
+let rec term_size (t:term) : Tot pos =
+  match t with
+  | TNil                -> 1
+  | TSeq a b            -> 1 + term_size a + term_size b
+  | TLit _              -> 1
+  | TStack _            -> 1
+  | TWord _             -> 1
+  | TPack _ _ _         -> 1
+  | TUnpack _ _ _       -> 1
+  | TInj _ _            -> 1
+  | TCase _ bs          -> 1 + terms_size bs
+  | THandle _ impls b   -> 1 + impls_size impls + term_size b
+  | TSpecialize b       -> 1 + term_size b
+  | TBoxNew _           -> 1
+  | TBoxOpen _          -> 1
+  | TRcNew _            -> 1
+  | TRcClone _          -> 1
+  | TRcDrop _           -> 1
+  | TRcRead _           -> 1
+  | TRoll _ _           -> 1
+  | TUnroll _ _         -> 1
+
+and terms_size (ts:list term) : Tot nat =
+  match ts with
+  | []     -> 0
+  | t :: r -> term_size t + terms_size r
+
+and impls_size (is:list (op_id & term)) : Tot nat =
+  match is with
+  | []            -> 0
+  | (_, t) :: r   -> term_size t + impls_size r
+
+(* ------------------------------------------------------------------------ *)
+(* Smart constructors                                                       *)
+(* ------------------------------------------------------------------------ *)
+
+/// Build a program from a sequence of terms. Left-associated, matching the
+/// reading order of the source: `a b c` is `((a b) c)`.
+let rec seq_of (ts:list term) : Tot term =
+  match ts with
+  | []     -> TNil
+  | t :: r -> TSeq t (seq_of r)
+
+/// Whether a term mentions `TSpecialize` anywhere. The linker uses the
+/// analogous predicate over the whole dependency tree to decide how much of
+/// the compiler to embed in the output binary (D04): if this is false
+/// everywhere, no compiler stage is linked in at all.
+/// Measure note, as in M01: a plain size measure is only non-strict on the
+/// list-to-element edges, so the rank component orders `list(1) > term(0)`.
+/// This is acyclic because every term-to-list edge strictly decreases size.
+let rec needs_compiler (t:term)
+  : Tot bool (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TSpecialize _       -> true
+  | TSeq a b            -> needs_compiler a || needs_compiler b
+  | TCase _ bs          -> needs_compiler_list bs
+  | THandle _ impls b   -> needs_compiler_impls impls || needs_compiler b
+  | _                   -> false
+
+and needs_compiler_list (ts:list term)
+  : Tot bool (decreases %[terms_size ts; 1]) =
+  match ts with
+  | []     -> false
+  | t :: r -> needs_compiler t || needs_compiler_list r
+
+and needs_compiler_impls (is:list (op_id & term))
+  : Tot bool (decreases %[impls_size is; 1]) =
+  match is with
+  | []          -> false
+  | (_, t) :: r -> needs_compiler t || needs_compiler_impls r

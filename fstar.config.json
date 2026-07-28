@@ -1,0 +1,11 @@
+{
+  "fstar_exe": "fstar.exe",
+  "options": [
+    "--cache_dir", ".fstar-cache",
+    "--cache_checked_modules"
+  ],
+  "include_dirs": [
+    "P01_Specification",
+    "P02_Reference"
+  ]
+}

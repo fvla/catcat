@@ -1,6 +1,20 @@
+; The original template library, kept so `make repl` continues to work.
 (library
  (name catcat_generated)
  (wrapped false)
  (modules Catcat_Core)
  (flags (:standard -w -27))
+ (libraries fstar.lib zarith))
+
+; The reference interpreter, extracted from P01_Specification and
+; P02_Reference. Module list is explicit rather than a glob so that a stale
+; leftover .ml cannot silently join the build.
+(library
+ (name catcat_reference)
+ (wrapped false)
+ (modules
+   M01_Kinds M02_Stacks M03_Signatures M04_Effects M05_Terms M06_Typing
+   R01_Runtime R02_Machine R03_Prelude R04_Erasure R05_Driver
+   E01_Lexer E02_Ast E03_Parser E04_Elaborate E05_Repl)
+ (flags (:standard -w -a))
  (libraries fstar.lib zarith))
