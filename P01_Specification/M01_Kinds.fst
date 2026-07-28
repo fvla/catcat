@@ -116,6 +116,15 @@ type dtype =
 /// A stack segment. Also the specification's notion of "tuple".
 type seg = list dtype
 
+/// The sum a `bool` coerces to (`M05.TBoolSum`, D-33): two variants, neither
+/// carrying a payload. Variant 0 is `false` and variant 1 is `true`.
+///
+/// Named here rather than written out at each use because the tag order is a
+/// convention three modules have to agree on -- the typing rule, the machine,
+/// and the elaborator that arranges surface `if` around it. Spelling it once
+/// is what keeps them from drifting.
+let bool_variants : list seg = [[]; []]
+
 (* ------------------------------------------------------------------------ *)
 (* Structural size, used only as a termination measure                      *)
 (* ------------------------------------------------------------------------ *)

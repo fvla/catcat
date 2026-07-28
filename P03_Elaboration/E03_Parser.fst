@@ -126,6 +126,54 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
                         then POk (rev acc) rest
                         else PErr "unexpected '}'"
   | TkInt n :: rest -> parse_terms closing (StInt n :: acc) rest
+
+  /// `if { c } then { t } endif` and `if { c } then { t } else { e } endif`.
+  ///
+  /// **The terminator is mandatory** (D-34). Every alternation point here
+  /// consumes a keyword — after the `then` block the next token must be
+  /// `else` or `endif`, and both are eaten — so the grammar has no ε-branch
+  /// and nothing needs reserving. `then`, `else` and `endif` remain ordinary
+  /// word names everywhere except inside this production, which is what keeps
+  /// D-32's free-form words intact.
+  ///
+  /// The condition block runs inline, so its terms are spliced into the
+  /// enclosing sequence ahead of the case. Branches are emitted in TAG order,
+  /// FALSE first (D-33), so the `else` branch precedes the `then` branch — an
+  /// else-less `if` is `else { }`, which is why "the then branch must not
+  /// change the stack" needs no separate rule.
+  ///
+  /// Hardcoded here for now. It moves into the macro table when that exists;
+  /// this production is what the table has to be able to express.
+  | TkWord "if" :: TkLBrace :: r1 ->
+    (match parse_terms true [] r1 with
+     | PErr e -> PErr e
+     | POk cond r2 ->
+       (match r2 with
+        | TkWord "then" :: TkLBrace :: r3 ->
+          (match parse_terms true [] r3 with
+           | PErr e -> PErr e
+           | POk conseq r4 ->
+             (match r4 with
+              | TkWord "endif" :: r5 ->
+                parse_terms closing
+                  (StCase [[]; conseq] :: (rev cond @ acc)) r5
+              | TkWord "else" :: TkLBrace :: r5 ->
+                (match parse_terms true [] r5 with
+                 | PErr e -> PErr e
+                 | POk alt r6 ->
+                   (match r6 with
+                    | TkWord "endif" :: r7 ->
+                      parse_terms closing
+                        (StCase [alt; conseq] :: (rev cond @ acc)) r7
+                    | _ -> PErr "expected 'endif' closing this if"))
+              | TkWord "else" :: _ -> PErr "expected '{' after 'else'"
+              | _ -> PErr "expected 'else' or 'endif' after the 'then' block"))
+        | TkWord "then" :: _ -> PErr "expected '{' after 'then'"
+        | _ -> PErr "expected 'then' after the condition block of an if"))
+  | TkWord "if" :: _ ->
+    PErr "expected '{' after 'if': the condition is a block, as in \
+          if { 0 < } then { … } endif"
+
   | TkWord w :: rest -> parse_terms closing (StWord w :: acc) rest
   | TkDollar n :: rest -> parse_terms closing (StVar n :: acc) rest
   | TkLBrace :: rest ->

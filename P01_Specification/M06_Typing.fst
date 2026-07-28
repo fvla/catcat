@@ -111,14 +111,26 @@ let rec infer (env:wenv) (t:term)
     then Some ({ pre = index variants tag; post = [TSum variants] }, pure_row)
     else None
 
-  /// Every branch consumes its own variant's payload and all branches must
-  /// agree on what they leave behind -- the shape of the stack after a `case`
-  /// has to be static, which is exactly why sums cannot be segments.
+  /// The boolean-to-sum coercion (D-33). Fixed tags: `false` is variant 0 and
+  /// `true` is variant 1.
+  | TBoolSum ->
+    Some ({ pre = [TPrim PBool]; post = [TSum bool_variants] }, pure_row)
+
+  /// Every branch consumes its own variant's payload, and all branches must
+  /// agree -- but agree in the row-polymorphic sense, not by having equal
+  /// signatures. See `M03.srow_join`: one branch may reach beneath the
+  /// scrutinee where another does not, provided both leave the stack in the
+  /// same state. The shape after a `case` still has to be static, which is
+  /// why sums cannot be segments.
+  ///
+  /// A branch's arm is its body run after its payload has been pushed, so the
+  /// arm is `compose (push variant_i) branch_i`. Joining the arms gives what
+  /// the whole `case` demands beneath the scrutinee and leaves behind.
   | TCase variants branches ->
     if Nil? variants || length branches <> length variants then None
     else (match infer_branches env variants branches with
-          | Some (post, row) ->
-            Some ({ pre = [TSum variants]; post = post }, row)
+          | Some (j, row) ->
+            Some ({ pre = TSum variants :: j.pre; post = j.post }, row)
           | None -> None)
 
   /// Handling discharges `eff` from the body's row and adds whatever the
@@ -182,19 +194,26 @@ let rec infer (env:wenv) (t:term)
   | TUnroll n d ->
     if wf d then Some ({ pre = [TName n]; post = [d] }, pure_row) else None
 
+/// The arm of one branch: push its variant's payload, then run the branch.
+/// Partial for the same reason `compose` is -- the branch may want a shape the
+/// payload does not supply.
 and infer_branches (env:wenv) (variants:list seg) (branches:list term)
-  : Tot (option (seg & erow)) (decreases %[terms_size branches; 1]) =
+  : Tot (option (srow & erow)) (decreases %[terms_size branches; 1]) =
   match variants, branches with
   | [v], [b] ->
     (match infer env b with
-     | Some (s, e) -> if s.pre = v then Some (s.post, e) else None
+     | Some (s, e) -> (match compose ({ pre = []; post = v }) s with
+                       | Some arm -> Some (arm, e)
+                       | None     -> None)
      | None        -> None)
   | v :: vs, b :: bs ->
     (match infer env b, infer_branches env vs bs with
-     | Some (s, e), Some (post, e') ->
-       if s.pre = v && s.post = post
-       then Some (post, row_union e e')
-       else None
+     | Some (s, e), Some (j, e') ->
+       (match compose ({ pre = []; post = v }) s with
+        | None     -> None
+        | Some arm -> (match srow_join arm j with
+                       | Some j' -> Some (j', row_union e e')
+                       | None    -> None))
      | _ -> None)
   | _ -> None
 

@@ -17,6 +17,8 @@ let w_eq  : word_id = 7
 let w_not : word_id = 8
 let w_and : word_id = 9
 let w_or  : word_id = 10
+let w_true  : word_id = 11
+let w_false : word_id = 12
 
 let w_user_base : word_id = 100
 
@@ -32,6 +34,11 @@ let prelude : rdict = [
   (w_not, WPrim ONot);
   (w_and, WPrim OAnd);
   (w_or,  WPrim OOr);
+  /// Spelled out rather than via `bool_lit`, which the interface orders after
+  /// `prelude` — implementation order must match interface order in an
+  /// `.fst`/`.fsti` pair.
+  (w_true,  WDef (TLit (LPrim PBool true)));
+  (w_false, WDef (TLit (LPrim PBool false)));
 ]
 
 /// `PI64`'s representation is `sint 64`, so the literal must be in range. Out

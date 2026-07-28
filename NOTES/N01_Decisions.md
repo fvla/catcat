@@ -279,6 +279,72 @@ of non-space, non-bracket characters, so this needed no lexer change.
 digit after the sign. `!=` is unavailable because `!` opens an effect sigil;
 write `= not`.
 
+## Control flow
+
+**D-33. Booleans branch through a sum coercion, not a new eliminator.** One
+core term, `M05.TBoolSum : ( bool -- TSum [[]; []] )`, with `false = tag 0` and
+`true = tag 1`. Surface `if` is that coercion followed by the existing `TCase`.
+*Why:* `bool` is a primitive, so `TCase` cannot see it, and a separate `TIf`
+would need its own copy of the branch-agreement rule that `infer_branches`
+already implements. The coercion reuses that rule, so the core grew by one
+constructor and gained no new typing logic. The tag order is stated in four
+places (`M01.bool_variants`, `M05.TBoolSum`, `R02.step`, `E02.StCase`) because
+a silent reversal would typecheck.
+
+**D-34. `if { c } then { t } endif`, with the terminator mandatory.** `else` is
+optional; `endif` is not.
+*Why:* at every alternation point the parser then *consumes* a keyword — after
+the `then` block the next token must be `else` or `endif` — so the grammar has
+no ε-branch. The alternative, an optional trailing `else`, is LL(1) only if
+`else` stops being a legal word name, because otherwise a user word named
+`else` following an `if` is genuinely ambiguous. Requiring `endif` costs one
+token and keeps D-32's free-form words: `then`, `else` and `endif` are ordinary
+names everywhere outside this production.
+*Note this is not a lookahead violation.* LL(1) permits dispatching on the
+token in hand without consuming it, which `parse_ty` and `parse_inputs` already
+do. What D-30 forbids is needing a *second* token, and nothing here does.
+
+**D-40. Branches agree row-polymorphically, not by having equal signatures.**
+`M03.srow_join` frames each branch by what the other demanded extra and
+compares the results, so
+
+```
+dup 10 < if { } then { 1 - } endif        \ accepted: ( i64 -- i64 )
+```
+
+is well typed even though `then` is `( -- )` and the `else` arm is
+`( i64 -- i64 )`. What is rejected is disagreement at the head — one branch
+consuming a `bool` where the other consumes an `i64` — since `unify` fails
+there.
+*Why the earlier rule was wrong:* `M06.infer_branches` required each branch's
+`pre` to equal its variant payload exactly. For a `bool` both payloads are
+empty, so no branch could touch the stack at all. Found by building `if`; the
+rule had never been exercised because nothing but a hand-written example ever
+constructed a `TCase`.
+*Why it is cheap:* `M03.unify` and `lemma_unify_disjoint` already existed and
+are exactly this. There are no type variables, only prefix matching, so D-31's
+"no unifier anywhere" claim survives intact. `lemma_unify_common`,
+`lemma_unify_refl` and `lemma_srow_join_sym` are proved, not admitted; the
+order-independence of the fold across more than two branches is stated as an
+obligation in M03 and wants discharging with `lemma_compose_assoc`.
+
+**D-41. A local read inside a branch is forced to count as a repeated read.**
+`E02.count_var` bumps the count for any `$x` occurring under an `StCase`.
+*Why:* the elaborator compiles a sole read to a `roll`, which consumes the
+slot. A slot consumed in one branch and not the other leaves the branches with
+different stacks, so `if { } then { $x } endif` would be rejected for a reason
+having nothing to do with what was written. Forcing `pick` costs an
+end-of-body drop and requires `Copy`, which is the honest requirement — a value
+read under a condition cannot be statically known to be moved exactly once.
+
+**D-42. `true` and `false` are prelude words, not literals.** Bound to
+`WDef (bool_lit _)` in `R03_Prelude`.
+*Why:* making them words costs nothing, since specialization inlines a `WDef`
+whose body is a literal, and it buys two things — they shadow like any other
+name, and neither the lexer nor `E04` grows a case. Until now there was no way
+to write a `bool` at all, so `and`/`or`/`not` were reachable only through a
+comparison.
+
 ---
 
 **D-26. Wrapping unsafe primitives into the linear system is a recurring

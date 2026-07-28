@@ -145,6 +145,15 @@ let step (d:rdict) (s:mstate) : Tot sresult =
             | None            -> SStuck "inj: stack too short"
             | Some (vs, rest) -> SNext ({ code = k; stk = RSum tag vs :: rest }))
 
+    (* D-33: `false` is tag 0 and `true` is tag 1, matching `M06`'s rule and
+       `M01.bool_variants`. Neither variant carries a payload, so the coerced
+       value is a bare tag. *)
+    | TBoolSum ->
+      (match s.stk with
+       | RBool b :: r ->
+         SNext ({ code = k; stk = RSum (if b then 1 else 0) [] :: r })
+       | _ -> SStuck "bool>sum: not a boolean")
+
     | TCase _ branches ->
       (match s.stk with
        | RSum tag vs :: r ->

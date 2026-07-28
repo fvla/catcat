@@ -84,6 +84,20 @@ noeq type term =
   | TUnpack  : nom_id -> list cap -> seg -> term
   /// Sum introduction: build variant `tag` of `variants`.
   | TInj     : variants:list seg -> tag:nat -> term
+  /// `( bool -- TSum [[]; []] )`, false to tag 0 and true to tag 1.
+  ///
+  /// This is the ONLY way to branch on a boolean, and it is deliberately a
+  /// coercion rather than an eliminator (D-33). `bool` is a primitive, so
+  /// `TCase` -- which eliminates a sum -- cannot see it; giving the core a
+  /// separate `TIf` would mean a second copy of the branch-agreement rule that
+  /// `infer_branches` already implements. One coercion plus the existing rule
+  /// costs one constructor and no new typing logic.
+  ///
+  /// The tag order is `false = 0`, `true = 1`, matching the usual reading of a
+  /// bool as a two-element enumeration. Surface `if` therefore lists its ELSE
+  /// branch first; `E04` is where that is arranged, and it is stated in both
+  /// places because a silent reversal here would be a plausible-looking bug.
+  | TBoolSum : term
   /// Sum elimination: one `{}` block per variant, all with the same result.
   | TCase    : variants:list seg -> branches:list term -> term
   /// Install a handler for `eff`, giving an implementation block per
@@ -128,6 +142,7 @@ let rec term_size (t:term) : Tot pos =
   | TPack _ _ _         -> 1
   | TUnpack _ _ _       -> 1
   | TInj _ _            -> 1
+  | TBoolSum            -> 1
   | TCase _ bs          -> 1 + terms_size bs
   | THandle _ impls b   -> 1 + impls_size impls + term_size b
   | TSpecialize b       -> 1 + term_size b

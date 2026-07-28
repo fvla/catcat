@@ -96,6 +96,7 @@ let bin_i64 : srow = { pre = [i64_t; i64_t]; post = [i64_t] }
 let cmp_i64 : srow = { pre = [i64_t; i64_t]; post = [bool_t] }
 let un_bool : srow = { pre = [bool_t]; post = [bool_t] }
 let bin_bool : srow = { pre = [bool_t; bool_t]; post = [bool_t] }
+let push_bool : srow = { pre = []; post = [bool_t] }
 
 /// Word names are free-form: any run of non-space, non-bracket characters. So
 /// the arithmetic and comparison words are spelled as operators (D-31), which
@@ -117,6 +118,8 @@ let prelude_nenv : nenv = [
   { n_name = "not"; n_id = w_not; n_sig = un_bool };
   { n_name = "and"; n_id = w_and; n_sig = bin_bool };
   { n_name = "or";  n_id = w_or;  n_sig = bin_bool };
+  { n_name = "true";  n_id = w_true;  n_sig = push_bool };
+  { n_name = "false"; n_id = w_false; n_sig = push_bool };
 ]
 
 let rec nenv_defs (e:nenv) : Tot (list (word_id & srow)) (decreases e) =

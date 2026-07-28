@@ -221,9 +221,15 @@ let elab_lit (n:int) : Tot (either string term) =
   then Inr (TLit (LPrim PI64 n))
   else Inl ("integer literal out of range for i64: " ^ string_of_int n)
 
+/// Measures: every edge below decreases the size component strictly, including
+/// the two that cross between a term list and a branch list, because
+/// `E02.sterm_lists_size` charges one per branch. The ranks are therefore
+/// documentation of the intended ordering rather than load-bearing — unlike
+/// M01's and M05's, where an empty sub-list makes them necessary.
 let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
                    (ts:list sterm)
-  : Tot (either string (shape & list term)) (decreases ts) =
+  : Tot (either string (shape & list term))
+        (decreases %[sterms_size ts; 0]) =
   match ts with
   | [] -> Inr (sh, rev acc)
   | t :: rest ->
@@ -282,7 +288,54 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
                (TWord n.n_id :: acc) rest))
 
      | StBlock _ ->
-       Inl "a { } block is only meaningful as a definition body in this pass")
+       Inl "a { } block is only meaningful as a definition body or a branch"
+
+     /// Case analysis. The scrutinee is a `bool` and nothing else, because
+     /// `bool` is currently the only sum-shaped thing the surface language can
+     /// put on the stack — `TInj` has no surface form yet. Branches are in TAG
+     /// order (D-33), so the FALSE branch comes first, and `TBoolSum` is
+     /// emitted here rather than spelled by the user.
+     ///
+     /// When sum syntax lands this case grows a `TSum variants` arm; the shape
+     /// of the code does not otherwise change.
+     | StCase bs ->
+       (match sh with
+        | [] -> Inl "if: the stack is empty; the condition must leave a bool"
+        | s :: sr ->
+          if s.sl_ty <> TPrim PBool
+          then Inl "if: the condition must leave a bool on top of the stack"
+          else if length bs <> 2
+          then Inl "if: a bool has exactly two branches"
+          else (match elab_branches env cs sr None [] bs with
+                | Inl e -> Inl e
+                | Inr (sh', bts) ->
+                  elab_terms env cs sh'
+                    (TCase bool_variants bts :: TBoolSum :: acc) rest)))
+
+/// Elaborate each branch against the SAME entry shape and require them to
+/// agree on the exit shape.
+///
+/// Agreement is equality of the modelled shape, which is stricter-looking than
+/// `M06.srow_join` but means the same thing here: the model is one concrete
+/// stack, so a branch reaching further beneath it simply leaves a shorter
+/// list, and two branches agree exactly when those lists coincide. M06 then
+/// re-derives the same fact row-polymorphically and independently.
+and elab_branches (env:nenv) (cs:counts) (sh0:shape)
+                  (expect:option shape) (acc:list term) (bs:list (list sterm))
+  : Tot (either string (shape & list term))
+        (decreases %[sterm_lists_size bs; 1]) =
+  match bs with
+  | [] -> (match expect with
+           | None    -> Inl "if: no branches"
+           | Some sh -> Inr (sh, rev acc))
+  | b :: r ->
+    (match elab_terms env cs sh0 [] b with
+     | Inl e -> Inl e
+     | Inr (sh1, ts) ->
+       let ok = (match expect with None -> true | Some ex -> ex = sh1) in
+       if not ok
+       then Inl "the branches of an if leave the stack in different states"
+       else elab_branches env cs sh0 (Some sh1) (seq_of ts :: acc) r)
 
 /// Roll each surviving named slot to the top and pop it. Runs once, after the
 /// body, and is the counterpart to the pick-based read strategy above.
@@ -408,11 +461,53 @@ let rec iremove_at (i:nat) (sh:list mslot) : Tot (list mslot) (decreases sh) =
   | []     -> []
   | s :: r -> if i = 0 then r else s :: iremove_at (i - 1) r
 
+(* --- branches ----------------------------------------------------------- *)
+
+/// The slots for variables pulled from beneath since a mark, in pull order.
+///
+/// Each branch of a case must start from the same modelled stack, but a branch
+/// that pulls from below extends `i_below` for good — the slot it pulled is a
+/// real input of the whole definition, and a later branch reaching the same
+/// depth must find the SAME variable there rather than invent a second one.
+/// Restoring these on top of the entry shape is what arranges that.
+let rec islots_from (n:nat) (below:list mty)
+  : Tot (list mslot) (decreases below) =
+  match below with
+  | []     -> []
+  | m :: r -> if n = 0
+              then { m_name = None; m_ty = m } :: islots_from 0 r
+              else islots_from (n - 1) r
+
+/// Compare one modelled slot from two branches, recording `variable :=
+/// concrete` when one side knows more than the other.
+///
+/// Two distinct variables never meet here: a variable in a given position came
+/// from a pull at a given depth, and `islots_from` gives every branch the same
+/// one. So this stays inside D-31 — the only constraint form is still
+/// `variable := concrete type`, and there is no unifier.
+let imatch1 (st:ist) (a:mty) (b:mty) : Tot (either string ist) =
+  let clash = Inl "the branches of an if leave different types on the stack" in
+  match a, b with
+  | MT d1, MT d2 -> if d1 = d2 then Inr st else clash
+  | MT d,  MV v  -> iunify "if" st (MV v) d
+  | MV v,  MT d  -> iunify "if" st (MV v) d
+  | MV v,  MV w  -> if v = w then Inr st else clash
+
+let rec imatch (st:ist) (xs:list mslot) (ys:list mslot)
+  : Tot (either string ist) (decreases xs) =
+  match xs, ys with
+  | [], []           -> Inr st
+  | x :: xr, y :: yr ->
+    (match imatch1 st x.m_ty y.m_ty with
+     | Inl e   -> Inl e
+     | Inr st' -> imatch st' xr yr)
+  | _ -> Inl "the branches of an if leave different numbers of values on the stack"
+
 /// Mirrors `elab_terms` slot-for-slot, minus term emission. Capability checks
 /// are deliberately absent: this pass decides types, and pass 2 — which sees
 /// concrete ones — is where `Copy`/`Drop` violations get reported.
 let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
-  : Tot (either string ist) (decreases ts) =
+  : Tot (either string ist) (decreases %[sterms_size ts; 0]) =
   match ts with
   | [] -> Inr st
   | t :: rest ->
@@ -453,7 +548,51 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
            | Inr st1 -> infer_terms env cs (ipush_post n.n_sig.post st1) rest))
 
      | StBlock _ ->
-       Inl "a { } block is only meaningful as a definition body in this pass")
+       Inl "a { } block is only meaningful as a definition body or a branch"
+
+     /// Mirrors `elab_terms`' case exactly, minus term emission. The scrutinee
+     /// may be a variable here, in which case running the case is what
+     /// constrains it to `bool`.
+     | StCase bs ->
+       let (s, st1) = ipop st in
+       (match iunify "if" st1 s.m_ty (TPrim PBool) with
+        | Inl _   ->
+          Inl "if: the condition must leave a bool on top of the stack"
+        | Inr st2 ->
+          if length bs <> 2
+          then Inl "if: a bool has exactly two branches"
+          else (match infer_branches_i env cs st2.i_above (length st2.i_below)
+                        st2 None bs with
+                | Inl e   -> Inl e
+                | Inr st3 -> infer_terms env cs st3 rest)))
+
+/// Run each branch from the same entry stack, threading the accumulated
+/// substitution and pulled inputs forward, and require the branches to agree.
+///
+/// `above0` is the modelled stack at the point of the case and `mark` is how
+/// much had been pulled from beneath before it; together they let a later
+/// branch see the same variables an earlier one invented (`islots_from`).
+and infer_branches_i (env:nenv) (cs:counts) (above0:list mslot) (mark:nat)
+                     (st:ist) (expect:option (list mslot))
+                     (bs:list (list sterm))
+  : Tot (either string ist) (decreases %[sterm_lists_size bs; 1]) =
+  match bs with
+  | [] -> (match expect with
+           | None    -> Inl "if: no branches"
+           | Some ex -> Inr ({ st with i_above = ex }))
+  | b :: r ->
+    let entry = { st with i_above = above0 @ islots_from mark st.i_below } in
+    (match infer_terms env cs entry b with
+     | Inl e    -> Inl e
+     | Inr st'  ->
+       (match expect with
+        | None    ->
+          infer_branches_i env cs above0 mark st' (Some st'.i_above) r
+        | Some ex ->
+          (match imatch st' ex st'.i_above with
+           | Inl e    -> Inl e
+           | Inr st'' ->
+             infer_branches_i env cs above0 mark st'' (Some ex) r)))
 
 let rec iresolve (su:list (nat & dtype)) (ms:list mty)
   : Tot (either string (list dtype)) (decreases ms) =
