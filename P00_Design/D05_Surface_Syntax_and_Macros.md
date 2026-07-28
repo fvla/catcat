@@ -163,6 +163,35 @@ always available, never stale, and costs nothing to keep. See N02 Q-11.
 
 ---
 
+## 2.2 Conditionals
+
+```
+if { cond } then { conseq } endif
+if { cond } then { conseq } else { alt } endif
+```
+
+The condition block runs inline and must leave a `bool`. It may be empty, when
+the condition has already been computed by preceding words.
+
+**`endif` is mandatory** (D-34). The reason is §1.1: with an optional trailing
+`else`, deciding whether a word following `if { c } then { t }` is this
+conditional's `else` or an ordinary word after it needs a *second* token.
+Requiring the terminator means every alternation point consumes a keyword, so
+the grammar has no ε-branch and `then`/`else`/`endif` stay legal word names
+everywhere outside the construct — nothing is reserved, consistent with the
+free-form words of §1.
+
+**Branches agree on the final stack state**, not on how each is written; the
+rule is `M03.srow_join` and D02 §5 explains it. An omitted `else` is `else { }`,
+so "the `then` branch must not change the stack" is a consequence rather than a
+separate rule.
+
+This is currently hardcoded in the parser. It is the production the macro
+system of §5 has to be able to express, and it moves into that table once the
+table exists — `if` is meant to be a macro, not syntax.
+
+---
+
 ## 3. Locals
 
 Purpose, per the draft: hiding stack manipulation where shuffling would obscure

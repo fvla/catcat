@@ -5,7 +5,7 @@ describes the implemented language, not the designed one: where the two differ,
 that is called out rather than glossed. For the designed language see
 [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md).
 
-> **Current as of commit `692cbe9`.**
+> **Current as of commit `ff01d06`.**
 > Source of truth: [E01_Lexer.fst](../P03_Elaboration/E01_Lexer.fst) (lexing),
 > [E03_Parser.fst](../P03_Elaboration/E03_Parser.fst) (grammar),
 > [E02_Ast.fst](../P03_Elaboration/E02_Ast.fst) (the tree it produces),
@@ -38,12 +38,17 @@ type       = "Box" "[" type "]"
 term       = integer
            | word
            | "$" name
+           | conditional
            | "{" term* "}" ;
+
+conditional = "if" block "then" block [ "else" block ] "endif" ;
+block       = "{" term* "}" ;
 ```
 
-`{ … }` parses as a term anywhere but is **rejected by the elaborator** outside
-a definition body — blocks need macros or handlers to consume them, and neither
-exists yet.
+`{ … }` parses as a term anywhere, but the only constructs that **consume** one
+are `define` and the conditional of §4. A block appearing anywhere else is
+rejected by the elaborator: general block consumers need macros or handlers,
+and neither exists yet.
 
 **An expression runs to the end of the input.** A `define` may be followed by
 more declarations on the same line; an expression may not, because every
@@ -54,7 +59,7 @@ define a { 1 } define b { 2 } a b +     \ three declarations, fine
 1 2 + define c { 3 }                    \ error: unknown word: define
 ```
 
-This is a consequence of the no-lookahead rule (§4), not an oversight: nothing
+This is a consequence of the no-lookahead rule (§5), not an oversight: nothing
 marks where an expression ends, so it ends at the input.
 
 ---
@@ -78,7 +83,7 @@ the deliberate divergence from Forth that makes precise tooling possible.
 ```
 
 Everything inside a `( … )` is space-separated and the arrow is no exception.
-Requiring the space is also what keeps the scanner lookahead-free (§4). As a
+Requiring the space is also what keeps the scanner lookahead-free (§5). As a
 consequence `--` cannot be used as a user word name.
 
 **Sigils**, recognised by first character, so the parser never needs to guess
@@ -88,7 +93,7 @@ which region of a signature it is in:
 |---|---|---|
 | `$x` | local variable | works |
 | `#T` | parametric type | parses, rejected by the elaborator |
-| `!Eff` | effect | parses, **silently discarded** — see §5 |
+| `!Eff` | effect | parses, **silently discarded** — see §6 |
 
 **Integers** are an optional `-` followed by at least one digit. The digit
 requirement is what lets `-` be a word:
@@ -125,6 +130,8 @@ generate exactly the hidden stack traffic locals exist to remove.
 **Reads consume.** A local read once compiles to a move; read twice or more it
 is copied each time and so must be `Copy`; read zero times it is dropped, and so
 must be `Drop`. A linear local left unconsumed is a type error, not a leak.
+**A read inside a conditional branch always counts as repeated** (§4), whatever
+the actual number.
 
 ### The signature is optional
 
@@ -146,7 +153,59 @@ composing signatures.
 
 ---
 
-## 4. No lookahead
+## 4. Conditionals
+
+```
+if { cond } then { conseq } endif
+if { cond } then { conseq } else { alt } endif
+```
+
+The **condition block runs inline** and must leave a `bool` on top. It may be
+empty when the condition is already computed:
+
+```
+define abs  { dup 0 < if { } then { 0 swap - } endif }        \ ( i64 -- i64 )
+define sign { dup 0 < if { } then { pop -1 } else { pop 1 } endif }
+```
+
+**`endif` is mandatory; `else` is not.** The terminator is what keeps the
+grammar free of an ε-branch, and that in turn is what lets `then`, `else` and
+`endif` stay ordinary word names everywhere outside this construct — nothing is
+reserved. See §5.
+
+### What the branches must agree on
+
+**The final stack state, not the way each branch is written.** Branches are
+row-polymorphic, so one may reach beneath the condition where the other does
+not:
+
+```
+define dec_if_big { dup 10 < if { } then { 1 - } endif }      \ ( i64 -- i64 )
+```
+
+`then` is `( -- )` and the implicit `else` is `( i64 -- i64 )`; framing the
+first by `i64` makes both the same, so this is accepted. What is rejected is
+disagreement on what is left behind:
+
+```
+catcat> define mismatch { dup 0 < if { } then { true } else { 1 } endif }
+error: the branches of an if leave different types on the stack
+```
+
+**An omitted `else` is `else { }`.** So "the `then` branch must not change the
+stack" is not a separate rule — it is what branch agreement says when the other
+branch is empty.
+
+**A local read inside a branch is compiled as a copy**, never a move, so its
+type must be `Copy`. A move would consume the slot in one branch and not the
+other, leaving the two with different stacks.
+
+There is no `while` or recursion yet, so conditionals are the whole of control
+flow.
+
+---
+
+## 5. No lookahead
 
 A hard constraint on the grammar, not a property of the current parser: **the
 lexer is a plain DFA and the parser is LL(1).** Every decision is made on the
@@ -159,11 +218,21 @@ is the secondary reason: no buffer, no backtracking, so incremental reparsing
 for the language server stays local.
 
 Any syntax proposal needing a second token to disambiguate is rejected on these
-grounds. This is what settled the `--` question in §2.
+grounds. This is what settled the `--` question in §2, and it is why `endif` is
+mandatory in §4.
+
+To be precise about what "no lookahead" forbids, since the two are easy to
+confuse: LL(1) *permits* dispatching on the token in hand without consuming it,
+which the parser already does when it decides whether a signature slot is a
+type or a `$name`. What is forbidden is needing a **second** token. An optional
+trailing `else` would need one — after `if { c } then { t }`, a following word
+could be the `else` of this conditional or an ordinary word after it, and only
+the token after that could tell. Requiring `endif` means every alternation
+point consumes a keyword instead.
 
 ---
 
-## 5. Not yet implemented
+## 6. Not yet implemented
 
 Each is specified in [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md) and
 absent from the implementation. Listed because the gap between the two documents
@@ -171,8 +240,8 @@ is otherwise invisible.
 
 | Feature | State |
 |---|---|
-| `true` / `false` literals | **absent** — booleans only arise from `<`, `<=`, `=` |
 | `!Eff` in a signature | parses, then **silently dropped**; `( -- i64 !IO )` records `( -- i64 )` |
+| loops, recursion | not parsed — `if` is the whole of control flow |
 | `#T` generics | parses, elaborator rejects |
 | `let` and `let (…)` | not parsed |
 | effects, handlers | not parsed |

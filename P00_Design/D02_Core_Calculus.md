@@ -218,6 +218,7 @@ term ::= TNil                             -- identity
        | TPack   nom_id [cap] seg          -- segment  -> nominal
        | TUnpack nom_id [cap] seg          -- nominal  -> segment (class body only)
        | TInj  [seg] nat                   -- sum introduction
+       | TBoolSum                          -- bool -> two-variant sum
        | TCase [seg] [term]                -- sum elimination, one block per variant
        | THandle eff_id [(op_id, term)] term
        | TSpecialize term                  -- staging; see D04
@@ -225,7 +226,27 @@ term ::= TNil                             -- identity
 
 Note what is **absent**: no lambda, no application, no let, no local binding, no
 closure. Locals (`$x`) elaborate to stack shuffles and the core never learns they
-existed.
+existed. **There is also no conditional** — `TBoolSum` coerces a `bool` to a
+two-variant sum and `TCase` does the rest, so branching on a boolean and
+branching on a user sum are the same construct (D-33). A dedicated `TIf` would
+have needed a second copy of the branch-agreement rule.
+
+### Branch agreement
+
+`TCase`'s branches do **not** need equal signatures. Each is row-polymorphic, so
+they agree when there is a common instantiation, computed by `M03.srow_join`:
+frame each branch by what the other demanded extra, then require the results to
+match. So
+
+```
+dup 10 < if { } then { 1 - } endif        -- ( i64 -- i64 )
+```
+
+is well typed although one arm is `( -- )` and the other `( i64 -- i64 )`. This
+is not a special allowance for conditionals; it is what row polymorphism already
+meant, applied to alternatives rather than to sequences. The rule originally
+required equality, which made every boolean branch unable to touch the stack —
+caught by building `if`, since nothing had ever constructed a `TCase` before.
 
 ---
 

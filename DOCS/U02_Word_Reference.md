@@ -1,9 +1,9 @@
 # U02 — Word Reference
 
-Every word the language provides today. That is a short list: eleven primitives
-and three stack shuffles.
+Every word the language provides today. That is a short list: eleven primitives,
+two constants, and three stack shuffles.
 
-> **Current as of commit `692cbe9`.**
+> **Current as of commit `ff01d06`.**
 > Source of truth:
 > [E05_Repl.fst](../P03_Elaboration/E05_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
@@ -77,9 +77,18 @@ sigil, so no word may begin with it.
 Spelled as words, not `&&`/`||`, because they read better in postfix and there
 is no precedence to disambiguate.
 
-> **`and` and `or` are currently hard to reach.** There are no `true`/`false`
-> literals (U01 §5), so the only way to get a `bool` is a comparison. `1 2 < 3 4
-> < and` works; typing `true` does not.
+| Word | Signature | Meaning |
+|---|---|---|
+| `true` | `( -- bool )` | the true constant |
+| `false` | `( -- bool )` | the false constant |
+
+`true` and `false` are **ordinary words**, not literals — bound in the prelude
+to a definition whose body is a boolean literal. Making them words costs
+nothing, since specialization inlines a definition that is just a literal, and
+it means they shadow like any other name and neither the lexer nor the
+elaborator needs a case for them.
+
+Booleans are what `if` consumes; see [U01](U01_Grammar.md) §4.
 
 ---
 
@@ -118,7 +127,7 @@ have to be written by hand.
 | `i8` `i16` `i32` `i64` | `i64` is what integer literals produce |
 | `u8` `u16` `u32` `u64` | valid; no operations |
 | `f32` `f64` | valid; no operations (§1) |
-| `bool` | produced by comparisons |
+| `bool` | `true`/`false`, or a comparison. Consumed by `if` |
 | `unit` | valid; no literal |
 | `Box[t]` | owning unique pointer. Neither `Copy` nor `Drop` — linear |
 | `Rc[t]` | shared refcounted pointer |
@@ -141,9 +150,10 @@ define sq ( i64 -- i64 ) { dup * }               \ signature asserted
 define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
 ```
 
-Definitions may shadow prelude names — nothing reserves `+`. `define` itself is
-not a reserved word either; it is recognised by position at the start of a
-declaration.
+Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`.
+`define` itself is not a reserved word either; it is recognised by position at
+the start of a declaration, and the same is true of `if`, `then`, `else` and
+`endif`, which are keywords only inside a conditional.
 
 Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).
 
