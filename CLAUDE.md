@@ -17,6 +17,8 @@ how to work on this project without re-deriving context.
    already decided.
 3. `NOTES/N02_Open_Questions.md` — what is deliberately unsettled.
 4. `P00_Design/D02`–`D06` — the design proper.
+5. `DOCS/U01_Grammar.md`, `U02_Word_Reference.md` — the language **as it runs**,
+   which is a strict subset of the above. Fastest way to see the real gap.
 
 The two ideas everything else follows from, so you have them immediately:
 
@@ -38,6 +40,7 @@ within them likewise. Proofs read top to bottom; so does this project.
 | `P01_Specification/` | `M01`–`M11`, mechanized core in F* | M01–M06 complete, M07–M11 skeletons |
 | `P02_Reference/` | `R01`–`R06`, reference interpreter | runs; extracts to OCaml |
 | `P03_Elaboration/` | `E01`–`E05`, lexer → parser → elaborator → REPL | **REPL works**; subset of D05 |
+| `DOCS/` | `U01`–`U02`, user-facing docs for the language as it runs | current |
 | `NOTES/` | decision log, open questions, session handoff | current |
 | `.claude/skills/` | project skills | `delegate` |
 | `bin/`, `generated/` | OCaml glue and extraction output | generated — do not hand-edit |
@@ -143,6 +146,31 @@ instead — see the bottom of `M07_Denotation.fst`.
   no OCaml test will catch it.
 - **Record decisions in `NOTES/N01_Decisions.md` as you make them**, not at the
   end. A future thread starts from that file.
+
+## Documentation hygiene
+
+`DOCS/` describes the language **as it actually runs**, which is a different job
+from `P00_Design/` — that describes the language as designed. The two drift, and
+the whole value of `DOCS/` is that a reader can tell which they are holding.
+
+Two rules, mandatory for every file in `DOCS/`:
+
+1. **Stamp the commit.** Each file carries `**Current as of commit `<hash>`.**`
+   near the top. Update it whenever you touch the file; a doc with a stale hash
+   is at least honestly stale, whereas an unstamped one is just wrong.
+2. **Point at the source of truth.** Name the specific files — and where useful
+   the specific functions — the doc is derived from, and say plainly that the
+   source wins on disagreement. A user doc is a cache, not an authority.
+
+Then, when writing:
+
+- **Verify claims against the running binary**, not against the design docs or
+  your memory of the code. Every table entry in `U01`/`U02` was checked by
+  running `catcat.exe`. This is how the `!Eff`-silently-discarded and
+  no-`true`/`false` gaps were found.
+- **List what is missing.** `U01` §5 exists because the gap between D05 and the
+  implementation is otherwise invisible to a reader, and gaps that mislead —
+  like a signature accepting `!IO` and dropping it — get called out as such.
 
 ## Delegating
 
