@@ -337,6 +337,29 @@ having nothing to do with what was written. Forcing `pick` costs an
 end-of-body drop and requires `Copy`, which is the honest requirement — a value
 read under a condition cannot be statically known to be moved exactly once.
 
+**D-35. A macro is an LL(1) grammar production plus a term transformer.** It
+declares a fixed slot sequence — blocks, words, literal keywords — followed by
+an alternation in which **every branch is keyed on a word that is consumed**.
+Its input is syntax and its output is surface terms, spliced into the enclosing
+sequence.
+*Two constraints, both deliberate:* a macro has **no stack access**, since
+nothing it does survives to runtime; and it **cannot consume the enclosing
+`}`**, because slots are parsed by the same functions the block parser uses and
+a closing brace belongs to the block.
+*Why every branch is keyed:* an unkeyed or optional tail is exactly what would
+need a second token to disambiguate (D-30). The slot vocabulary cannot express
+one, so `ll1_ok` — no two macros sharing a leading word, no two alternatives of
+one macro sharing a key — is the whole LL(1) obligation, and it is *checked*
+over the table by `assert_norm` rather than asserted in prose. This is the seed
+of the planned verified CFG-to-recursive-descent generator: the same property
+that tool must establish, established here on the grammar the language ships.
+*Expanders dispatch on the macro name rather than sitting in the record as a
+field* — a function-typed field would break the first-order subset (D-20), so
+the dispatch is defunctionalised exactly as R02 defunctionalises continuations.
+*Status:* the table is built in and `if` is its only entry. User-defined macros
+are what it exists for and need the elaboration-time interpreter; the shape of
+the table is fixed so that registering one later is registration, not redesign.
+
 **D-42. `true` and `false` are prelude words, not literals.** Bound to
 `WDef (bool_lit _)` in `R03_Prelude`.
 *Why:* making them words costs nothing, since specialization inlines a `WDef`

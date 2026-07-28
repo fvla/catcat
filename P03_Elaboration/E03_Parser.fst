@@ -27,6 +27,90 @@ noeq type presult (a:Type) =
   | POk  : a -> list token -> presult a
 
 (* ------------------------------------------------------------------------ *)
+(* Macros                                                                   *)
+(* ------------------------------------------------------------------------ *)
+
+/// A MACRO IS A GRAMMAR PRODUCTION PLUS A TERM TRANSFORMER (D-35).
+///
+/// It declares what it consumes to its right — a fixed sequence of slots,
+/// then an alternation keyed on a literal word — and a function turning what
+/// was captured into surface terms. Two properties are deliberate:
+///
+///   * **No stack access.** A macro's input is syntax and its output is
+///     syntax. Nothing it does is visible at runtime, so it cannot depend on
+///     or disturb the value stack.
+///   * **It cannot consume the enclosing `}`.** Slots are parsed by the same
+///     functions the block parser uses, and a block's closing brace belongs to
+///     the block. A macro that runs out of tokens inside its production
+///     reports an error rather than reaching past the brace.
+///
+/// Every alternation branch is keyed on a word that is CONSUMED, so the
+/// grammar has no ε-branch and the whole table stays LL(1) with no token
+/// reserved globally (D-34). `ll1_ok` below checks that, and is the seed of
+/// the planned verified CFG-to-recursive-descent generator (D-30): the same
+/// property that tool will have to establish, checked here on the one grammar
+/// the language ships.
+///
+/// STATUS: the table is built in, with `if` its only entry. User-defined
+/// macros — registration from catcat source, via the `Parse` effect of D03 §7
+/// — are what this exists for, and need the elaboration-time interpreter.
+type mslot =
+  /// `{ … }`, captured as its term list.
+  | MsBlock   : mslot
+  /// One identifier, captured as a string.
+  | MsWord    : mslot
+  /// A literal word that must appear. Consumed, captures nothing.
+  | MsKeyword : string -> mslot
+
+/// What a slot captured. A branch key is recorded as `McWord` so the expander
+/// can tell which alternative was taken.
+noeq type mcap =
+  | McBlock : list sterm -> mcap
+  | McWord  : string -> mcap
+
+type mbranch = {
+  /// The word that selects this alternative. Consumed.
+  mb_key   : string;
+  mb_slots : list mslot;
+}
+
+noeq type mprod = {
+  /// The leading word that invokes the macro.
+  mp_name     : string;
+  /// Slots consumed before the alternation.
+  mp_pre      : list mslot;
+  /// Keyed alternatives. Empty means the production ends after `mp_pre`.
+  mp_branches : list mbranch;
+}
+
+(* --- the LL(1) invariant ------------------------------------------------- *)
+
+let rec keys_distinct (seen:list string) (bs:list mbranch)
+  : Tot bool (decreases bs) =
+  match bs with
+  | []     -> true
+  | b :: r -> not (mem b.mb_key seen) && keys_distinct (b.mb_key :: seen) r
+
+let rec names_distinct (seen:list string) (ps:list mprod)
+  : Tot bool (decreases ps) =
+  match ps with
+  | []     -> true
+  | p :: r -> not (mem p.mp_name seen) && names_distinct (p.mp_name :: seen) r
+
+let rec branches_ok (ps:list mprod) : Tot bool (decreases ps) =
+  match ps with
+  | []     -> true
+  | p :: r -> keys_distinct [] p.mp_branches && branches_ok r
+
+/// The macro table is LL(1) exactly when no two macros share a leading word
+/// and no two alternatives of one macro share a key. There is nothing else to
+/// check, because every alternative is keyed and consumed — an unkeyed or
+/// optional tail is what would require a second token, and the slot vocabulary
+/// cannot express one.
+let ll1_ok (ps:list mprod) : Tot bool =
+  names_distinct [] ps && branches_ok ps
+
+(* ------------------------------------------------------------------------ *)
 (* Types                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
@@ -111,13 +195,77 @@ let parse_sig_body (ts:list token)
        POk ({ ss_in = ins; ss_out = outs; ss_eff = effs }) tail)
 
 (* ------------------------------------------------------------------------ *)
+(* The macro table                                                          *)
+(* ------------------------------------------------------------------------ *)
+
+/// `if { c } then { t } endif`, or with an `else { e }` before the terminator.
+///
+/// The terminator is mandatory and both alternatives are keyed, which is what
+/// keeps `then`, `else` and `endif` ordinary word names outside this
+/// production (D-34). Verified: they are all still definable.
+let macro_table : list mprod = [
+  { mp_name     = "if";
+    mp_pre      = [MsBlock; MsKeyword "then"; MsBlock];
+    mp_branches = [ { mb_key = "endif"; mb_slots = [] };
+                    { mb_key = "else";  mb_slots = [MsBlock; MsKeyword "endif"] } ] }
+]
+
+/// The table really is LL(1), checked rather than asserted in prose.
+let lemma_table_ll1 () : Lemma (ll1_ok macro_table) =
+  assert_norm (ll1_ok macro_table)
+
+let rec lookup_macro (ps:list mprod) (w:string)
+  : Tot (option mprod) (decreases ps) =
+  match ps with
+  | []     -> None
+  | p :: r -> if p.mp_name = w then Some p else lookup_macro r w
+
+let rec lookup_branch (bs:list mbranch) (w:string)
+  : Tot (option mbranch) (decreases bs) =
+  match bs with
+  | []     -> None
+  | b :: r -> if b.mb_key = w then Some b else lookup_branch r w
+
+let rec key_list (bs:list mbranch) : Tot string (decreases bs) =
+  match bs with
+  | []      -> ""
+  | b :: [] -> "'" ^ b.mb_key ^ "'"
+  | b :: r  -> "'" ^ b.mb_key ^ "', " ^ key_list r
+
+(* --- expansion ----------------------------------------------------------- *)
+
+/// Expanders dispatch on the macro's name rather than living in `mprod` as a
+/// field. That is not a style choice: a function-typed record field would
+/// break the first-order subset P03 shares with P02 (D-20), so the dispatch is
+/// defunctionalised exactly as `R02` defunctionalises continuations.
+///
+/// Branches are emitted in TAG order, FALSE first (D-33), so `else` precedes
+/// `then`. An absent `else` is `[]` — the empty branch — which is why "the
+/// `then` branch must not change the stack" needs no rule of its own.
+let expand_if (caps:list mcap) : Tot (either string (list sterm)) =
+  match caps with
+  | [McBlock cond; McBlock conseq; McWord "endif"] ->
+    Inr (cond @ [StCase [[]; conseq]])
+  | [McBlock cond; McBlock conseq; McWord "else"; McBlock alt] ->
+    Inr (cond @ [StCase [alt; conseq]])
+  | _ -> Inl "if: malformed expansion"
+
+let expand (name:string) (caps:list mcap) : Tot (either string (list sterm)) =
+  if name = "if" then expand_if caps
+  else Inl ("no expander for macro '" ^ name ^ "'")
+
+(* ------------------------------------------------------------------------ *)
 (* Terms                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
 /// Parse terms until `}` (when `closing` is true) or end of input.
+/// Measures: `parse_terms` sits above `parse_macro`, which sits above
+/// `parse_slots`. Every edge either shortens the token list or drops a rank,
+/// and the only same-length edge is a macro handing its own slot list to the
+/// slot parser.
 let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
   : Tot (r:presult (list sterm) { POk? r ==> length (POk?._1 r) <= length ts })
-        (decreases (length ts)) =
+        (decreases %[length ts; 2]) =
   match ts with
   | [] -> if closing
           then PErr "expected '}' closing block, found end of input"
@@ -127,60 +275,77 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
                         else PErr "unexpected '}'"
   | TkInt n :: rest -> parse_terms closing (StInt n :: acc) rest
 
-  /// `if { c } then { t } endif` and `if { c } then { t } else { e } endif`.
-  ///
-  /// **The terminator is mandatory** (D-34). Every alternation point here
-  /// consumes a keyword — after the `then` block the next token must be
-  /// `else` or `endif`, and both are eaten — so the grammar has no ε-branch
-  /// and nothing needs reserving. `then`, `else` and `endif` remain ordinary
-  /// word names everywhere except inside this production, which is what keeps
-  /// D-32's free-form words intact.
-  ///
-  /// The condition block runs inline, so its terms are spliced into the
-  /// enclosing sequence ahead of the case. Branches are emitted in TAG order,
-  /// FALSE first (D-33), so the `else` branch precedes the `then` branch — an
-  /// else-less `if` is `else { }`, which is why "the then branch must not
-  /// change the stack" needs no separate rule.
-  ///
-  /// Hardcoded here for now. It moves into the macro table when that exists;
-  /// this production is what the table has to be able to express.
-  | TkWord "if" :: TkLBrace :: r1 ->
-    (match parse_terms true [] r1 with
-     | PErr e -> PErr e
-     | POk cond r2 ->
-       (match r2 with
-        | TkWord "then" :: TkLBrace :: r3 ->
-          (match parse_terms true [] r3 with
-           | PErr e -> PErr e
-           | POk conseq r4 ->
-             (match r4 with
-              | TkWord "endif" :: r5 ->
-                parse_terms closing
-                  (StCase [[]; conseq] :: (rev cond @ acc)) r5
-              | TkWord "else" :: TkLBrace :: r5 ->
-                (match parse_terms true [] r5 with
-                 | PErr e -> PErr e
-                 | POk alt r6 ->
-                   (match r6 with
-                    | TkWord "endif" :: r7 ->
-                      parse_terms closing
-                        (StCase [alt; conseq] :: (rev cond @ acc)) r7
-                    | _ -> PErr "expected 'endif' closing this if"))
-              | TkWord "else" :: _ -> PErr "expected '{' after 'else'"
-              | _ -> PErr "expected 'else' or 'endif' after the 'then' block"))
-        | TkWord "then" :: _ -> PErr "expected '{' after 'then'"
-        | _ -> PErr "expected 'then' after the condition block of an if"))
-  | TkWord "if" :: _ ->
-    PErr "expected '{' after 'if': the condition is a block, as in \
-          if { 0 < } then { … } endif"
-
-  | TkWord w :: rest -> parse_terms closing (StWord w :: acc) rest
+  /// A word that names a macro invokes it; anything else is an ordinary word.
+  /// The expansion is spliced into the enclosing sequence, so a macro's output
+  /// composes exactly as if it had been written out by hand.
+  | TkWord w :: rest ->
+    (match lookup_macro macro_table w with
+     | None -> parse_terms closing (StWord w :: acc) rest
+     | Some p ->
+       (match parse_macro p rest with
+        | PErr e -> PErr e
+        | POk caps after ->
+          (match expand w caps with
+           | Inl e   -> PErr e
+           | Inr exp -> parse_terms closing (rev exp @ acc) after)))
   | TkDollar n :: rest -> parse_terms closing (StVar n :: acc) rest
   | TkLBrace :: rest ->
     (match parse_terms true [] rest with
      | PErr e -> PErr e
      | POk inner after -> parse_terms closing (StBlock inner :: acc) after)
   | t :: _ -> PErr ("unexpected " ^ render_token t ^ " in a term sequence")
+
+/// Run one macro's production: its fixed slots, then the keyed alternation.
+///
+/// The alternation reads the token in hand and consumes it — that is LL(1),
+/// not lookahead (D-30). With no keyed alternative matching, the error names
+/// the keys that would have, which is the whole diagnostic a missing `endif`
+/// needs.
+and parse_macro (p:mprod) (ts:list token)
+  : Tot (r:presult (list mcap) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases %[length ts; 1]) =
+  match parse_slots [] p.mp_pre ts with
+  | PErr e -> PErr e
+  | POk caps after ->
+    if Nil? p.mp_branches then POk caps after
+    else
+      let expected = "expected " ^ key_list p.mp_branches
+                     ^ " here, closing '" ^ p.mp_name ^ "'" in
+      (match after with
+       | TkWord w :: rest ->
+         (match lookup_branch p.mp_branches w with
+          | None   -> PErr expected
+          | Some b ->
+            (match parse_slots [] b.mb_slots rest with
+             | PErr e -> PErr e
+             | POk caps2 tail -> POk (caps @ (McWord w :: caps2)) tail))
+       | _ -> PErr expected)
+
+/// Consume one slot at a time. Each slot eats at least one token, so a macro
+/// cannot spin, and a `}` reached before the slots run out ends the enclosing
+/// block rather than being swallowed — macros cannot consume the brace.
+and parse_slots (acc:list mcap) (ss:list mslot) (ts:list token)
+  : Tot (r:presult (list mcap) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases %[length ts; 0]) =
+  match ss with
+  | [] -> POk (rev acc) ts
+  | MsBlock :: sr ->
+    (match ts with
+     | TkLBrace :: rest ->
+       (match parse_terms true [] rest with
+        | PErr e -> PErr e
+        | POk inner after -> parse_slots (McBlock inner :: acc) sr after)
+     | _ -> PErr "expected '{' opening a block here")
+  | MsWord :: sr ->
+    (match ts with
+     | TkWord w :: rest -> parse_slots (McWord w :: acc) sr rest
+     | _ -> PErr "expected a word here")
+  | MsKeyword k :: sr ->
+    (match ts with
+     | TkWord w :: rest ->
+       if w = k then parse_slots acc sr rest
+       else PErr ("expected '" ^ k ^ "', found '" ^ w ^ "'")
+     | _ -> PErr ("expected '" ^ k ^ "' here"))
 
 (* ------------------------------------------------------------------------ *)
 (* Declarations                                                             *)
