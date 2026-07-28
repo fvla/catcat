@@ -97,15 +97,23 @@ let cmp_i64 : srow = { pre = [i64_t; i64_t]; post = [bool_t] }
 let un_bool : srow = { pre = [bool_t]; post = [bool_t] }
 let bin_bool : srow = { pre = [bool_t; bool_t]; post = [bool_t] }
 
+/// Word names are free-form: any run of non-space, non-bracket characters. So
+/// the arithmetic and comparison words are spelled as operators (D-31), which
+/// is what D-16 was always asking for — `add` and `mul` were placeholders from
+/// before the lexer existed, not a naming decision.
+///
+/// `-` is a word while `-3` is a literal, because `int_of_run` requires at
+/// least one digit after the sign. `!=` is deliberately absent: `!` is the
+/// effect sigil, so it cannot begin a word.
 let prelude_nenv : nenv = [
-  { n_name = "add"; n_id = w_add; n_sig = bin_i64 };
-  { n_name = "sub"; n_id = w_sub; n_sig = bin_i64 };
-  { n_name = "mul"; n_id = w_mul; n_sig = bin_i64 };
-  { n_name = "div"; n_id = w_div; n_sig = bin_i64 };
-  { n_name = "mod"; n_id = w_mod; n_sig = bin_i64 };
-  { n_name = "lt";  n_id = w_lt;  n_sig = cmp_i64 };
-  { n_name = "le";  n_id = w_le;  n_sig = cmp_i64 };
-  { n_name = "eq";  n_id = w_eq;  n_sig = cmp_i64 };
+  { n_name = "+";   n_id = w_add; n_sig = bin_i64 };
+  { n_name = "-";   n_id = w_sub; n_sig = bin_i64 };
+  { n_name = "*";   n_id = w_mul; n_sig = bin_i64 };
+  { n_name = "/";   n_id = w_div; n_sig = bin_i64 };
+  { n_name = "%";   n_id = w_mod; n_sig = bin_i64 };
+  { n_name = "<";   n_id = w_lt;  n_sig = cmp_i64 };
+  { n_name = "<=";  n_id = w_le;  n_sig = cmp_i64 };
+  { n_name = "=";   n_id = w_eq;  n_sig = cmp_i64 };
   { n_name = "not"; n_id = w_not; n_sig = un_bool };
   { n_name = "and"; n_id = w_and; n_sig = bin_bool };
   { n_name = "or";  n_id = w_or;  n_sig = bin_bool };
@@ -153,28 +161,47 @@ let rec strip_prefix (p:list dtype) (l:list dtype)
 
 let fuel : nat = 1000000
 
+/// Typecheck an elaborated definition with M06 and, if it agrees, install it.
+///
+/// `declared` is `Some row` when the user wrote a signature and `None` when it
+/// was inferred. In the written case a disagreement is the user's error; in the
+/// inferred case it would be a bug in `infer_sig`, so the message says so
+/// rather than blaming the program.
+let install_def (s:session) (name:string) (declared:option srow) (row:srow) (t:term)
+  : Tot (session & string) =
+  let env = mk_wenv s.se_defs in
+  match infer env t with
+  | None -> (s, "error: " ^ name ^ " does not typecheck")
+  | Some (got, _) ->
+    if got <> row
+    then (match declared with
+          | Some _ -> (s, "error: " ^ name ^ " declares " ^ render_row row
+                          ^ " but its body has " ^ render_row got)
+          | None   -> (s, "internal error: inferred " ^ render_row row
+                          ^ " for " ^ name ^ " but M06 says " ^ render_row got))
+    else
+      let id = s.se_next in
+      let s' = { s with
+        se_nenv = ({ n_name = name; n_id = id; n_sig = row }) :: s.se_nenv;
+        se_defs = (id, row) :: s.se_defs;
+        se_dict = dict_extend s.se_dict id (WDef t);
+        se_next = id + 1 } in
+      (s', "defined " ^ name ^ " " ^ render_row row)
+
 let eval_decl (s:session) (d:sdecl) : Tot (session & string) =
   match d with
 
   | SdDefine name sg body ->
     (match elab_define s.se_nenv sg body with
-     | Inl e -> (s, "error: " ^ e)
-     | Inr (row, t) ->
-       let env = mk_wenv s.se_defs in
-       (match infer env t with
-        | None -> (s, "error: " ^ name ^ " does not typecheck")
-        | Some (got, _) ->
-          if got <> row
-          then (s, "error: " ^ name ^ " declares " ^ render_row row
-                   ^ " but its body has " ^ render_row got)
-          else
-            let id = s.se_next in
-            let s' = { s with
-              se_nenv = ({ n_name = name; n_id = id; n_sig = row }) :: s.se_nenv;
-              se_defs = (id, row) :: s.se_defs;
-              se_dict = dict_extend s.se_dict id (WDef t);
-              se_next = id + 1 } in
-            (s', "defined " ^ name ^ " " ^ render_row row)))
+     | Inl e         -> (s, "error: " ^ e)
+     | Inr (row, t)  -> install_def s name (Some row) row t)
+
+  /// The inferred form prints the signature it worked out, which is the same
+  /// text a language server would show inline (D01's tooling goal, N02 Q-11).
+  | SdDefineInfer name body ->
+    (match elab_define_infer s.se_nenv body with
+     | Inl e         -> (s, "error: " ^ e)
+     | Inr (row, t)  -> install_def s name None row t)
 
   | SdExpr body ->
     (match elab_expr s.se_nenv s.se_shape body with

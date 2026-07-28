@@ -93,7 +93,9 @@ and sterms_size (ts:list sterm) : Tot nat =
 
 type sdecl =
   /// `define name ( sig ) { body }`
-  | SdDefine : string -> ssig -> list sterm -> sdecl
+  | SdDefine      : string -> ssig -> list sterm -> sdecl
+  /// `define name { body }` — signature inferred from the body (D-31).
+  | SdDefineInfer : string -> list sterm -> sdecl
   /// A bare sequence of terms, evaluated against the current REPL stack.
   | SdExpr   : list sterm -> sdecl
 

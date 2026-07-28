@@ -35,26 +35,60 @@ no job. Also absent: terse Forth names like `@` and `."`. Words are not limited
 to 5–8 characters and should not read as though they were; `dup`, `swap`, `pop`,
 `rot` stay because they are genuinely idiomatic, but `fetch` beats `@`.
 
+**Word names are free-form.** Any run of characters that are neither whitespace
+nor bracket punctuation is a word, so **the arithmetic and comparison words are
+operators**: `+ - * / %` and `< <= =`, not `add`, `mul`, `lt`. The rule against
+terse names is about *unreadable* abbreviations, and `+` is not one of those —
+it is the most widely understood name a word can have.
+
+Two consequences of the lexer's rules, both intended:
+
+- `-` is a word but `-3` is a literal, because an integer needs at least one
+  digit after the sign. `3 - 4` subtracts; `3 -4 +` pushes a negative.
+- `!=` is unavailable, since `!` opens an effect sigil and so cannot begin a
+  word. Use `= not`, or name it.
+
 **Sigil rule:** the first character after a sigil should be alphanumeric. This
 keeps `$x`/`$*x` unambiguous and leaves room for future sigil prefixes without
 retrofitting the lexer.
 
 **Whitespace rule:** unlike Forth, brackets and quoting symbols are *not* words
 and do **not** require surrounding spaces. `{hypot dup *}` and `{ hypot dup * }`
-lex identically. The lexer treats `{ } ( ) [ ] :` — **and `--`** — as
-self-delimiting punctuation, so word boundaries fall around them automatically.
+lex identically. The lexer treats `{ } ( ) [ ] :` as self-delimiting
+punctuation, so word boundaries fall around them automatically.
 
-> `--` was added to that set after building the lexer. With only brackets
-> self-delimiting, `( i64--i64 )` lexed `i64--i64` as a single word and a
-> tightly-written signature failed to parse, while `{$x $x mul}` worked — a
-> surprising asymmetry, since both are structural punctuation. A *single* `-` is
-> unaffected, so `-5` still lexes as an integer literal and `pop-all` as one
-> word. See D-28.
+**`--` is an ordinary space-separated word** and is *not* in that set. Write
+`( i64 -- i64 )`; `( i64--i64 )` is one word and an error. This is consistent —
+everything inside a `( … )` is space-separated, and the arrow is no exception —
+and it is what keeps the scanner lookahead-free (§1.1). D-28 briefly went the
+other way and was reverted.
 
 This is a real divergence from Forth rather than a cosmetic one: in Forth the
 absence of such punctuation is what allows the reader to be redefined at will,
 and giving that up is the price of the fixed vocabulary that makes precise
 tooling possible.
+
+### 1.1 No lookahead, in the lexer or the parser
+
+A hard constraint, not an aspiration (D-30): **lexing and parsing each decide on
+the token in hand and never peek further.** The scanner is a plain DFA — every
+branch is a predicate on one character — and the parser is LL(1).
+
+Two reasons this is worth designing around rather than discovering later:
+
+- **Speed**, which is the stated motivation. A lookahead-free scanner needs no
+  buffer, no backtracking, and no restart, so incremental reparsing for the
+  language server is a local operation.
+- **It is the precondition for a planned standard-library feature**: verified
+  conversion of a left-recursion-free context-free grammar into a
+  recursive-descent parser. A language whose own grammar needs lookahead could
+  not be described by the tool it ships.
+
+This constraint is what settles the `--` question above. Making the arrow
+self-delimiting required the scanner to look at a *second* character to
+distinguish `--` from `-3` and from `pop-all` — the only lookahead anywhere in
+the lexer, introduced for one piece of punctuation. Requiring the space costs a
+keystroke and removes the exception.
 
 ---
 
@@ -85,6 +119,47 @@ in the rare case a signature must relate two rows.
 > produces silent bugs: the abandoned draft compared stacks from the head while
 > appending residuals at the tail, and the resulting confusion is visible in its
 > `compose_stack_functions`. State the convention at every boundary.
+
+### 2.1 Signatures are inferred
+
+**The signature is optional. `define sq { dup * }` infers `( i64 -- i64 )`.**
+Writing one is an assertion, checked against what the body actually does.
+
+This is nearly free in a concatenative language, and worth understanding why,
+because it is a genuine structural payoff rather than an implementation trick.
+Composition of programs *is* composition of signatures (M03), so inference is a
+single left-to-right walk with no constraint graph, no generalisation step, and
+no Hindley–Milner machinery. The algorithm is: model the stack; when the model
+runs dry, the body must be consuming another input, so invent a variable and
+record it. The variables invented, in order, are the inputs. Every word's
+signature is ground, so the only constraint that ever arises is
+`variable := concrete type` — the substitution is a flat map, and there is no
+unifier, no occurs check, and no union-find anywhere in it.
+
+**What inference cannot do, and why that is correct.** A body whose stack effect
+is genuinely polymorphic leaves a variable unconstrained:
+
+```
+define sq   { dup * }        -- ( i64 -- i64 )
+define pair { dup 1 + }      -- ( i64 -- i64 i64 )
+define cmp  { < }            -- ( i64 i64 -- bool )
+define bad  { dup }          -- rejected: nothing constrains the type
+```
+
+`bad` is not an inference failure. The core is monomorphic (D02 §5), so there is
+no signature to infer — the error asks for one to be written. When generics
+land, this is the point that changes.
+
+**Where signatures stay mandatory: inside an effect declaration.** An interface
+exists to fix signatures *before* any implementation, so there is nothing to
+infer from and inferring would invert the dependency. Nothing enforces this yet
+because effect syntax does not exist; it belongs with the D03 pass.
+
+**This is the input to the tooling story.** A stack language's central
+readability problem is that a word's effect on the stack is invisible at the
+call site. Since the checker computes that effect for every word whether or not
+it is written down, the language server can display it inline — the signature is
+always available, never stale, and costs nothing to keep. See N02 Q-11.
 
 ---
 

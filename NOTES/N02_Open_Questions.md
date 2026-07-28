@@ -63,6 +63,19 @@ in passing.
 *Cost of leaving open:* nothing today — the OCaml build is unaffected. It
 becomes blocking when P03 needs to self-host.
 
+**Q-11. Inline signature display in the editor.** (D-31)
+Every word's stack effect is now computed whether or not it is written down, so
+the language server can render it at the definition and at call sites — the
+direct answer to a stack language's central readability problem, and it cannot
+go stale because it is not a separate artifact.
+*Open part is presentation, not computation:* inlay hint vs. gutter vs.
+hover-only; whether to show inferred signatures on words that already declare
+one; and whether to show the *incremental* effect mid-body, which is the version
+that would actually help while writing.
+*Wants:* source spans in the lexer (E03's header notes they are absent), so a
+signature can be attached to a position.
+*Closes when:* P06 starts.
+
 **Q-09. Subset conformance is unchecked.**
 P02's first-order discipline (D-20) is maintained by review. A single accidental
 closure silently blocks self-hosting and no OCaml test catches it.

@@ -6,7 +6,7 @@ module E01_Lexer
 ///   Source text to a flat token list. No nesting, no lookahead — bracket
 ///   matching is the parser's job (E03).
 ///
-/// The vocabulary is fixed by D05 and deliberately small. Two properties of
+/// The vocabulary is fixed by D05 and deliberately small. Three properties of
 /// that design show up directly here:
 ///
 ///   * **Brackets are self-delimiting.** `{hypot dup *}` and `{ hypot dup * }`
@@ -16,6 +16,15 @@ module E01_Lexer
 ///   * **Sigils are lexical.** `$x`, `#T`, `!IO` are recognised by their first
 ///     character, so the parser never needs lookahead to know which region of
 ///     a signature it is in.
+///   * **Zero lookahead** (D-30). Every decision here is a predicate on the
+///     single character in hand: `is_space`, `is_delim`, `is_word_char`. `--`
+///     is an ordinary space-separated word, recognised *after* the run is
+///     complete by `classify_run`, not by peeking ahead at scan time. This is
+///     what keeps the scanner a plain DFA, which the planned verified
+///     CFG-to-recursive-descent generator needs.
+///
+/// Consequently everything inside a `( … )` signature must be space-separated,
+/// exactly like everything else there — `( i64 -- i64 )`, never `( i64--i64 )`.
 ///
 /// EXTRACTION DISCIPLINE
 ///   P03 follows the same first-order subset as P02 (see `R01_Runtime.fsti`):
@@ -32,9 +41,10 @@ open FStar.List.Tot
 type token =
   | TkWord   : string -> token
   | TkInt    : int -> token
-  /// `--`, the input/output separator inside a signature. Lexed as its own
-  /// token rather than a word so the parser cannot confuse it with a
-  /// user-defined word that happens to be named `--`.
+  /// `--`, the input/output separator inside a signature. An ordinary word run
+  /// that `classify_run` promotes to its own token, so the parser cannot
+  /// confuse it with a user-defined word. It must be space-separated; `--` is
+  /// therefore not available as a user word name.
   | TkArrow  : token
   | TkLBrace : token
   | TkRBrace : token

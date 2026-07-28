@@ -44,29 +44,18 @@ let int_of_run (cs:list C.char) : Tot (option int) =
 (* Scanning helpers                                                         *)
 (* ------------------------------------------------------------------------ *)
 
-/// Does the input begin with the signature arrow?
-///
-/// `--` is structural punctuation, so it terminates a word run the way a
-/// bracket does — otherwise `( i64--i64 )` would lex `i64--i64` as one word and
-/// a tightly-written signature would silently fail to parse. Extends D-15's
-/// self-delimiting rule from brackets to the arrow; see D-28.
-///
-/// A single `-` is unaffected, so `-5` still lexes as an integer and `pop-all`
-/// as one word.
-let starts_arrow (cs:list C.char) : Tot bool =
-  match cs with
-  | '-' :: '-' :: _ -> true
-  | _               -> false
-
 /// Consume a maximal run of word characters. The length refinement is what
 /// lets the main loop prove termination: the caller only enters here with a
 /// word character in hand, so the remainder is strictly shorter.
+///
+/// Note the test is a predicate on ONE character. That is the whole lookahead
+/// budget of this lexer: no state, no second character, no backtracking (D-30).
 let rec take_run (acc:list C.char) (cs:list C.char)
   : Tot (r:(list C.char & list C.char) { length (snd r) <= length cs })
         (decreases cs) =
   match cs with
   | []     -> (rev acc, [])
-  | c :: r -> if is_word_char c && not (starts_arrow cs)
+  | c :: r -> if is_word_char c
               then take_run (c :: acc) r
               else (rev acc, cs)
 
@@ -118,10 +107,6 @@ let rec lex_go (acc:list token) (cs:list C.char)
     else if c = '[' then lex_go (TkLBrack :: acc) r
     else if c = ']' then lex_go (TkRBrack :: acc) r
     else if c = ':' then lex_go (TkColon :: acc) r
-    else if starts_arrow cs then
-      (match r with
-       | _ :: r2 -> lex_go (TkArrow :: acc) r2
-       | []      -> Inl "impossible: arrow without a second character")
     else
       let (run, rest) = take_run [c] r in
       (match classify_run run with

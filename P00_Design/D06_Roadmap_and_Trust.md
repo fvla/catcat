@@ -184,12 +184,23 @@ the elaborator found two:
   unimplementable. The core gained `pick`/`roll` (D-29, D02 §7). Design review
   had not caught this; the first attempt to compile `$x` did, immediately.
 - **`--` was not self-delimiting**, so `( i64--i64 )` lexed as one word while
-  `{$x $x mul}` worked (D-28).
+  `{$x $x mul}` worked. This was first "fixed" by making the arrow
+  self-delimiting, then **reverted** once D-30 was written down: that special
+  case was the lexer's only lookahead, and the arrow being exempt from the
+  space rule was the actual inconsistency. `--` is a space-separated word
+  (D-28).
 
-Implemented: literals, words, `define` with signatures, named parameters with
-the suffix rule, the shuffles instantiated from the compile-time shape,
-`Box[]`/`Rc[]`, `\` comments. Not yet: macros, modules, generics, effects and
-handlers, sums and classes, strings, `let`.
+**Signatures are now inferred** (D-31, D05 §2.1) — `define sq { dup * }` yields
+`( i64 -- i64 )`, and a written signature is checked as an assertion. Nearly
+free, because composition of programs is composition of signatures: one walk, a
+flat substitution, no unifier. This is also the supply side of the tooling goal
+— the checker knows every word's stack effect whether or not it is written, so
+the editor can always show it (N02 Q-11).
+
+Implemented: literals, operator-named words (D-32), `define` with or without a
+signature, named parameters with the suffix rule, the shuffles instantiated from
+the compile-time shape, `Box[]`/`Rc[]`, `\` comments. Not yet: macros, modules,
+generics, effects and handlers, sums and classes, strings, `let`.
 
 #### Recursive types: done
 

@@ -44,8 +44,11 @@ within them likewise. Proofs read top to bottom; so does this project.
 | `P01_Specification-old/` | abandoned first attempt | **dead, do not read for guidance** |
 | `INITIAL_DRAFT_1.md` | original vision doc | historical |
 
-`P01_Specification-old/` and `INITIAL_DRAFT_1.md` are untracked in git. Do not
-delete them; that would be unrecoverable.
+`P01_Specification-old/` and `INITIAL_DRAFT_1.md` are now committed, so deleting
+them is recoverable — but still don't, without being asked. Neither is a guide.
+
+**Commit as you go.** The user asked for this; do not leave a session's work
+uncommitted. `make verify` must pass first.
 
 Planned, not yet created: `P03_Elaboration/`, `P04_Compiler/`, `P05_Backend/`,
 `P06_Tooling/`.
@@ -70,7 +73,7 @@ the spec produces a working evaluator; `make catcat` gives you the REPL, which
 also runs non-interactively for scripted tests:
 
 ```
-./_build/default/bin/catcat.exe '2 3 add' 'define sq($x:i64--i64){$x $x mul}' '6 sq'
+./_build/default/bin/catcat.exe '2 3 +' 'define sq { dup * }' '6 sq'
 ```
 
 Planned, not yet created: `P04_Compiler/`, `P05_Backend/`, `P06_Tooling/`.
@@ -78,6 +81,14 @@ Planned, not yet created: `P04_Compiler/`, `P05_Backend/`, `P06_Tooling/`.
 ---
 
 ## Conventions that will bite you
+
+**No lookahead, lexer or parser** (D-30). The scanner is a plain DFA — every
+branch is a predicate on the one character in hand — and the parser is LL(1).
+This is a hard constraint: the planned verified CFG-to-recursive-descent
+generator cannot describe a grammar that needs lookahead. Any syntax that needs
+a second token to disambiguate is rejected on these grounds. It is what killed
+the self-delimiting `--` (D-28, reverted), so check here before "fixing" a
+lexing surprise with a special case.
 
 **Stack order.** The head of a core index list is the TOP of the stack. Surface
 signatures use the Forth convention and read bottom-to-top, top on the RIGHT.

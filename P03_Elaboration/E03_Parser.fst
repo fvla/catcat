@@ -62,6 +62,12 @@ let rec parse_inputs (acc:list sparam) (ts:list token)
   match ts with
   | [] -> PErr "expected '--' in signature, found end of input"
   | TkArrow :: rest -> POk (rev acc) rest
+  /// The signature ended without an arrow. Overwhelmingly this means `--` was
+  /// written against a neighbour — `( i64--i64 )` — which lexes as one word,
+  /// since `--` is an ordinary space-separated word (D-28). Say so.
+  | TkRParen :: _ ->
+    PErr "expected '--' in this signature; it must be surrounded by spaces, \
+          as in ( i64 -- i64 )"
   | TkDollar n :: TkColon :: rest ->
     (match parse_ty rest with
      | PErr e -> PErr e
@@ -132,7 +138,11 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
 (* Declarations                                                             *)
 (* ------------------------------------------------------------------------ *)
 
-/// `define name ( sig ) { body }`, with `define` already consumed.
+/// `define name ( sig ) { body }`, or `define name { body }` with the
+/// signature inferred (D-31). `define` is already consumed.
+///
+/// The choice between the two rests on the single token after the name, so
+/// this stays LL(1) — no backtracking, no second-token peek (D-30).
 let parse_define (ts:list token) : Tot (presult sdecl) =
   match ts with
   | TkWord name :: TkLParen :: rest ->
@@ -145,8 +155,12 @@ let parse_define (ts:list token) : Tot (presult sdecl) =
            | PErr e -> PErr e
            | POk body tail -> POk (SdDefine name sg body) tail)
         | _ -> PErr ("expected '{' opening the body of " ^ name)))
+  | TkWord name :: TkLBrace :: body_ts ->
+    (match parse_terms true [] body_ts with
+     | PErr e -> PErr e
+     | POk body tail -> POk (SdDefineInfer name body) tail)
   | TkWord name :: _ ->
-    PErr ("expected '(' and a signature after 'define " ^ name ^ "'")
+    PErr ("expected '(' or '{' after 'define " ^ name ^ "'")
   | _ -> PErr "expected a name after 'define'"
 
 /// One declaration. A leading `define` starts a definition; anything else is

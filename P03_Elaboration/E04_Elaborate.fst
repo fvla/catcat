@@ -303,6 +303,193 @@ let rec drop_named (fuel:nat) (sh:shape) (acc:list term)
                 (TStack (SPop d) :: TStack (SRoll above d) :: acc)
 
 (* ------------------------------------------------------------------------ *)
+(* Signature inference                                                      *)
+(* ------------------------------------------------------------------------ *)
+
+/// A `define` with no `( … )` has its signature inferred from its body.
+///
+/// WHY THIS IS EASY HERE
+///   Concatenative composition *is* signature composition (M03), so inference
+///   needs no constraint solver and no generalisation step. Walk the body once,
+///   modelling the stack; whenever the model runs dry, invent a variable and
+///   record that the word must have consumed one more input. The variables so
+///   invented, in the order they were pulled, are exactly the inferred `pre`.
+///
+///   Every word's signature is ground, so the only constraint that ever arises
+///   is `variable := concrete type`. No variable is ever equated with another
+///   variable, so the substitution is a flat map — no union-find, no occurs
+///   check, no unifier.
+///
+/// TWO PASSES, DELIBERATELY
+///   This pass computes types only; it emits no terms. The concrete elaborator
+///   above then runs again over the same body with the inferred inputs in hand.
+///   The alternative — emitting terms containing unresolved variables and
+///   substituting afterwards — would mean a second, near-duplicate term type.
+///   Running the tested elaborator twice is cheaper in code and in risk, and a
+///   definition body is small.
+///
+/// WHAT IT CANNOT DO
+///   A body whose stack effect is genuinely polymorphic (`{ dup }`, `{ swap }`)
+///   leaves a variable unconstrained. That is not a failure of the algorithm:
+///   the core is monomorphic (D02 §5), so there is no signature to infer. The
+///   error says to write one out.
+///
+///   Per D01, inference is also *not* intended for words declared inside an
+///   effect — an interface's whole purpose is to fix signatures ahead of any
+///   implementation, so there is nothing to infer from. Nothing enforces that
+///   yet because effect syntax does not exist; it belongs with D03's pass.
+
+/// A modelled slot type: known, or a variable standing for something the body
+/// pulls from beneath its own inputs.
+type mty =
+  | MV : nat -> mty
+  | MT : dtype -> mty
+
+type mslot = { m_name : option string; m_ty : mty }
+
+noeq type ist = {
+  /// The modelled stack, top-first.
+  i_above : list mslot;
+  /// Variables pulled from beneath, in pull order — which is top-first, since
+  /// the shallowest is pulled first. This becomes `pre`.
+  i_below : list mty;
+  i_sub   : list (nat & dtype);
+  i_next  : nat;
+}
+
+let ist0 : ist = { i_above = []; i_below = []; i_sub = []; i_next = 0 }
+
+/// Take the top slot, inventing an input if the model has run dry.
+let ipop (st:ist) : Tot (mslot & ist) =
+  match st.i_above with
+  | s :: r -> (s, { st with i_above = r })
+  | []     ->
+    let v = st.i_next in
+    ({ m_name = None; m_ty = MV v },
+     { st with i_below = st.i_below @ [MV v]; i_next = v + 1 })
+
+let ipush (m:mty) (st:ist) : Tot ist =
+  { st with i_above = { m_name = None; m_ty = m } :: st.i_above }
+
+let iunify (w:string) (st:ist) (m:mty) (d:dtype) : Tot (either string ist) =
+  let clash = Inl (w ^ ": this input does not match what the body puts there") in
+  match m with
+  | MT d' -> if d' = d then Inr st else clash
+  | MV v  -> (match assoc v st.i_sub with
+              | Some d' -> if d' = d then Inr st else clash
+              | None    -> Inr ({ st with i_sub = (v, d) :: st.i_sub }))
+
+/// `pre` is top-first and `ipop` yields top-first, so this consumes in order.
+let rec iapply_pre (w:string) (st:ist) (pre:list dtype)
+  : Tot (either string ist) (decreases pre) =
+  match pre with
+  | []     -> Inr st
+  | d :: r -> let (s, st1) = ipop st in
+              (match iunify w st1 s.m_ty d with
+               | Inl e   -> Inl e
+               | Inr st2 -> iapply_pre w st2 r)
+
+/// `post` is top-first, so its head must be pushed last.
+let rec ipush_post (post:list dtype) (st:ist) : Tot ist (decreases post) =
+  match post with
+  | []     -> st
+  | d :: r -> ipush (MT d) (ipush_post r st)
+
+let rec ifind (x:string) (i:nat) (sh:list mslot)
+  : Tot (option (nat & mty)) (decreases sh) =
+  match sh with
+  | []     -> None
+  | s :: r -> (match s.m_name with
+               | Some y -> if y = x then Some (i, s.m_ty) else ifind x (i + 1) r
+               | None   -> ifind x (i + 1) r)
+
+let rec iremove_at (i:nat) (sh:list mslot) : Tot (list mslot) (decreases sh) =
+  match sh with
+  | []     -> []
+  | s :: r -> if i = 0 then r else s :: iremove_at (i - 1) r
+
+/// Mirrors `elab_terms` slot-for-slot, minus term emission. Capability checks
+/// are deliberately absent: this pass decides types, and pass 2 — which sees
+/// concrete ones — is where `Copy`/`Drop` violations get reported.
+let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
+  : Tot (either string ist) (decreases ts) =
+  match ts with
+  | [] -> Inr st
+  | t :: rest ->
+    (match t with
+     | StInt _ -> infer_terms env cs (ipush (MT (TPrim PI64)) st) rest
+
+     | StVar x ->
+       (match ifind x 0 st.i_above with
+        | None -> Inl ("unbound local $" ^ x)
+        | Some (i, m) ->
+          let top = { m_name = None; m_ty = m } in
+          let above' = if lookup_count cs x = 1
+                       then top :: iremove_at i st.i_above
+                       else top :: st.i_above in
+          infer_terms env cs ({ st with i_above = above' }) rest)
+
+     | StWord "dup" ->
+       let (s, st1) = ipop st in
+       infer_terms env cs
+         ({ st1 with i_above = { m_name = None; m_ty = s.m_ty } :: s :: st1.i_above })
+         rest
+
+     | StWord "pop" ->
+       let (_, st1) = ipop st in
+       infer_terms env cs st1 rest
+
+     | StWord "swap" ->
+       let (a, st1) = ipop st in
+       let (b, st2) = ipop st1 in
+       infer_terms env cs ({ st2 with i_above = b :: a :: st2.i_above }) rest
+
+     | StWord w ->
+       (match lookup_name env w with
+        | None -> Inl ("unknown word: " ^ w)
+        | Some n ->
+          (match iapply_pre w st n.n_sig.pre with
+           | Inl e   -> Inl e
+           | Inr st1 -> infer_terms env cs (ipush_post n.n_sig.post st1) rest))
+
+     | StBlock _ ->
+       Inl "a { } block is only meaningful as a definition body in this pass")
+
+let rec iresolve (su:list (nat & dtype)) (ms:list mty)
+  : Tot (either string (list dtype)) (decreases ms) =
+  match ms with
+  | []     -> Inr []
+  | m :: r ->
+    let d0 = (match m with MT d -> Some d | MV v -> assoc v su) in
+    (match d0 with
+     | None   -> Inl "cannot infer this signature: a stack slot is never \
+                      constrained to a concrete type, so the body is \
+                      polymorphic and the core is not; write the signature out"
+     | Some d -> (match iresolve su r with
+                  | Inl e  -> Inl e
+                  | Inr ds -> Inr (d :: ds)))
+
+/// Named slots surviving the body are popped by `drop_named`, so they are not
+/// outputs.
+let rec ianon (sh:list mslot) : Tot (list mty) (decreases sh) =
+  match sh with
+  | []     -> []
+  | s :: r -> (match s.m_name with
+               | Some _ -> ianon r
+               | None   -> s.m_ty :: ianon r)
+
+let infer_sig (env:nenv) (body:list sterm) : Tot (either string srow) =
+  match infer_terms env [] ist0 body with
+  | Inl e -> Inl e
+  | Inr st ->
+    (match iresolve st.i_sub st.i_below with
+     | Inl e   -> Inl e
+     | Inr pre ->
+       (match iresolve st.i_sub (ianon st.i_above) with
+        | Inl e    -> Inl e
+        | Inr post -> Inr ({ pre = pre; post = post })))
+
+(* ------------------------------------------------------------------------ *)
 (* Declarations                                                             *)
 (* ------------------------------------------------------------------------ *)
 
@@ -320,6 +507,19 @@ let elab_define (env:nenv) (sg:ssig) (body:list sterm)
        (match drop_named (length sh1) sh1 [] with
         | Inl e -> Inl e
         | Inr (_, ts2) -> Inr (row, seq_of (ts1 @ ts2))))
+
+/// Elaborate a definition with no written signature: infer one, then elaborate
+/// the body against it with the ordinary concrete pass. There are no named
+/// parameters in this form — naming happens in a signature — so the entry shape
+/// is anonymous and no end-of-body drop is needed.
+let elab_define_infer (env:nenv) (body:list sterm)
+  : Tot (either string (srow & term)) =
+  match infer_sig env body with
+  | Inl e -> Inl e
+  | Inr row ->
+    (match elab_terms env [] (anon_slots row.pre) [] body with
+     | Inl e       -> Inl e
+     | Inr (_, ts) -> Inr (row, seq_of ts))
 
 /// Elaborate a bare expression against a known incoming stack shape.
 let elab_expr (env:nenv) (incoming:list dtype) (body:list sterm)

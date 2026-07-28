@@ -159,13 +159,28 @@ problem. An environment is needed only to unfold a `TName`, which typechecking
 new machinery.
 *Acknowledged inefficient* — every recursive node is a heap cell. Optimize later.
 
-**D-28. `--` is self-delimiting, like the brackets.** D-15 originally made only
-`{ } ( ) [ ] :` self-delimiting.
-*Why the change:* found by building the lexer. With brackets alone,
-`( i64--i64 )` lexed `i64--i64` as one word, so a tightly-written signature
-failed to parse while `{$x $x mul}` worked. Both are structural punctuation;
-the asymmetry was accidental. A *single* `-` is unaffected, so `-5` is still an
-integer literal and `pop-all` still one word.
+**D-28. ~~`--` is self-delimiting, like the brackets.~~ REVERTED — `--` is an
+ordinary space-separated word.** Only `{ } ( ) [ ] :` are self-delimiting, as
+D-15 originally had it.
+
+*What happened.* Building the lexer showed `( i64--i64 )` lexing `i64--i64` as
+one word, and the reflex was to widen D-15 to cover the arrow. That was the
+wrong fix, for two reasons that only became visible once D-30 was stated:
+
+- **It was the lexer's only lookahead.** Distinguishing `--` from `-3` and from
+  `pop-all` needs a *second* character. Every other decision in the scanner is
+  a predicate on the one character in hand, so this one exception cost the
+  DFA property for a single piece of punctuation.
+- **It was the inconsistency, not the fix for one.** Everything else inside a
+  `( … )` is space-separated. The arrow being an exception is the surprise;
+  requiring the space removes it.
+
+*Now:* write `( i64 -- i64 )`. `( i64--i64 )` is a single word and an error,
+with a message that says so. `--` is therefore not available as a user word
+name — the one cost, and a trivial one.
+
+*Generalisable:* the first fix for a lexing surprise is usually to add a special
+case. Check whether the surprise is the special case you already added.
 
 **D-29. `pick` and `roll` added to the core.** `SPick above d` copies from
 depth `|above|`, `SRoll above d` moves from it.
@@ -213,6 +228,58 @@ it directly means compaction and lost fidelity.
 
 *Not a capability judgment* — all three Sonnet workers produced correct work.
 See the `delegate` skill for what would justify re-enabling it.
+
+## Lexing, naming, inference
+
+**D-30. No lookahead, in the lexer OR the parser.** The scanner is a plain DFA —
+every branch is a predicate on the single character in hand — and the parser is
+LL(1). A hard constraint on the grammar, not a property of the current
+implementation.
+*Why, in order of weight:*
+1. **It is the precondition for a planned standard-library feature**: verified
+   conversion of a left-recursion-free CFG into a recursive-descent parser. A
+   language whose own grammar needed lookahead could not be described by the
+   tool it ships. This is the reason that actually binds.
+2. **Speed.** No buffer, no backtracking, no restart, so incremental reparsing
+   for the language server is local.
+*Consequence:* this is what decided D-28. Any future syntax proposal that needs
+a second token to disambiguate is rejected on these grounds, not debated on
+taste.
+
+**D-31. Signatures are inferred; writing one is an assertion.**
+`define sq { dup * }` yields `( i64 -- i64 )`. `define sq ( i64 -- i64 ) { … }`
+still works and is checked against the body.
+*Why it is nearly free:* concatenative composition **is** signature composition
+(M03), so inference is one left-to-right walk — no constraint graph, no
+generalisation, no Hindley–Milner. Model the stack; when the model runs dry the
+body must be consuming another input, so invent a variable. Every word's
+signature is ground, so the only constraint form is `variable := concrete type`:
+flat map, no unifier, no occurs check, no union-find.
+*Implementation (E04):* **two passes.** Pass 1 computes types and emits nothing;
+pass 2 is the existing concrete elaborator, re-run with the inferred inputs in
+hand. The alternative — emitting terms over unresolved variables and
+substituting after — needs a second near-duplicate term type. Running a tested
+pass twice over a definition body is cheaper in code and in risk.
+*Limits, and why they are correct:* `{ dup }` is rejected because nothing
+constrains the type. That is not an inference failure — the core is monomorphic
+(D02 §5), so there is no signature to infer. Generics are what change this.
+*Mandatory where inference is meaningless:* inside an effect declaration. An
+interface fixes signatures before any implementation exists, so there is nothing
+to infer from. Unenforced until effect syntax exists.
+*This feeds the tooling goal.* The checker computes every word's stack effect
+whether or not it is written, so a language server can show it inline, never
+stale. See N02 Q-11.
+
+**D-32. Arithmetic and comparison words are operators**: `+ - * / %`, `< <= =`.
+Not `add`, `mul`, `lt` — those were placeholders from before the lexer existed.
+*Consistent with D-16*, which bans *unreadable* abbreviations like `@` and `."`;
+`+` is the most widely understood name a word can have. Word names are any run
+of non-space, non-bracket characters, so this needed no lexer change.
+*Two edges:* `-` is a word while `-3` is a literal, since an integer needs a
+digit after the sign. `!=` is unavailable because `!` opens an effect sigil;
+write `= not`.
+
+---
 
 **D-26. Wrapping unsafe primitives into the linear system is a recurring
 theme.** `Box` and `Rc` are the first instance and will not be the last; expect
