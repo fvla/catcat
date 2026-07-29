@@ -368,6 +368,72 @@ name, and neither the lexer nor `E04` grows a case. Until now there was no way
 to write a `bool` at all, so `and`/`or`/`not` were reachable only through a
 comparison.
 
+## Effects and handlers
+
+**D-36. A handler never captures a continuation. It is a stateful object.**
+An operation call runs an implementation, which RETURNS. `M05.THandle` carries
+a state segment and an initialiser; the state is threaded through each
+implementation's own signature, types preserved. A stateful handler is
+therefore literally D03 §3's `class … over ( … )` — D-01 confirmed a third
+time, and one construct fewer than a separate class feature would need.
+*Why:* continuations must not be a runtime construct in the compiled language.
+Everything a resume-exactly-once handler can do is expressible by returning,
+and the object model is what the design already wanted for classes.
+*Reentrancy does not need capture.* `R02.step` runs an implementation with the
+`KHandler` frame still installed, so operations the implementation itself
+performs reach the same handler. That is the whole of "every effect is
+reentrant" (D03 §2) and it costs nothing.
+*Consequences:* `M06.infer_impls` types an implementation as an ordinary
+program; N02 Q-02 closes by decision, since no handler holds a continuation and
+there is nothing extra to type; and D03 §2's paragraph about running the
+continuation "zero, once, or many times" is wrong and gets rewritten.
+*What is given up:* nondeterminism where one choice makes the rest of the
+enclosing program run more than once. A free-list-monad effect is still
+available with the multiplicity **reified as a value** — an operation returning
+a list, or one whose alternatives are delimited blocks the handler schedules.
+That is the form that survives compilation to a state machine.
+
+**D-46. Handler state sits on TOP of the operation's arguments.** An
+implementation of `o` is typed at `{ pre = st @ o.op_pre; post = st @ o.op_post }`,
+so in surface order it reads `( args… state -- results… state )`.
+*Why:* not a preference. The reference machine splices the state in at the
+moment of the call, and the dictionary records only which effect an operation
+belongs to, not its arity — so the top is the only position reachable without
+adding arity to `R01.rword`. It reads correctly anyway: the state is the
+receiver, and a receiver is pushed last, so `counter tick` is the natural
+spelling. A stateless handler is `st = []` and needs no separate rule.
+
+**D-47. On exit, a handler leaves its final state on the stack.**
+`THandle`'s signature is `{ pre = body.pre; post = st @ body.post }`.
+*Why:* the handler is the object, so the object outlives the block. Discarding
+the state instead would require `CDrop` and would silently throw away the
+result of whatever the state was accumulating — which for a counter or a log is
+the entire point of having run it.
+
+**D-48. Re-entering a handler while its own state is lent out is an error.**
+`R02` blanks the frame's state for the duration of an implementation, and an
+operation reaching that frame meanwhile gets
+`STUCK: handler re-entered while its own state is in use`.
+*Why:* the alternative is serving a stale copy, which silently forks the state.
+This is the aliasing rule a linear language ought to enforce statically — it is
+`RefCell`'s dynamic borrow check, with the same justification and the same
+admission that a static version would be better. Recorded as an open question
+rather than pretended away.
+
+**D-38. `effect` and `handle` are parser built-ins, not macros.** They need
+sub-grammars — a block of `op { … }` pairs is not a term list — and the macro
+slot vocabulary should not be stretched to cover them before it has been
+exercised on the constructs it already fits.
+
+**D-39. Coroutines and generators come from staging into a state machine**,
+never from a runtime continuation. Resume points are reified as data at
+elaboration time; resuming is a call that switches on that state, the strategy
+Rust uses for `async`.
+*Why:* it keeps D02 §6 (no runtime function values) intact and puts control
+flow under `specialize`, where D04 already puts everything else staged. It is
+also why this work waits on the static-`with` substitution pass — attempting it
+first would mean building that pass twice.
+
 ## Inspection
 
 **D-43. `locate` decompiles the core term; no source text is retained.**

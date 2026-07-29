@@ -158,18 +158,20 @@ let rec infer (env:wenv) (t:term)
           | None -> None)
 
   /// Handling discharges `eff` from the body's row and adds whatever the
-  /// implementations themselves need.
+  /// initialiser and the implementations themselves need.
   ///
-  /// NOTE: implementations are checked against the operation's declared
-  /// signature, which is the correct rule for interface/class methods and for
-  /// any handler that resumes exactly once. Handlers that capture and reuse
-  /// the continuation explicitly need the continuation in their signature;
-  /// that refinement belongs with the deep-handler semantics in M10 and is
-  /// deliberately not attempted here.
-  | THandle eff impls body ->
-    (match infer env body, infer_impls env eff impls with
-     | Some (s, row), Some hrow ->
-       Some (s, row_union (row_remove eff row) hrow)
+  /// THE STATE IS THE WHOLE OF THE RULE (D-36). `init` must be exactly
+  /// `( -- st )`; each implementation is checked with `st` framed on top of the
+  /// operation's declared signature; and the handler leaves `st` behind when
+  /// the body finishes. There is no continuation anywhere in this rule, which
+  /// is the point — an implementation is an ordinary program that returns, so
+  /// it is typed like one. `st = []` recovers the stateless case exactly.
+  | THandle eff st init impls body ->
+    (match infer env init, infer env body, infer_impls env eff st impls with
+     | Some (si, ei), Some (s, row), Some hrow ->
+       if si <> { pre = []; post = st } then None
+       else Some ({ pre = s.pre; post = st @ s.post },
+                  row_union (row_remove eff row) (row_union ei hrow))
      | _ -> None)
 
   /// Specialization keeps the signature and drops the static effects. The
@@ -241,17 +243,26 @@ and infer_branches (env:wenv) (variants:list seg) (branches:list term)
      | _ -> None)
   | _ -> None
 
-and infer_impls (env:wenv) (eff:eff_id) (impls:list (op_id & term))
+/// Each implementation is checked at the operation's declared signature with
+/// the handler's state segment framed ON TOP: `st @ op_pre -- st @ op_post`.
+/// "State types preserved" is exactly that framing, and it is what makes the
+/// state usable without any of it appearing in the effect's declaration.
+///
+/// The operation must belong to `eff`. It need not be the case that every
+/// operation of `eff` is implemented — an unimplemented one is not an error,
+/// it forwards to the next handler outward, which is what `R02.find_handler`
+/// already does and what makes partial overriding of a Dictionary possible.
+and infer_impls (env:wenv) (eff:eff_id) (st:seg) (impls:list (op_id & term))
   : Tot (option erow) (decreases %[impls_size impls; 1]) =
   match impls with
   | [] -> Some pure_row
   | (op, body) :: rest ->
-    (match infer env body, infer_impls env eff rest with
+    (match infer env body, infer_impls env eff st rest with
      | Some (s, ei), Some er ->
        let osig = op_of env.w_ops op in
        if eff_of env.w_ops op = eff
-          && s.pre = osig.op_pre
-          && s.post = osig.op_post
+          && s.pre = st @ osig.op_pre
+          && s.post = st @ osig.op_post
        then Some (row_union ei er)
        else None
      | _ -> None)

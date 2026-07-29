@@ -8,11 +8,19 @@ module M10_Handlers
 /// distinguished only by when the handler is resolved and whether it is
 /// erased. Every definition below is shared by all of them.
 ///
-/// Handlers are DEEP: the implementation of an operation receives the rest of
-/// the computation and may run it zero, once, or many times. The draft's
-/// requirement that "every effect is reentrant" is exactly deep-handler
-/// semantics, so it costs nothing extra -- it is what the free monad in M04
-/// gives by default.
+/// HANDLERS DO NOT CAPTURE CONTINUATIONS (D-36). An operation call runs an
+/// implementation, which returns; the handler carries state threaded through
+/// its own implementations' signatures. "Every effect is reentrant" is the
+/// installed-frame property -- `R02.step` runs an implementation with the
+/// handler frame still in the continuation -- not deep-handler semantics.
+///
+/// The `op_impl` below is still the DEEP shape, taking the continuation. It is
+/// the one place in the project that has not caught up with D-36 yet, because
+/// it is only reachable from `handle`, which is `assume val`. Narrowing it to
+/// `vstack o.op_pre -> free env a` and adding the state segment to `handler`
+/// is what the definition of `handle` will require; M06's `THandle` rule and
+/// R02's machine already work the corrected way, so this is a gap in the
+/// denotational side alone.
 ///
 /// STATUS: skeleton. Types are real; `handle` is declared, not defined.
 

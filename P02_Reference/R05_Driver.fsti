@@ -77,6 +77,11 @@ val demo_dict : rdict
 /// operation escaping to the top level. Exercises the Dictionary walk of
 /// D04 2 and shows both handled and unhandled outcomes.
 val ex_handled   : term
+
+/// A stateful handler: `ask` returns a running count and leaves it
+/// incremented. The state lives in the handler frame and is threaded through
+/// the implementation's own signature (D-36) — no continuation is captured.
+val ex_stateful  : term
 val ex_unhandled : term
 
 /// `List[i64]` built as `[7, 9]`, from the inside out via `TRoll`/`TBoxNew`.

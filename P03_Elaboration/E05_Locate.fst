@@ -179,9 +179,12 @@ let rec show_items (e:nenv) (ts:list term)
 
   | TCase _ bs :: rest ->
     cons_sp ("case" ^ show_branches e bs) (show_items e rest)
-  | THandle eff impls body :: rest ->
-    cons_sp ("handle !" ^ string_of_int eff ^ " {" ^ show_impls e impls
-             ^ " } " ^ braces (show_items e [body]))
+  | THandle eff st init impls body :: rest ->
+    cons_sp ("handle !" ^ string_of_int eff
+             ^ " over ( " ^ render_tys (rev st) ^ " )"
+             ^ " init " ^ braces (show_items e [init])
+             ^ " {" ^ show_impls e impls ^ " } "
+             ^ braces (show_items e [body]))
             (show_items e rest)
   | TSpecialize body :: rest ->
     cons_sp ("specialize " ^ braces (show_items e [body])) (show_items e rest)

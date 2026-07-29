@@ -96,9 +96,28 @@ let op_ask  : op_id  = 200
 
 let demo_dict : rdict = dict_extend prelude op_ask (WOp eff_ask)
 
+/// A STATELESS handler: `st = []`, so the initialiser is `TNil` and the
+/// implementation is typed at the operation's own signature. The degenerate
+/// case needs no special rule anywhere.
 let ex_handled : term =
-  THandle eff_ask [(op_ask, int_lit 5)]
+  THandle eff_ask [] TNil [(op_ask, int_lit 5)]
     (cat [TWord op_ask; int_lit 10; TWord w_mul])
+
+/// A STATEFUL handler, which is the shape D-36 is about: `ask` returns the
+/// running count and leaves the count incremented, and nothing captures a
+/// continuation to do it.
+///
+/// The implementation is `( state -- result state )` in surface order, so with
+/// the state on top: `dup 1 +` takes `[s]` to `[s+1; s]` -- new state on top,
+/// the returned value beneath. Reading it as a method on an object, the state
+/// is the receiver and it is pushed last.
+///
+/// `ask ask +` therefore evaluates `0 + 1 = 1`, and the final state `2` is left
+/// beneath it when the handler exits.
+let ex_stateful : term =
+  THandle eff_ask [TPrim PI64] (int_lit 0)
+    [(op_ask, cat [TStack (SDup (TPrim PI64)); int_lit 1; TWord w_add])]
+    (cat [TWord op_ask; TWord op_ask; TWord w_add])
 
 let ex_unhandled : term =
   cat [int_lit 1; TWord op_ask]
@@ -134,6 +153,7 @@ let examples : list (string & term) = [
   ("counter",   ex_counter);
   ("sum",       ex_sum);
   ("handled",   ex_handled);
+  ("stateful",  ex_stateful);
   ("unhandled", ex_unhandled);
   ("list",      ex_list);
 ]

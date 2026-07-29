@@ -14,12 +14,25 @@ parameterised pass with a retain-indices debug mode.
 be needed by the compiler anyway.
 *Cost of leaving open:* low now, high if discovered during P06.
 
-**Q-02. Deep-handler typing with explicit continuations.**
-M06's `THandle` rule checks implementations against the operation's declared
-signature. Correct for interface/class methods and handlers that resume exactly
-once; insufficient for handlers that capture and reuse the continuation, which
-need it in their signature.
-*Closes when:* M10's semantics are written.
+**Q-02. Deep-handler typing with explicit continuations.** — **CLOSED** by
+decision (D-36). No handler captures a continuation, so there is nothing extra
+to type. `M06.THandle` checks implementations against the operation's declared
+signature framed by the handler's state, which is now the complete rule rather
+than a rule that covers the easy cases.
+
+**Q-12. Handler state aliasing is checked at runtime, not statically.**
+`R02` blanks a handler frame's state while an implementation runs, and an
+operation that reaches the same frame meanwhile gets stuck (D-48). That is a
+dynamic borrow check in a language whose whole linearity story is static.
+*Found by:* implementing stateful handlers — the case falls straight out of
+"the state is lent to the implementation".
+*What a static rule would need:* the effect row of an implementation would have
+to exclude the effect its own handler handles, which is expressible in the row
+system as it stands. It is not obviously the right rule — mutual recursion
+between two operations of the same effect is a legitimate thing to want, and it
+needs the state passed along rather than re-borrowed.
+*Cost of leaving open:* a program that does this fails loudly rather than
+silently, which is the acceptable direction.
 
 **Q-03. Borrowing.**
 Reading through an `Rc` currently requires a `Copy` payload (`TRcRead`). Reading

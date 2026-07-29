@@ -39,16 +39,46 @@ A **handler** supplies implementations. One record type
 
 ```fstar
 noeq type handler (env:sig_env) (eff:eff_id) (a:seg) = {
-  h_ops : op:op_id -> op_impl env (env.op_of op) a;
+  h_ops : op:op_id -> op_impl env (op_of env op) a;
   h_ret : vstack a -> free env a;
 }
 ```
 
-Handlers are **deep**: an implementation receives the operation's arguments *and
-the continuation* expecting its results, and may run that continuation zero,
-once, or many times. The draft's requirement that "every effect is reentrant" is
-exactly deep-handler semantics, so it costs nothing extra — it is what the free
-monad gives by default.
+**A handler never captures a continuation. It is a stateful object** (D-36). An
+operation call runs its implementation, which *returns*; nothing is extracted,
+saved or resumed. The handler carries a state segment, threaded through its own
+implementations' signatures with the state types preserved:
+
+```
+implementation of  o  is typed at   ( args… state -- results… state )
+```
+
+So a stateful handler is not merely analogous to the class of §3 below — it is
+the same construct, which is D-01 confirmed once more.
+
+This is a correction. An earlier version of this section specified *deep*
+handlers, whose implementations receive the continuation and may run it zero,
+once, or many times. That is rejected: continuations must not be a runtime
+construct in the compiled language. Everything a resume-exactly-once handler
+can do is expressible by returning, and the object model is what the design
+already wanted for classes anyway.
+
+**Reentrancy survives the correction, and gets cheaper.** The draft's
+requirement that "every effect is reentrant" is not a consequence of deep
+handlers; it is the *installed-frame* property. `R02.step` runs an
+implementation with the handler frame still in the continuation, so an
+operation the implementation itself performs reaches the same handler. That
+costs nothing and needs no capture. What it does need is a rule for re-entering
+a handler *while its own state is lent out to a running implementation*, which
+is reported as an error rather than served a stale copy (D-48) — the aliasing
+question a linear language ought eventually to settle statically.
+
+What is genuinely given up is nondeterminism in which one choice makes the rest
+of the enclosing program run more than once. A free-list-monad effect remains
+available with the multiplicity **reified as a value**: an operation returning a
+list, or one whose alternatives are delimited blocks the handler schedules.
+That is the form that survives compilation to a state machine, which is also
+how coroutines are to be built (D-39).
 
 The distinctions between the six roles are entirely about *when the handler is
 resolved and whether it is erased* (D04), never about the mechanism.

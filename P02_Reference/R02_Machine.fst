@@ -8,16 +8,30 @@ open M05_Terms
 open R01_Runtime
 
 let rec find_handler (k:kont) (e:eff_id) (op:op_id)
-  : Tot (option (term & kont)) (decreases k) =
+  : Tot (option (term & option rstack)) (decreases k) =
   match k with
   | [] -> None
-  | KHandler e' impls :: rest ->
+  | KHandler e' impls st :: rest ->
     if e' = e then
       (match assoc op impls with
-       | Some body -> Some (body, rest)
+       | Some body -> Some (body, st)
        | None      -> find_handler rest e op)
     else find_handler rest e op
-  | KTerm _ :: rest -> find_handler rest e op
+  | _ :: rest -> find_handler rest e op
+
+/// Deliberately written as the mirror image of `find_handler`, clause for
+/// clause, because the two must select the same frame.
+let rec set_handler_state (k:kont) (e:eff_id) (op:op_id) (st:option rstack)
+  : Tot kont (decreases k) =
+  match k with
+  | [] -> []
+  | KHandler e' impls st' :: rest ->
+    if e' = e then
+      (match assoc op impls with
+       | Some _ -> KHandler e' impls st :: rest
+       | None   -> KHandler e' impls st' :: set_handler_state rest e op st)
+    else KHandler e' impls st' :: set_handler_state rest e op st
+  | f :: rest -> f :: set_handler_state rest e op st
 
 let load (t:term) (s:rstack) : Tot mstate = { code = [KTerm t]; stk = s }
 
@@ -75,8 +89,28 @@ let step (d:rdict) (s:mstate) : Tot sresult =
   match s.code with
   | [] -> SDone s.stk
 
-  (* A handler whose body has completed: pop the boundary. *)
-  | KHandler _ _ :: k -> SNext ({ code = k; stk = s.stk })
+  (* A handler whose body has completed: pop the boundary and hand the final
+     state back to the program. The handler IS the object, so the object
+     outlives the block -- see `M05.THandle`. *)
+  | KHandler _ _ (Some st) :: k -> SNext ({ code = k; stk = give st s.stk })
+  | KHandler _ _ None :: k ->
+    SStuck "handle: the handler's state was never given back"
+
+  (* The initialiser has finished; move its results into a fresh frame. *)
+  | KInit e n impls body :: k ->
+    (match take n s.stk with
+     | None -> SStuck "handle: the initialiser did not produce the state"
+     | Some (st0, rest) ->
+       SNext ({ code = KTerm body :: KHandler e impls (Some st0) :: k;
+                stk = rest }))
+
+  (* An implementation has finished; take the state back off the top and
+     return it to the frame that lent it. *)
+  | KRestore e op n :: k ->
+    (match take n s.stk with
+     | None -> SStuck "handler: the implementation did not return its state"
+     | Some (st', rest) ->
+       SNext ({ code = set_handler_state k e op (Some st'); stk = rest }))
 
   | KTerm t :: k ->
     match t with
@@ -123,11 +157,25 @@ let step (d:rdict) (s:mstate) : Tot sresult =
        | Some (WOp e)     ->
          (* Dictionary lookup at runtime: walk the handler chain outward.
             The implementation runs with the handler still installed, so
-            operations it performs itself reach the same handler -- deep,
-            hence reentrant (D03 2). *)
+            operations it performs itself reach the same handler -- reentrant
+            (D03 2), and reentrant WITHOUT capturing anything (D-36).
+
+            The state is lent to the implementation by pushing it on top of
+            the operation's arguments and blanking the frame; `KRestore` takes
+            it back. Pushing on TOP is forced: splicing it underneath would
+            need the operation's arity, which the dictionary does not record. *)
          (match find_handler k e w with
-          | Some (body, _) -> SNext ({ code = KTerm body :: k; stk = s.stk })
-          | None           -> SEffect w s.stk k))
+          | None -> SEffect w s.stk k
+          | Some (_, None) ->
+            (* The frame is mid-call. Serving a stale copy would silently fork
+               the state, so this is reported instead. See the note in
+               `R02_Machine.fsti`; it is the aliasing rule a linear language
+               ought to enforce statically, and does not yet. *)
+            SStuck "handler re-entered while its own state is in use"
+          | Some (body, Some hst) ->
+            SNext ({ code = KTerm body :: KRestore e w (length hst)
+                           :: set_handler_state k e w None;
+                     stk = give hst s.stk })))
 
     | TPack n _ repr ->
       (match take (length repr) s.stk with
@@ -161,8 +209,11 @@ let step (d:rdict) (s:mstate) : Tot sresult =
          else SNext ({ code = KTerm (index branches tag) :: k; stk = give vs r })
        | _ -> SStuck "case: not a sum value")
 
-    | THandle e impls body ->
-      SNext ({ code = KTerm body :: KHandler e impls :: k; stk = s.stk })
+    (* Two steps, because the state has to be computed before the frame that
+       holds it can exist: run `init`, then `KInit` moves its results in. *)
+    | THandle e st init impls body ->
+      SNext ({ code = KTerm init :: KInit e (length st) impls body :: k;
+               stk = s.stk })
 
     (* Specialization is semantics-preserving (M11 E2), so the reference
        interpreter may ignore it and run the body directly. This is not a

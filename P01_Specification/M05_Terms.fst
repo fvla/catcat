@@ -100,10 +100,31 @@ noeq type term =
   | TBoolSum : term
   /// Sum elimination: one `{}` block per variant, all with the same result.
   | TCase    : variants:list seg -> branches:list term -> term
-  /// Install a handler for `eff`, giving an implementation block per
-  /// operation, then run the body. Deep handlers: the block receives the
-  /// continuation implicitly, which is why every effect is reentrant.
-  | THandle  : eff:eff_id -> impls:list (op_id & term) -> body:term -> term
+  /// Install a handler for `eff` and run `body` under it.
+  ///
+  /// HANDLERS ARE STATEFUL OBJECTS, NOT CONTINUATION CONSUMERS (D-36). An
+  /// operation call runs its implementation, which RETURNS; nothing is
+  /// captured. `st` is the segment of handler state and `init` the program
+  /// that produces it, so a handler is exactly D03 §3's `class … over ( … )`
+  /// — one construct, D-01 again.
+  ///
+  /// The state is threaded through each implementation's own signature: an
+  /// implementation of `o` is typed at
+  ///
+  ///     { pre = st @ o.op_pre ; post = st @ o.op_post }
+  ///
+  /// so `st` sits on TOP, above the operation's arguments. That position is
+  /// not a preference, it is the only one the machine can splice into without
+  /// knowing the operation's arity at runtime (see `R02.step`), and it reads
+  /// correctly anyway: the state is the receiver, and a receiver is pushed
+  /// last. A stateless handler is `st = []`, so it needs no separate rule.
+  ///
+  /// On exit the final state is left on the stack, above whatever the body
+  /// produced. The handler *is* the object, so the object outlives the block;
+  /// discarding it instead would need `CDrop` and would silently throw away
+  /// the result of the computation the state was accumulating.
+  | THandle  : eff:eff_id -> st:seg -> init:term
+             -> impls:list (op_id & term) -> body:term -> term
   /// Resolve the static effects of the body against the ambient dictionary,
   /// producing a residual program. Invoked at elaboration time this is
   /// specialization; invoked at runtime it is the JIT. One construct, one
@@ -144,7 +165,7 @@ let rec term_size (t:term) : Tot pos =
   | TInj _ _            -> 1
   | TBoolSum            -> 1
   | TCase _ bs          -> 1 + terms_size bs
-  | THandle _ impls b   -> 1 + impls_size impls + term_size b
+  | THandle _ _ i impls b -> 1 + term_size i + impls_size impls + term_size b
   | TSpecialize b       -> 1 + term_size b
   | TBoxNew _           -> 1
   | TBoxOpen _          -> 1
@@ -189,7 +210,8 @@ let rec needs_compiler (t:term)
   | TSpecialize _       -> true
   | TSeq a b            -> needs_compiler a || needs_compiler b
   | TCase _ bs          -> needs_compiler_list bs
-  | THandle _ impls b   -> needs_compiler_impls impls || needs_compiler b
+  | THandle _ _ i impls b -> needs_compiler i || needs_compiler_impls impls
+                           || needs_compiler b
   | _                   -> false
 
 and needs_compiler_list (ts:list term)
