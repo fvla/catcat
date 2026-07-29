@@ -47,18 +47,43 @@ open E02_Ast
 /// A resolvable word. The signature is carried here as well as in M06's
 /// `wenv` because the elaborator needs it to keep its shape model accurate,
 /// before any typechecking happens.
+///
+/// `n_op` is `Some e` when the word is an OPERATION of effect `e`. Nothing
+/// else distinguishes the two: an operation is called as `TWord` and typed by
+/// the same rule, which is D03's unification showing up as the absence of a
+/// second case rather than as a feature. The field exists only so that
+/// `handle` can check an implementation is implementing something.
 type nentry = {
   n_name : string;
   n_id   : word_id;
   n_sig  : srow;
+  n_op   : option eff_id;
 }
 
-type nenv = list nentry
+/// Names live in two namespaces because effects are not words — `handle E`
+/// names an effect, and an effect has no signature and cannot be called.
+type nenv = {
+  ne_words : list nentry;
+  ne_effs  : list (string & eff_id);
+}
 
-let rec lookup_name (e:nenv) (x:string) : Tot (option nentry) (decreases e) =
-  match e with
+let rec lookup_word_in (ws:list nentry) (x:string)
+  : Tot (option nentry) (decreases ws) =
+  match ws with
   | []     -> None
-  | n :: r -> if n.n_name = x then Some n else lookup_name r x
+  | n :: r -> if n.n_name = x then Some n else lookup_word_in r x
+
+let lookup_name (e:nenv) (x:string) : Tot (option nentry) =
+  lookup_word_in e.ne_words x
+
+let rec lookup_eff_in (es:list (string & eff_id)) (x:string)
+  : Tot (option eff_id) (decreases es) =
+  match es with
+  | []            -> None
+  | (n, i) :: r   -> if n = x then Some i else lookup_eff_in r x
+
+let lookup_eff (e:nenv) (x:string) : Tot (option eff_id) =
+  lookup_eff_in e.ne_effs x
 
 (* ------------------------------------------------------------------------ *)
 (* Types                                                                    *)
@@ -310,7 +335,25 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
                 | Inl e -> Inl e
                 | Inr (sh', bts) ->
                   elab_terms env cs sh'
-                    (TCase bool_variants bts :: TBoolSum :: acc) rest)))
+                    (TCase bool_variants bts :: TBoolSum :: acc) rest))
+
+     /// The handler's own parts are elaborated against stacks that are fully
+     /// known before the body is looked at — the state comes from `over ( … )`
+     /// and each operation's arguments from its declaration — so they need no
+     /// information from the surrounding program. Only the body runs on the
+     /// enclosing stack.
+     ///
+     /// The exit shape is the state ON TOP of whatever the body left (D-46,
+     /// D-47), mirroring `M06`'s rule, which re-derives it independently.
+     | StHandle ename sttys init impls body ->
+       (match elab_handle_parts env ename sttys init impls with
+        | Inl e -> Inl e
+        | Inr (eid, st, it, ims) ->
+          (match elab_terms env cs sh [] body with
+           | Inl e -> Inl e
+           | Inr (shb, bts) ->
+             elab_terms env cs (anon_slots st @ shb)
+               (THandle eid st it ims (seq_of bts) :: acc) rest)))
 
 /// Elaborate each branch against the SAME entry shape and require them to
 /// agree on the exit shape.
@@ -336,6 +379,73 @@ and elab_branches (env:nenv) (cs:counts) (sh0:shape)
        if not ok
        then Inl "the branches of an if leave the stack in different states"
        else elab_branches env cs sh0 (Some sh1) (seq_of ts :: acc) r)
+
+/// Resolve a `handle`'s effect, state, initialiser and implementations.
+///
+/// Shared by BOTH passes, which is why it is here rather than inlined: none of
+/// these parts depends on the surrounding stack, so signature inference can
+/// check them exactly as the main pass does and only has to model the body.
+///
+/// Locals are deliberately out of scope inside `init` and the implementations
+/// — they run on the handler's stacks, not the definition's — which falls out
+/// of passing an empty shape and empty counts, and is why `E02.count_var` does
+/// not look inside either.
+and elab_handle_parts (env:nenv) (ename:string) (sttys:list sty)
+                      (init:list sterm) (impls:list (string & list sterm))
+  : Tot (either string (eff_id & seg & term & list (op_id & term)))
+        (decreases %[(sterms_size init + simpls_size impls <: nat); 2]) =
+  match lookup_eff env ename with
+  | None -> Inl ("unknown effect: " ^ ename)
+  | Some eid ->
+    (match elab_tys sttys with
+     | Inl e -> Inl e
+     /// THE REVERSAL again: `over ( a b )` reads bottom-to-top, the core wants
+     /// head = top.
+     | Inr ds ->
+       let st = rev ds in
+       (match elab_terms env [] [] [] init with
+        | Inl e -> Inl e
+        | Inr (shi, its) ->
+          if shi <> anon_slots st
+          then Inl ("handle " ^ ename
+                    ^ ": init must leave exactly the state declared by over ( … )")
+          else (match elab_impls env eid st [] impls with
+                | Inl e   -> Inl e
+                | Inr ims -> Inr (eid, st, seq_of its, ims))))
+
+/// One implementation per operation, each checked at `st @ op_pre -- st @
+/// op_post` — the operation's declared signature with the state framed on top.
+///
+/// An operation of the effect that is NOT implemented here is not an error: it
+/// forwards to the next handler outward, which is what makes partial overriding
+/// of a Dictionary possible (D04). What is an error is implementing something
+/// that is not an operation of this effect.
+and elab_impls (env:nenv) (eid:eff_id) (st:seg) (acc:list (op_id & term))
+               (im:list (string & list sterm))
+  : Tot (either string (list (op_id & term)))
+        (decreases %[simpls_size im; 1]) =
+  match im with
+  | [] -> Inr (rev acc)
+  | (opname, blk) :: r ->
+    (match lookup_name env opname with
+     | None -> Inl ("unknown operation: " ^ opname)
+     | Some n ->
+       (match n.n_op with
+        | None -> Inl (opname ^ " is a word, not an operation; only an \
+                                 operation can be given an implementation")
+        | Some e' ->
+          if e' <> eid
+          then Inl (opname ^ " is not an operation of this effect")
+          else
+            let entry = anon_slots st @ anon_slots n.n_sig.pre in
+            let ex    = anon_slots st @ anon_slots n.n_sig.post in
+            (match elab_terms env [] entry [] blk with
+             | Inl e -> Inl e
+             | Inr (sh', ts) ->
+               if sh' <> ex
+               then Inl (opname ^ ": an implementation must leave the handler's \
+                                   state on top of the operation's results")
+               else elab_impls env eid st ((n.n_id, seq_of ts) :: acc) r)))
 
 /// Roll each surviving named slot to the top and pop it. Runs once, after the
 /// body, and is the counterpart to the pick-based read strategy above.
@@ -564,7 +674,24 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
           else (match infer_branches_i env cs st2.i_above (length st2.i_below)
                         st2 None bs with
                 | Inl e   -> Inl e
-                | Inr st3 -> infer_terms env cs st3 rest)))
+                | Inr st3 -> infer_terms env cs st3 rest))
+
+     /// Nothing here needs a metavariable. The state comes from `over ( … )`
+     /// and every implementation runs on a stack built from it and the
+     /// operation's declaration, so `elab_handle_parts` — the concrete pass —
+     /// checks them unchanged, and only the body is modelled.
+     ///
+     /// The elaborated terms it returns are thrown away and rebuilt in pass 2.
+     /// That is the same duplication `infer_terms` accepts everywhere else, and
+     /// it is what keeps the two passes independent rather than one threading
+     /// half-built output through the other.
+     | StHandle ename sttys init impls body ->
+       (match elab_handle_parts env ename sttys init impls with
+        | Inl e -> Inl e
+        | Inr (_, stseg, _, _) ->
+          (match infer_terms env cs st body with
+           | Inl e    -> Inl e
+           | Inr stb  -> infer_terms env cs (ipush_post stseg stb) rest)))
 
 /// Run each branch from the same entry stack, threading the accumulated
 /// substitution and pulled inputs forward, and require the branches to agree.

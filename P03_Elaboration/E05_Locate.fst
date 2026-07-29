@@ -44,6 +44,7 @@ open M05_Terms
 open R01_Runtime
 open E02_Ast
 open E03_Parser
+open M06_Typing
 open E04_Elaborate
 
 (* ------------------------------------------------------------------------ *)
@@ -89,10 +90,26 @@ let render_row (s:srow) : Tot string =
 /// The reverse of `lookup_name`. The name environment is a shadowing stack —
 /// most recent first — so the first hit is the binding a program written now
 /// would resolve to, which is the one worth printing.
-let rec name_of (e:nenv) (w:word_id) : Tot (option string) (decreases e) =
-  match e with
+let rec name_of_in (ws:list nentry) (w:word_id)
+  : Tot (option string) (decreases ws) =
+  match ws with
   | []     -> None
-  | n :: r -> if n.n_id = w then Some n.n_name else name_of r w
+  | n :: r -> if n.n_id = w then Some n.n_name else name_of_in r w
+
+let name_of (e:nenv) (w:word_id) : Tot (option string) =
+  name_of_in e.ne_words w
+
+/// The reverse of `lookup_eff`, for rendering `!3` as its name.
+let rec eff_name_of_in (es:list (string & eff_id)) (i:eff_id)
+  : Tot (option string) (decreases es) =
+  match es with
+  | []            -> None
+  | (n, j) :: r   -> if j = i then Some n else eff_name_of_in r i
+
+let show_eff (e:nenv) (i:eff_id) : Tot string =
+  match eff_name_of_in e.ne_effs i with
+  | Some n -> n
+  | None   -> "!" ^ string_of_int i
 
 /// An unnamed id prints as `#7`. That is not valid surface syntax, on purpose:
 /// a word with no name in scope cannot be written, and printing an invented
@@ -101,6 +118,40 @@ let show_word (e:nenv) (w:word_id) : Tot string =
   match name_of e w with
   | Some n -> n
   | None   -> "#" ^ string_of_int w
+
+(* ------------------------------------------------------------------------ *)
+(* Effect rows                                                              *)
+(* ------------------------------------------------------------------------ *)
+
+/// The distinct effects of a row. `M06.row_union` is append, so a row
+/// routinely repeats an effect; what a reader wants is the set.
+let rec row_effs (r:erow) : Tot (list eff_id) (decreases r) =
+  match r with
+  | []           -> []
+  | (i, _) :: rr -> let rest = row_effs rr in
+                    if mem i rest then rest else i :: rest
+
+/// Space-separated, no leading space — the form that goes inside `( … )`.
+let rec render_effs_in (e:nenv) (is:list eff_id) : Tot string (decreases is) =
+  match is with
+  | []      -> ""
+  | i :: [] -> "!" ^ show_eff e i
+  | i :: r  -> "!" ^ show_eff e i ^ " " ^ render_effs_in e r
+
+/// Leading space, for splicing into a sentence.
+let render_effs (e:nenv) (is:list eff_id) : Tot string =
+  if Nil? is then "" else " " ^ render_effs_in e is
+
+/// A signature with its effects, which is what a word's type actually is.
+/// A pure word prints exactly as it did before effects existed.
+let render_row_eff (e:nenv) (s:srow) (r:erow) : Tot string =
+  let effs = render_effs_in e (row_effs r) in
+  if effs = "" then render_row s
+  else "( " ^ (let a = render_tys (rev s.pre) in
+               if a = "" then "" else a ^ " ")
+       ^ "-- " ^ (let b = render_tys (rev s.post) in
+                  if b = "" then "" else b ^ " ")
+       ^ effs ^ " )"
 
 (* ------------------------------------------------------------------------ *)
 (* Literals and stack operations                                            *)
@@ -180,7 +231,7 @@ let rec show_items (e:nenv) (ts:list term)
   | TCase _ bs :: rest ->
     cons_sp ("case" ^ show_branches e bs) (show_items e rest)
   | THandle eff st init impls body :: rest ->
-    cons_sp ("handle !" ^ string_of_int eff
+    cons_sp ("handle " ^ show_eff e eff
              ^ " over ( " ^ render_tys (rev st) ^ " )"
              ^ " init " ^ braces (show_items e [init])
              ^ " {" ^ show_impls e impls ^ " } "
@@ -281,17 +332,20 @@ let show_macro (p:mprod) : Tot string =
 /// a leading word matching the macro table invokes the macro, whatever else is
 /// bound to the name. Reporting the dictionary entry instead would tell the
 /// user about a binding their program cannot reach.
-let locate (e:nenv) (d:rdict) (x:string) : Tot string =
+let locate (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
   match lookup_macro macro_table x with
   | Some p -> show_macro p
   | None ->
     match lookup_name e x with
     | None -> "error: no word named '" ^ x ^ "'"
     | Some n ->
-      let hdr = x ^ " " ^ render_row n.n_sig in
+      /// The effect row comes from the typing environment rather than the
+      /// name environment: `nentry` carries what elaboration needs, and a
+      /// word's effects are M06's business.
+      let hdr = x ^ " " ^ render_row_eff e n.n_sig (w_eff w n.n_id) in
       match dict_lookup d n.n_id with
       | Some (WPrim o) -> hdr ^ "\n  \\ primitive: " ^ show_prim_op o
-      | Some (WOp eff) -> hdr ^ "\n  \\ operation of effect !" ^ string_of_int eff
+      | Some (WOp eff) -> hdr ^ "\n  \\ operation of effect " ^ show_eff e eff
       | Some (WDef t)  -> "define " ^ hdr ^ " {\n  " ^ show_term e t ^ "\n}"
       /// Reachable only if the name environment and the dictionary disagree,
       /// which would be a session bug rather than a user error. Say which.

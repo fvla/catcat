@@ -81,6 +81,13 @@ type sterm =
   /// order, so for a `bool` the FALSE branch comes first. Stated here as well
   /// as in `M05.TBoolSum` because a silent reversal would typecheck.
   | StCase  : list (list sterm) -> sterm
+  /// `handle E over ( … ) init { … } { op { … } … } { body }`.
+  ///
+  /// The state segment is in SURFACE order (bottom-to-top); `E04` reverses it,
+  /// as it does every signature. Implementations are keyed by operation name,
+  /// resolved against the effect named here.
+  | StHandle : string -> list sty -> list sterm
+             -> list (string & list sterm) -> list sterm -> sterm
 
 let rec sterm_size (t:sterm) : Tot pos =
   match t with
@@ -89,11 +96,21 @@ let rec sterm_size (t:sterm) : Tot pos =
   | StVar _    -> 1
   | StBlock ts -> 1 + sterms_size ts
   | StCase bs  -> 1 + sterm_lists_size bs
+  | StHandle _ _ i im b -> 1 + sterms_size i + simpls_size im + sterms_size b
 
 and sterms_size (ts:list sterm) : Tot nat =
   match ts with
   | []     -> 0
   | t :: r -> sterm_size t + sterms_size r
+
+/// One charged per implementation, for the same reason `sterm_lists_size`
+/// charges one per branch: an empty implementation block is legitimate
+/// (`reset { }` on a unit state) and would otherwise make the measure
+/// non-strict on the list-to-list edge.
+and simpls_size (im:list (string & list sterm)) : Tot nat =
+  match im with
+  | []           -> 0
+  | (_, ts) :: r -> 1 + sterms_size ts + simpls_size r
 
 /// Note the `1 +` per branch. Without it an EMPTY branch — `else { }`, which
 /// is exactly the shape the else-less `if` expands to — makes this measure
@@ -115,6 +132,12 @@ type sdecl =
   | SdDefine      : string -> ssig -> list sterm -> sdecl
   /// `define name { body }` — signature inferred from the body (D-31).
   | SdDefineInfer : string -> list sterm -> sdecl
+  /// `effect E { declare op ( sig ) … }`.
+  ///
+  /// Signatures are MANDATORY here, which is where D-31's carve-out finally
+  /// gets enforced: an operation has no body to infer from, so a declaration
+  /// without a written signature has nothing to mean.
+  | SdEffect      : string -> list (string & ssig) -> sdecl
   /// `locate name` — print what `name` is: a macro production, a primitive, or
   /// a definition decompiled back to surface syntax (E05_Locate).
   ///
@@ -154,6 +177,14 @@ let rec count_var (x:string) (t:sterm)
   /// statically known to be moved exactly once.
   | StCase bs  -> let n = count_var_lists x bs in
                   if n = 0 then 0 else n + 1
+  /// Only the BODY is counted. A handler's initialiser and implementations run
+  /// on their own stacks — the state segment, plus the operation's arguments —
+  /// so an enclosing definition's locals are not in scope there and `E04`
+  /// rejects a read of one. Counting them would inflate the count for a read
+  /// that cannot occur.
+  ///
+  /// The body needs no inflation either, unlike a branch: it runs exactly once.
+  | StHandle _ _ _ _ b -> count_var_list x b
   | _          -> 0
 
 and count_var_list (x:string) (ts:list sterm)

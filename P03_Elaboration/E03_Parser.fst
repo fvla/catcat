@@ -278,6 +278,15 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
   /// A word that names a macro invokes it; anything else is an ordinary word.
   /// The expansion is spliced into the enclosing sequence, so a macro's output
   /// composes exactly as if it had been written out by hand.
+  /// `handle` is a parser built-in, not a macro (D-38): its implementation
+  /// block is a list of `op { … }` pairs, which is not a term list, and the
+  /// macro slot vocabulary should not be stretched to cover that before it has
+  /// been exercised on the constructs it already fits.
+  | TkWord "handle" :: rest ->
+    (match parse_handle rest with
+     | PErr e -> PErr e
+     | POk h after -> parse_terms closing (h :: acc) after)
+
   | TkWord w :: rest ->
     (match lookup_macro macro_table w with
      | None -> parse_terms closing (StWord w :: acc) rest
@@ -324,6 +333,82 @@ and parse_macro (p:mprod) (ts:list token)
 /// Consume one slot at a time. Each slot eats at least one token, so a macro
 /// cannot spin, and a `}` reached before the slots run out ends the enclosing
 /// block rather than being swallowed — macros cannot consume the brace.
+/// `handle E over ( t… ) init { … } { op { … } … } { body }`, with the leading
+/// `handle` already consumed.
+///
+/// Every part is keyword-introduced and every bracket is consumed where it
+/// appears, so no decision here needs a second token. The shape is fixed rather
+/// than optional throughout — a handler with no state still writes
+/// `over ( ) init { }` — which is what keeps it LL(1) without reserving
+/// `over` or `init` outside this production.
+and parse_handle (ts:list token)
+  : Tot (r:presult sterm { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases %[length ts; 5]) =
+  match ts with
+  | TkWord name :: TkWord "over" :: TkLParen :: r1 ->
+    (match parse_state_tys [] r1 with
+     | PErr e -> PErr e
+     | POk tys r2 ->
+       (match r2 with
+        | TkWord "init" :: TkLBrace :: r3 ->
+          (match parse_terms true [] r3 with
+           | PErr e -> PErr e
+           | POk init r4 ->
+             (match r4 with
+              | TkLBrace :: r5 ->
+                (match parse_impls [] r5 with
+                 | PErr e -> PErr e
+                 | POk impls r6 ->
+                   (match r6 with
+                    | TkLBrace :: r7 ->
+                      (match parse_terms true [] r7 with
+                       | PErr e -> PErr e
+                       | POk body r8 ->
+                         POk (StHandle name tys init impls body) r8)
+                    | _ -> PErr ("expected '{' opening the body handled by "
+                                 ^ name)))
+              | _ -> PErr ("expected '{' opening the implementations of "
+                           ^ name)))
+        | _ -> PErr ("expected 'init { … }' after the state of " ^ name)))
+  | TkWord name :: _ ->
+    PErr ("expected 'over ( … )' after 'handle " ^ name
+          ^ "'; a handler with no state writes 'over ( )'")
+  | _ -> PErr "expected an effect name after 'handle'"
+
+/// The implementations, up to the closing `}`. Each is `op { … }`.
+and parse_impls (acc:list (string & list sterm)) (ts:list token)
+  : Tot (r:presult (list (string & list sterm))
+         { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases %[length ts; 4]) =
+  match ts with
+  | TkRBrace :: rest -> POk (rev acc) rest
+  | TkWord op :: TkLBrace :: r1 ->
+    (match parse_terms true [] r1 with
+     | PErr e -> PErr e
+     | POk blk r2 -> parse_impls ((op, blk) :: acc) r2)
+  | TkWord op :: _ ->
+    PErr ("expected '{' opening the implementation of " ^ op)
+  | [] -> PErr "expected '}' closing the implementations, found end of input"
+  | t :: _ ->
+    PErr ("expected an operation name or '}' here, found " ^ render_token t)
+
+/// The state segment of an `over ( … )`, up to the closing paren. Types only:
+/// there is no `--` and no named parameter, because this is one side of a
+/// signature rather than a whole one.
+and parse_state_tys (acc:list sty) (ts:list token)
+  : Tot (r:presult (list sty) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases %[length ts; 3]) =
+  match ts with
+  | [] -> PErr "expected ')' closing the handler state, found end of input"
+  | TkRParen :: rest -> POk (rev acc) rest
+  | _ ->
+    (match parse_ty ts with
+     | PErr e -> PErr e
+     | POk t after ->
+       if length after < length ts
+       then parse_state_tys (t :: acc) after
+       else PErr "handler state made no progress")
+
 and parse_slots (acc:list mcap) (ss:list mslot) (ts:list token)
   : Tot (r:presult (list mcap) { POk? r ==> length (POk?._1 r) <= length ts })
         (decreases %[length ts; 0]) =
@@ -376,6 +461,39 @@ let parse_define (ts:list token) : Tot (presult sdecl) =
     PErr ("expected '(' or '{' after 'define " ^ name ^ "'")
   | _ -> PErr "expected a name after 'define'"
 
+/// `effect E { declare op ( sig ) … }`, with `effect` already consumed.
+///
+/// The signature is not optional. An operation has no body, so there is nothing
+/// to infer one from — this is where D-31's "mandatory inside an effect
+/// declaration" carve-out is actually enforced rather than merely stated.
+let rec parse_declares (acc:list (string & ssig)) (ts:list token)
+  : Tot (presult (list (string & ssig))) (decreases (length ts)) =
+  match ts with
+  | TkRBrace :: rest -> POk (rev acc) rest
+  | TkWord "declare" :: TkWord op :: TkLParen :: r1 ->
+    (match parse_sig_body r1 with
+     | PErr e -> PErr e
+     | POk sg r2 ->
+       if length r2 < length ts
+       then parse_declares ((op, sg) :: acc) r2
+       else PErr "declaration made no progress")
+  | TkWord "declare" :: TkWord op :: _ ->
+    PErr ("declare " ^ op ^ " needs a signature, as in 'declare " ^ op
+          ^ " ( i64 -- i64 )'")
+  | TkWord "declare" :: _ -> PErr "expected an operation name after 'declare'"
+  | [] -> PErr "expected '}' closing the effect, found end of input"
+  | t :: _ ->
+    PErr ("expected 'declare' or '}' here, found " ^ render_token t)
+
+let parse_effect (ts:list token) : Tot (presult sdecl) =
+  match ts with
+  | TkWord name :: TkLBrace :: rest ->
+    (match parse_declares [] rest with
+     | PErr e   -> PErr e
+     | POk ds r -> POk (SdEffect name ds) r)
+  | TkWord name :: _ -> PErr ("expected '{' after 'effect " ^ name ^ "'")
+  | _ -> PErr "expected a name after 'effect'"
+
 /// One declaration. A leading `define` starts a definition, a leading `locate`
 /// an inspection; anything else is an expression run to the end of input.
 ///
@@ -386,6 +504,7 @@ let parse_define (ts:list token) : Tot (presult sdecl) =
 let parse_decl (ts:list token) : Tot (presult sdecl) =
   match ts with
   | TkWord "define" :: rest -> parse_define rest
+  | TkWord "effect" :: rest -> parse_effect rest
   | TkWord "locate" :: TkWord name :: rest -> POk (SdLocate name) rest
   | TkWord "locate" :: _ -> PErr "expected a word after 'locate'"
   | _ ->(match parse_terms false [] ts with
