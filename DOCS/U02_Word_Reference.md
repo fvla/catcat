@@ -3,12 +3,13 @@
 Every word the language provides today. That is a short list: eleven primitives,
 two constants, and three stack shuffles.
 
-> **Current as of commit `ff01d06`.**
+> **Current as of commit `9a21cf0`.**
 > Source of truth:
-> [E05_Repl.fst](../P03_Elaboration/E05_Repl.fst) `prelude_nenv` (names and
+> [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
 > the dictionary), [R02_Machine.fst](../P02_Reference/R02_Machine.fst)
-> `apply_prim` (semantics), [E04_Elaborate.fst](../P03_Elaboration/E04_Elaborate.fst)
+> `apply_prim` (semantics), [E05_Locate.fst](../P03_Elaboration/E05_Locate.fst)
+> (`locate`), [E04_Elaborate.fst](../P03_Elaboration/E04_Elaborate.fst)
 > `elab_terms` (the shuffles). If this file and those disagree, they are right.
 
 Signatures follow the surface convention: **bottom-to-top, top of stack on the
@@ -152,14 +153,38 @@ define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
 
 Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`.
 `define` itself is not a reserved word either; it is recognised by position at
-the start of a declaration, and the same is true of `if`, `then`, `else` and
-`endif`, which are keywords only inside a conditional.
+the start of a declaration, and so is `locate`. `then`, `else` and `endif` are
+likewise free — they are keywords only inside a conditional. The one name that
+is effectively taken is `if`, which the macro table claims: a definition of it
+is accepted but can never be called ([U01](U01_Grammar.md) §1).
 
 Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).
 
 ---
 
-## 7. The REPL
+## 7. Inspecting: `locate`
+
+```
+locate <word>
+```
+
+Forth's `LOCATE`/`SEE`. Prints a primitive's description, a macro's production,
+or a definition's body — the last **decompiled from the core term**, so it shows
+what the word is after elaboration rather than what was typed.
+
+```
+catcat> locate <=
+<= ( i64 i64 -- bool )
+  \ primitive: integer less-or-equal
+```
+
+Like `define`, `locate` is recognised by position and reserves nothing. Full
+description, including how deep stack access and unnamed ids are rendered, is in
+[U01](U01_Grammar.md) §5.
+
+---
+
+## 8. The REPL
 
 ```
 make catcat

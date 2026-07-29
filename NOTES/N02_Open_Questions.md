@@ -54,7 +54,7 @@ single word.
 **Q-10. `wenv` and `sig_env` have function-typed fields.**
 `M06_Typing.wenv` is `{ w_sig : word_id -> srow; … }` and `M04_Effects.sig_env`
 likewise. Constructing one needs a closure, which breaks the first-order subset
-(D-20) — so `E05_Repl.mk_wenv` is currently the only subset violation in P03,
+(D-20) — so `E06_Repl.mk_wenv` is currently the only subset violation in P03,
 and it blocks catcat-extraction of that module.
 *Found by:* writing the REPL, which must build a `wenv` to call `infer`.
 *Fix:* change both records to association lists in P01, and add lookup helpers.

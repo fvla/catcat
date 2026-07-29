@@ -5,11 +5,12 @@ describes the implemented language, not the designed one: where the two differ,
 that is called out rather than glossed. For the designed language see
 [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md).
 
-> **Current as of commit `ff01d06`.**
+> **Current as of commit `9a21cf0`.**
 > Source of truth: [E01_Lexer.fst](../P03_Elaboration/E01_Lexer.fst) (lexing),
 > [E03_Parser.fst](../P03_Elaboration/E03_Parser.fst) (grammar),
 > [E02_Ast.fst](../P03_Elaboration/E02_Ast.fst) (the tree it produces),
-> [E04_Elaborate.fst](../P03_Elaboration/E04_Elaborate.fst) (what elaborates).
+> [E04_Elaborate.fst](../P03_Elaboration/E04_Elaborate.fst) (what elaborates),
+> [E05_Locate.fst](../P03_Elaboration/E05_Locate.fst) (`locate`).
 > If this file and those disagree, they are right. Re-check on any P03 change.
 
 ---
@@ -19,10 +20,12 @@ that is called out rather than glossed. For the designed language see
 ```ebnf
 program    = decl* ;
 
-decl       = define | expression ;
+decl       = define | locate | expression ;
 
 define     = "define" word "(" signature ")" "{" term* "}"
            | "define" word                   "{" term* "}" ;   (* inferred *)
+
+locate     = "locate" word ;                                   (* see §5 *)
 
 expression = term* ;
 
@@ -45,6 +48,20 @@ conditional = "if" block "then" block [ "else" block ] "endif" ;
 block       = "{" term* "}" ;
 ```
 
+The `conditional` production is written out here for readability, but it is not
+built into the parser: it is one entry in a **macro table** (§5), and the parser
+that reads it is generic over the table.
+
+**`define` and `locate` are not reserved words.** Both are recognised by
+*position* — first token of a declaration — so `define locate { 42 }` is legal
+and `locate` inside a body is an ordinary word. The same rule leaves `then`,
+`else` and `endif` free everywhere outside a conditional.
+
+`if` is the one word that is effectively taken, and by the macro table rather
+than by the grammar: `define if { 9 }` is accepted, but every later `if` is read
+as the macro, so the definition can never be called. Nothing warns about this
+yet.
+
 `{ … }` parses as a term anywhere, but the only constructs that **consume** one
 are `define` and the conditional of §4. A block appearing anywhere else is
 rejected by the elaborator: general block consumers need macros or handlers,
@@ -59,7 +76,7 @@ define a { 1 } define b { 2 } a b +     \ three declarations, fine
 1 2 + define c { 3 }                    \ error: unknown word: define
 ```
 
-This is a consequence of the no-lookahead rule (§5), not an oversight: nothing
+This is a consequence of the no-lookahead rule (§6), not an oversight: nothing
 marks where an expression ends, so it ends at the input.
 
 ---
@@ -83,7 +100,7 @@ the deliberate divergence from Forth that makes precise tooling possible.
 ```
 
 Everything inside a `( … )` is space-separated and the arrow is no exception.
-Requiring the space is also what keeps the scanner lookahead-free (§5). As a
+Requiring the space is also what keeps the scanner lookahead-free (§6). As a
 consequence `--` cannot be used as a user word name.
 
 **Sigils**, recognised by first character, so the parser never needs to guess
@@ -93,7 +110,7 @@ which region of a signature it is in:
 |---|---|---|
 | `$x` | local variable | works |
 | `#T` | parametric type | parses, rejected by the elaborator |
-| `!Eff` | effect | parses, **silently discarded** — see §6 |
+| `!Eff` | effect | parses, **silently discarded** — see §7 |
 
 **Integers** are an optional `-` followed by at least one digit. The digit
 requirement is what lets `-` be a word:
@@ -171,7 +188,7 @@ define sign { dup 0 < if { } then { pop -1 } else { pop 1 } endif }
 **`endif` is mandatory; `else` is not.** The terminator is what keeps the
 grammar free of an ε-branch, and that in turn is what lets `then`, `else` and
 `endif` stay ordinary word names everywhere outside this construct — nothing is
-reserved. See §5.
+reserved. See §6.
 
 ### What the branches must agree on
 
@@ -205,7 +222,98 @@ flow.
 
 ---
 
-## 5. No lookahead
+## 5. Macros, and `locate`
+
+### The macro table
+
+`if` is not a parser built-in. It is one entry in `E03_Parser.macro_table`, and
+a macro there is **a grammar production plus a term transformer**: a fixed run
+of slots, then an alternation keyed on a word that is always consumed.
+
+| Slot | Matches |
+|---|---|
+| `MsBlock` | `{ … }`, captured as its term list |
+| `MsWord` | one identifier, captured as a string |
+| `MsKeyword s` | the literal word `s`; consumed, captures nothing |
+
+The whole table is checked to be LL(1) by `ll1_ok`, which requires that no two
+macros share a leading word and no two alternatives of one macro share a key.
+That check is run over the shipped table with `assert_norm`, not asserted in
+prose — it is the seed of the verified CFG-to-recursive-descent generator §6
+explains.
+
+Two properties are deliberate and worth relying on:
+
+- **A macro has no stack access.** Its input is syntax and its output is
+  syntax, so nothing it does is visible at runtime.
+- **A macro cannot consume the enclosing `}`.** Slots are parsed by the same
+  functions the block parser uses, so a macro that runs out of tokens inside
+  its production reports an error rather than reaching past the brace.
+
+**User-defined macros do not exist yet.** The table is built in and `if` is its
+only entry; registering a macro from catcat source is what the framework is for
+and needs the elaboration-time interpreter.
+
+### `locate`
+
+```
+locate <word>
+```
+
+Prints what a name is. There are three answers, and which one you get says
+where the name lives:
+
+```
+catcat> locate +
++ ( i64 i64 -- i64 )
+  \ primitive: integer add
+
+catcat> locate if
+macro if
+  if { } then { } endif
+  if { } then { } else { } endif
+
+catcat> define abs { dup 0 < if { } then { 0 swap - } endif }
+defined abs ( i64 -- i64 )
+catcat> locate abs
+define abs ( i64 -- i64 ) {
+  dup 0 < if { } then { 0 swap - } else { } endif
+}
+```
+
+A macro is reported before a word of the same name, because that is the order
+the parser resolves in.
+
+**The body shown is decompiled from the core term, not remembered source.**
+Nothing keeps the text you typed. What comes back is therefore what the word
+*is* after elaboration — note the `else { }` that `abs` never wrote — and it
+**re-parses to the same term**, so the output can be pasted back.
+
+Where the core has something the surface cannot spell, the rendering is
+deliberately not valid syntax rather than a plausible-looking guess:
+
+| Printed | Means |
+|---|---|
+| `pick.2` / `roll.2` | deep stack access two slots down — the compiled form of a `$x` local, whose name is gone |
+| `#7` | a word id with no name in scope |
+| `bool>sum`, `case { … } { … }` | a `TCase` that is not the two-branch boolean shape `if` reconstructs |
+
+So `locate hypotsq` shows the locals gone:
+
+```
+catcat> define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
+catcat> locate hypotsq
+define hypotsq ( i64 i64 -- i64 ) {
+  pick.1 pick.2 * pick.1 pick.2 * + roll.1 pop roll.1 pop
+}
+```
+
+which is the clearest available demonstration of what §3's "reads consume"
+paragraph actually compiles to.
+
+---
+
+## 6. No lookahead
 
 A hard constraint on the grammar, not a property of the current parser: **the
 lexer is a plain DFA and the parser is LL(1).** Every decision is made on the
@@ -232,7 +340,7 @@ point consumes a keyword instead.
 
 ---
 
-## 6. Not yet implemented
+## 7. Not yet implemented
 
 Each is specified in [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md) and
 absent from the implementation. Listed because the gap between the two documents
@@ -247,7 +355,7 @@ is otherwise invisible.
 | effects, handlers | not parsed |
 | sums, classes, `module`, `::`, `.` | not parsed |
 | strings `"…"`, quotation `'…'`, backtick | not lexed |
-| macros | not parsed |
+| user-defined macros | the framework exists (§5); the table is built in and only the compiler can add to it |
 | `Box`/`Rc` construction | types exist; no surface word builds one |
 | source positions in errors | absent — errors are messages without spans |
 
