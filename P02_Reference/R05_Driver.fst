@@ -13,11 +13,16 @@ let rec run (d:rdict) (fuel:nat) (s:mstate) : Tot rresult (decreases fuel) =
   else match step d s with
        | SNext s'         -> run d (fuel - 1) s'
        | SDone stk        -> RDone stk
-       | SEffect op stk _ -> REffect op stk
+       | SEffect op stk k -> REffect op stk k
        | SStuck msg       -> RStuck msg
 
 let eval (d:rdict) (fuel:nat) (t:term) (init:rstack) : Tot rresult =
   run d fuel (load t init)
+
+/// Re-enter the machine at a saved continuation. One line, because that is all
+/// it is: the interpreter's state was never destroyed, only handed out.
+let resume (d:rdict) (fuel:nat) (k:kont) (stk:rstack) : Tot rresult =
+  run d fuel ({ code = k; stk = stk })
 
 let eval_prelude (fuel:nat) (t:term) : Tot rresult =
   eval prelude fuel t []
@@ -54,7 +59,7 @@ let render_stack (s:rstack) : Tot string =
 let render_result (r:rresult) : Tot string =
   match r with
   | RDone stk        -> "ok  " ^ render_stack stk
-  | REffect op stk   -> "eff #" ^ string_of_int op ^ "  " ^ render_stack stk
+  | REffect op stk _ -> "eff #" ^ string_of_int op ^ "  " ^ render_stack stk
   | RStuck msg       -> "STUCK: " ^ msg
   | ROutOfFuel       -> "out of fuel"
 

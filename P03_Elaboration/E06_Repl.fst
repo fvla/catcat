@@ -95,7 +95,20 @@ let prelude_words : list nentry = [
   { n_name = "or";  n_id = w_or;  n_sig = bin_bool; n_op = None };
   { n_name = "true";  n_id = w_true;  n_sig = push_bool; n_op = None };
   { n_name = "false"; n_id = w_false; n_sig = push_bool; n_op = None };
+  /// The built-in `IO` effect (category 2). These are ORDINARY operations of
+  /// an ordinary effect — `n_op = Some eff_io` and nothing else — but no
+  /// program can handle them, because `effect` allocates ids from 1 upward and
+  /// the host owns 0. So `print` and `read` always escape to `bin/catcat.ml`,
+  /// which is the only thing in the system that can actually perform one.
+  { n_name = "print"; n_id = w_print;
+    n_sig = { pre = [i64_t]; post = [] };  n_op = Some eff_io };
+  { n_name = "read";  n_id = w_read;
+    n_sig = { pre = []; post = [i64_t] };  n_op = Some eff_io };
 ]
+
+/// `IO` is in scope from the first line, so `( -- i64 !IO )` resolves without
+/// anyone declaring it.
+let prelude_effs : list (string & eff_id) = [("IO", eff_io)]
 
 /// Every prelude word is pure, so the effect row is `pure_row` throughout.
 /// That stops being true at the first `effect` declaration.
@@ -108,11 +121,16 @@ let rec nenv_decls (ws:list nentry) : Tot (list (word_id & wdecl)) (decreases ws
                                    | Some e -> [(e, SDynamic)]) })
               :: nenv_decls r
 
-let prelude_nenv : nenv = { ne_words = prelude_words; ne_effs = [] }
+let prelude_nenv : nenv = { ne_words = prelude_words; ne_effs = prelude_effs }
 
 let init_session : session = {
   se_nenv  = prelude_nenv;
-  se_wenv  = { w_defs = nenv_decls prelude_words; w_ops = empty_sig_env };
+  se_wenv  = { w_defs = nenv_decls prelude_words;
+               w_ops  = { se_ops =
+                 [(w_print, { od_eff = eff_io;
+                              od_sig = { op_pre = [i64_t]; op_post = [] } });
+                  (w_read,  { od_eff = eff_io;
+                              od_sig = { op_pre = []; op_post = [i64_t] } })] } };
   se_dict  = prelude;
   se_next  = w_user_base;
   se_next_eff = 1;
@@ -244,90 +262,160 @@ let rec render_ops (e:nenv) (ds:list (string & ssig)) : Tot string (decreases ds
   | []               -> ""
   | (opname, _) :: r -> " " ^ opname ^ render_ops e r
 
-let eval_decl (s:session) (d:sdecl) : Tot (session & string) =
+(* --- suspension ----------------------------------------------------------- *)
+
+/// What the session needs in order to finish a line that stopped mid-way
+/// because an operation escaped every handler.
+///
+/// THE HOST IS THE OUTERMOST HANDLER. That is category 2 of the effect design
+/// — effects only the compiler or interpreter can supply — and it needs no
+/// language feature, only the observation that `R05.run` is a pure function
+/// which, on reaching an unhandled operation, can hand its caller everything
+/// required to carry on.
+///
+/// Nothing here is visible to a catcat program. The `kont` is the
+/// interpreter's own machine state; see the long note in `R05_Driver.fsti`
+/// about why that is not a language-level continuation and must not become one.
+noeq type suspension = {
+  su_sess  : session;
+  /// The expression's outputs, and the shape beneath them, so the session's
+  /// static shape can be restored when the line eventually finishes.
+  su_post  : list dtype;
+  su_below : list dtype;
+  su_rest  : list sdecl;
+  su_acc   : string;
+}
+
+noeq type dresult =
+  | DDone   : session -> string -> dresult
+  | DEffect : op_id -> rstack -> kont -> session -> list dtype -> list dtype
+            -> dresult
+
+noeq type lresult =
+  | LDone   : session -> string -> lresult
+  /// `l_op` escaped with `l_stk` as the live stack — the operation's arguments
+  /// on top — and `l_kont` as where to carry on. The host performs the
+  /// operation and calls `resume_line`.
+  | LEffect : op_id -> rstack -> kont -> suspension -> lresult
+
+/// Interpret one outcome of the machine. Factored out because `resume_line`
+/// needs exactly the same four cases: resuming is running.
+let run_expr (s:session) (post below:list dtype) (r:rresult) : Tot dresult =
+  match r with
+  | RDone stk ->
+    let s' = { s with se_stack = stk; se_shape = post @ below } in
+    DDone s' ("ok  " ^ render_stack stk)
+  /// Not an error: an operation with no handler in scope has reached the host,
+  /// which is the outermost handler. For `IO` that is the intended path; for a
+  /// user effect it means nobody handled it, and what to say about that is the
+  /// caller's decision, not this function's.
+  | REffect op stk k -> DEffect op stk k s post below
+  | RStuck m         -> DDone s ("STUCK: " ^ m)
+  | ROutOfFuel       -> DDone s "out of fuel"
+
+let eval_decl (s:session) (d:sdecl) : Tot dresult =
   match d with
 
   | SdDefine name sg body ->
     (match resolve_effs s.se_nenv sg.ss_eff with
-     | Inl e -> (s, "error: " ^ e)
+     | Inl e -> DDone s ("error: " ^ e)
      | Inr es ->
        (match elab_define s.se_nenv sg body with
-        | Inl e         -> (s, "error: " ^ e)
-        | Inr (row, t)  -> install_def s name (Some row) (Some es) row t))
+        | Inl e         -> DDone s ("error: " ^ e)
+        | Inr (row, t)  -> let (s', m) = install_def s name (Some row) (Some es) row t in
+                           DDone s' m))
 
   /// The inferred form prints the signature it worked out, which is the same
   /// text a language server would show inline (D01's tooling goal, N02 Q-11).
   | SdDefineInfer name body ->
     (match elab_define_infer s.se_nenv body with
-     | Inl e         -> (s, "error: " ^ e)
-     | Inr (row, t)  -> install_def s name None None row t)
+     | Inl e         -> DDone s ("error: " ^ e)
+     | Inr (row, t)  -> let (s', m) = install_def s name None None row t in
+                        DDone s' m)
 
   /// An effect declaration installs nothing runnable — it names operations and
   /// gives them signatures. Calling one without a handler in scope is legal and
   /// escapes to the top level, which is what `!IO` at `main` will mean (M5).
   | SdEffect name decls ->
     (match lookup_eff s.se_nenv name with
-     | Some _ -> (s, "error: effect " ^ name ^ " is already declared")
+     | Some _ -> DDone s ("error: effect " ^ name ^ " is already declared")
      | None ->
        let eid = s.se_next_eff in
        let s0 = { s with
          se_nenv = { s.se_nenv with ne_effs = (name, eid) :: s.se_nenv.ne_effs };
          se_next_eff = eid + 1 } in
        (match install_ops s0 eid decls with
-        | Inl e  -> (s, "error: " ^ e)
-        | Inr s' -> (s', "effect " ^ name ^ render_ops s'.se_nenv decls)))
+        | Inl e  -> DDone s ("error: " ^ e)
+        | Inr s' -> DDone s' ("effect " ^ name ^ render_ops s'.se_nenv decls)))
 
   /// Pure inspection: no term is elaborated, nothing runs, the session is
   /// returned untouched. `locate` is the one declaration that cannot fail
   /// interestingly, which is why it is safe to type at any point.
-  | SdLocate name -> (s, locate s.se_nenv s.se_wenv s.se_dict name)
+  | SdLocate name -> DDone s (locate s.se_nenv s.se_wenv s.se_dict name)
 
   | SdExpr body ->
     (match elab_expr s.se_nenv s.se_shape body with
-     | Inl e -> (s, "error: " ^ e)
+     | Inl e -> DDone s ("error: " ^ e)
      | Inr t ->
        let env = s.se_wenv in
        (match infer env t with
-        | None -> (s, "error: expression does not typecheck")
+        | None -> DDone s "error: expression does not typecheck"
         | Some (row, _) ->
           (match strip_prefix row.pre s.se_shape with
            | None ->
-             (s, "error: this needs " ^ render_tys (rev row.pre)
-                 ^ " on the stack, but the stack holds "
-                 ^ render_tys (rev s.se_shape))
-           | Some below ->
-             (match eval s.se_dict fuel t s.se_stack with
-              | RDone stk ->
-                let s' = { s with se_stack = stk;
-                                  se_shape = row.post @ below } in
-                (s', "ok  " ^ render_stack stk)
-              /// A legitimate outcome, not an error: an effect with no handler
-              /// in scope escapes to the top level, which is exactly what
-              /// `!IO` at `main` will mean once the host supplies one (M5).
-              | REffect op _  -> (s, "unhandled: " ^ show_word s.se_nenv op
-                                     ^ " escaped with no handler in scope")
-              | RStuck m      -> (s, "STUCK: " ^ m)
-              | ROutOfFuel    -> (s, "out of fuel")))))
+             DDone s ("error: this needs " ^ render_tys (rev row.pre)
+                      ^ " on the stack, but the stack holds "
+                      ^ render_tys (rev s.se_shape))
+           | Some below -> run_expr s row.post below (eval s.se_dict fuel t s.se_stack))))
+
+let join_msg (acc msg:string) : Tot string =
+  if acc = "" then msg else acc ^ "\n" ^ msg
 
 let rec eval_decls (s:session) (ds:list sdecl) (acc:string)
-  : Tot (session & string) (decreases ds) =
+  : Tot lresult (decreases ds) =
   match ds with
-  | []     -> (s, acc)
+  | []     -> LDone s acc
   | d :: r ->
-    let (s', msg) = eval_decl s d in
-    eval_decls s' r (if acc = "" then msg else acc ^ "\n" ^ msg)
+    (match eval_decl s d with
+     | DDone s' msg -> eval_decls s' r (join_msg acc msg)
+     | DEffect op stk k s0 post below ->
+       LEffect op stk k ({ su_sess = s0; su_post = post; su_below = below;
+                           su_rest = r; su_acc = acc }))
 
 (* ------------------------------------------------------------------------ *)
 (* Entry point                                                              *)
 (* ------------------------------------------------------------------------ *)
 
-/// Evaluate one line of source, returning the updated session and what to
-/// print. A parse or type error leaves the session untouched, which is what
-/// makes the REPL safe to type into.
-let eval_line (s:session) (src:string) : Tot (session & string) =
+/// Evaluate one line of source. A parse or type error leaves the session
+/// untouched, which is what makes the REPL safe to type into.
+///
+/// `LEffect` means the line is not finished: an operation escaped every
+/// handler and the host must perform it, then call `resume_line`.
+let eval_line (s:session) (src:string) : Tot lresult =
   match parse src with
-  | Inl e   -> (s, "error: " ^ e)
+  | Inl e   -> LDone s ("error: " ^ e)
   | Inr ds  -> eval_decls s ds ""
+
+/// Carry on after the host has performed an operation. `stk` is the live stack
+/// with the operation's arguments removed and its results pushed.
+let resume_line (su:suspension) (k:kont) (stk:rstack) : Tot lresult =
+  match run_expr su.su_sess su.su_post su.su_below
+                 (resume su.su_sess.se_dict fuel k stk) with
+  | DDone s' msg -> eval_decls s' su.su_rest (join_msg su.su_acc msg)
+  | DEffect op stk' k' s0 post below ->
+    LEffect op stk' k' ({ su with su_sess = s0; su_post = post; su_below = below })
+
+/// What to print when an operation reaches the host and the host has no
+/// implementation for it — every user-declared effect, since only `IO` is the
+/// host's to service.
+let unhandled_msg (s:session) (op:op_id) : Tot string =
+  "unhandled: " ^ show_word s.se_nenv op ^ " escaped with no handler in scope"
+
+/// Finish a line the host has declined to service, running whatever
+/// declarations followed the one that suspended.
+let abandon_line (su:suspension) (op:op_id) : Tot lresult =
+  eval_decls su.su_sess su.su_rest
+             (join_msg su.su_acc (unhandled_msg su.su_sess op))
 
 /// The current stack, rendered bottom-to-top.
 let show_stack (s:session) : Tot string = render_stack s.se_stack

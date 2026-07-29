@@ -20,6 +20,21 @@ let w_or  : word_id = 10
 let w_true  : word_id = 11
 let w_false : word_id = 12
 
+/// EFFECT 0 IS `IO`, AND ONLY THE HOST CAN HANDLE IT (category 2).
+///
+/// `print` and `read` are ordinary operations of an ordinary effect -- there is
+/// no second mechanism -- but no catcat program can supply an implementation,
+/// because the interpreter reserves effect 0 and the surface `effect`
+/// declaration allocates from 1 upward. An `IO` operation therefore always
+/// escapes every handler and reaches `R05`'s caller, which performs it.
+///
+/// That asymmetry is the whole of "suppliable only by the compiler or
+/// interpreter to the entry point": it is a property of who owns the id, not of
+/// the effect system, which needed no new feature to express it.
+let eff_io  : eff_id  = 0
+let w_print : word_id = 13
+let w_read  : word_id = 14
+
 let w_user_base : word_id = 100
 
 let prelude : rdict = [
@@ -39,6 +54,8 @@ let prelude : rdict = [
   /// `.fst`/`.fsti` pair.
   (w_true,  WDef (TLit (LPrim PBool true)));
   (w_false, WDef (TLit (LPrim PBool false)));
+  (w_print, WOp eff_io);
+  (w_read,  WOp eff_io);
 ]
 
 /// `PI64`'s representation is `sint 64`, so the literal must be in range. Out

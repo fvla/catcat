@@ -420,6 +420,24 @@ This is the aliasing rule a linear language ought to enforce statically — it i
 admission that a static version would be better. Recorded as an open question
 rather than pretended away.
 
+**D-49. The host is the outermost handler, and `IO` is effect 0.**
+`print` and `read` are ordinary operations of an ordinary effect. What makes
+them the compiler's to supply and not the user's is that the interpreter owns
+effect id 0 while the surface `effect` declaration allocates from 1 upward, so
+an `IO` operation can never find a handler inside the program and always
+escapes to `R05`'s caller.
+*Why:* category 2 of the effect design needed no new language feature at all —
+only the observation that a pure `run` reaching an unhandled operation can hand
+its caller what it needs to carry on. `bin/catcat.ml` performs the operation and
+calls `resume`.
+*The `kont` this exposes is NOT a language-level continuation.* No catcat
+program can name it, no `dtype` describes it, no handler sees one, and D-36 is
+untouched. It is the interpreter's own machine state, exposed because a pure F*
+function cannot perform IO. A compiled program calls the runtime directly and
+has no such object — stated as an obligation in `R05_Driver.fsti`, because the
+place it could quietly stop being true is a backend that implements built-in
+effects by copying this driver's shape.
+
 **D-38. `effect` and `handle` are parser built-ins, not macros.** They need
 sub-grammars — a block of `op { … }` pairs is not a term list — and the macro
 slot vocabulary should not be stretched to cover them before it has been

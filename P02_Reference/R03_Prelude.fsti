@@ -47,6 +47,14 @@ val w_false : word_id
 
 /// The first id available to user definitions. Kept explicit so P03 can
 /// allocate above the primitives without a magic constant.
+/// Effect 0 is `IO`, reserved for the host. See the note in the implementation:
+/// no catcat program can handle it, because the surface `effect` declaration
+/// allocates effect ids from 1 upward, so an `IO` operation always escapes to
+/// `R05`'s caller — which is the only place that can actually perform one.
+val eff_io  : eff_id
+val w_print : word_id
+val w_read  : word_id
+
 val w_user_base : word_id
 
 (* ------------------------------------------------------------------------ *)

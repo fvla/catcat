@@ -27,9 +27,27 @@ open R03_Prelude
 /// `REffect` is a legitimate outcome, not a failure: an unhandled effect at
 /// the top level is what `!IO` on `main` means. `RStuck` is the only genuine
 /// error, and R04's obligation E2 says it is unreachable for well-typed input.
+///
+/// THE `kont` IN `REffect` IS NOT A LANGUAGE-LEVEL CONTINUATION, and the
+/// distinction has to be stated here or it will be misread later.
+///
+/// No catcat program can name it. No `dtype` describes it. It is not reachable
+/// from any value, it is never pushed, and nothing in D-36 is weakened by its
+/// existence — a handler still never sees one. It is the *interpreter's own
+/// machine state*, exposed for exactly one reason: `run` is a pure F* function
+/// and cannot itself perform IO, so when an operation escapes every handler,
+/// the only thing it can do is hand the host what it would need to carry on.
+/// The host is the outermost handler, and `resume` is how it answers.
+///
+/// A COMPILED program has no such object. `print` compiles to a direct call
+/// into the runtime, which returns; there is nothing to save and nothing to
+/// resume. That this stays true is an obligation on the backend, not an
+/// intention — it is what "the semantics must be optimized out" means, and
+/// the place it could quietly stop being true is a backend that implements
+/// built-in effects by reusing this driver's shape.
 noeq type rresult =
   | RDone       : rstack -> rresult
-  | REffect     : op_id -> rstack -> rresult
+  | REffect     : op_id -> rstack -> kont -> rresult
   | RStuck      : string -> rresult
   | ROutOfFuel  : rresult
 
@@ -40,6 +58,14 @@ noeq type rresult =
 val run (d:rdict) (fuel:nat) (s:mstate) : Tot rresult
 
 val eval (d:rdict) (fuel:nat) (t:term) (init:rstack) : Tot rresult
+
+/// Carry on from an escaped operation, with `stk` as the stack the host leaves
+/// behind: the operation's arguments removed and its results pushed.
+///
+/// The host performs the operation itself, so this is the outermost handler
+/// implemented outside the language — category 2 of the effect design, the one
+/// only the compiler or interpreter can supply.
+val resume (d:rdict) (fuel:nat) (k:kont) (stk:rstack) : Tot rresult
 
 /// Evaluate against the standard dictionary on an empty stack.
 val eval_prelude (fuel:nat) (t:term) : Tot rresult
