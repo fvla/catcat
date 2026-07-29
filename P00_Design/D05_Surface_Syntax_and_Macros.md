@@ -152,8 +152,8 @@ land, this is the point that changes.
 
 **Where signatures stay mandatory: inside an effect declaration.** An interface
 exists to fix signatures *before* any implementation, so there is nothing to
-infer from and inferring would invert the dependency. Nothing enforces this yet
-because effect syntax does not exist; it belongs with the D03 pass.
+infer from and inferring would invert the dependency. **Now enforced**: see
+§3.5, where `declare` without a signature is an error.
 
 **This is the input to the tooling story.** A stack language's central
 readability problem is that a word's effect on the stack is invisible at the
@@ -283,6 +283,53 @@ stack juggling helps most. A by-copy reading would have required `Copy` on every
 bound type and been useless for exactly the `Counter` of D03 §3.
 
 Scoping is lexical, to the enclosing `{}`.
+
+---
+
+## 3.5 Effects, handlers and rebinding — as implemented
+
+The syntax that runs today. It is narrower than §4's module story and reaches
+the same machinery, so it is recorded here rather than left to be inferred from
+the difference.
+
+```
+effect Counter {
+    declare tick  ( -- i64 )
+    declare reset ( -- )
+}
+
+handle Counter over ( i64 ) init { 0 } {
+    tick  { dup 1 + }        \ ( state -- i64 state )
+    reset { pop 0 }          \ ( state -- state )
+} { tick tick + }
+
+with { noisy quiet } { noisy noisy }
+```
+
+Four things about it are decisions rather than defaults:
+
+- **`declare` requires a signature** (above). This is the carve-out being
+  enforced for the first time.
+- **A handler is a stateful object, not a continuation consumer** (D-36). The
+  state segment is `over ( … )`, the initialiser is `init { … }`, and each
+  implementation is checked at the operation's signature with the state framed
+  **on top** (D-46) — so `( args… state -- results… state )`. The state is the
+  receiver, and a receiver is pushed last.
+- **On exit the final state is left on the stack** (D-47). The handler *is* the
+  object, so the object outlives the block.
+- **`with` is static** (D-50). The rebinding is discharged during elaboration
+  and leaves nothing in the core term — `M11`'s E3 demonstrated rather than
+  assumed. The replacement must have the same signature; its effects may differ,
+  which is the point.
+
+`effect` and `handle` are parser built-ins rather than macro-table entries
+(D-38): a block of `op { … }` pairs is not a term list, and the slot vocabulary
+of §5 should not be stretched to cover it before it has been exercised on the
+constructs it already fits.
+
+Not yet reached from here: `use`, `::`, `.`, `module`, and the dynamic form of
+`with`. §4's module system is the same Dictionary walk, so it is an extension of
+this rather than a second mechanism.
 
 ---
 
