@@ -26,15 +26,39 @@ open M05_Terms
 (* Environments and effect-row operations                                   *)
 (* ------------------------------------------------------------------------ *)
 
-noeq type wenv = {
-  /// Declared signature and effect row of each named word. Because interface
-  /// operations and ordinary words are both `TWord`, this table is also the
-  /// Dictionary as seen by the type checker (D04).
-  w_sig  : word_id -> srow;
-  w_eff  : word_id -> erow;
+/// What the type checker knows about one word: its signature and its effects.
+type wdecl = { wd_sig : srow; wd_eff : erow }
+
+/// Declared signature and effect row of each named word. Because interface
+/// operations and ordinary words are both `TWord`, this table is also the
+/// Dictionary as seen by the type checker (D04).
+///
+/// AN ASSOCIATION LIST, for the reason given at `M04.sig_env` (D-45): a
+/// function-typed field cannot be built without a closure, and P03's REPL has
+/// to build one of these for every line it checks.
+type wenv = {
+  w_defs : list (word_id & wdecl);
   /// Operation declarations, used to check handler implementations.
   w_ops  : sig_env;
 }
+
+/// An UNDECLARED word is the identity program with no effects.
+///
+/// Total for the same reason `M04.op_of` is, though less forcefully — nothing
+/// here appears in a type. It is still the right default: `infer` reports an
+/// unknown word by way of the composition failing, which gives a signature
+/// mismatch at the point of use rather than a lookup failure with no context.
+let wd_unknown : wdecl = { wd_sig = sid; wd_eff = pure_row }
+
+let rec lookup_word (ds:list (word_id & wdecl)) (w:word_id)
+  : Tot wdecl (decreases ds) =
+  match ds with
+  | []            -> wd_unknown
+  | (w', d) :: r  -> if w' = w then d else lookup_word r w
+
+let w_sig (env:wenv) (w:word_id) : Tot srow = (lookup_word env.w_defs w).wd_sig
+
+let w_eff (env:wenv) (w:word_id) : Tot erow = (lookup_word env.w_defs w).wd_eff
 
 /// Row union. Kept as append: deduplication is an optimisation on the
 /// representation, never a semantic step, and `lemma_within_weaken` in M04 is
@@ -97,7 +121,7 @@ let rec infer (env:wenv) (t:term)
     Some ({ pre = above @ [d]; post = d :: above }, pure_row)
 
   /// Words and interface operations share one rule.
-  | TWord w -> Some (env.w_sig w, env.w_eff w)
+  | TWord w -> Some (w_sig env w, w_eff env w)
 
   /// Sealing is where a stack segment becomes one denotable value, and where
   /// a type may narrow its capabilities (D03).
@@ -224,8 +248,8 @@ and infer_impls (env:wenv) (eff:eff_id) (impls:list (op_id & term))
   | (op, body) :: rest ->
     (match infer env body, infer_impls env eff rest with
      | Some (s, ei), Some er ->
-       let osig = env.w_ops.op_of op in
-       if env.w_ops.eff_of op = eff
+       let osig = op_of env.w_ops op in
+       if eff_of env.w_ops op = eff
           && s.pre = osig.op_pre
           && s.post = osig.op_post
        then Some (row_union ei er)

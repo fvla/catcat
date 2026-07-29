@@ -46,7 +46,7 @@ type op_impl (env:sig_env) (o:op_sig) (a:seg) =
 /// Not by analogy -- there is literally one type, and D03 explains why that
 /// collapse is the design's best property rather than an overloading of terms.
 noeq type handler (env:sig_env) (eff:eff_id) (a:seg) = {
-  h_ops : op:op_id -> op_impl env (env.op_of op) a;
+  h_ops : op:op_id -> op_impl env (op_of env op) a;
   h_ret : vstack a -> free env a;
 }
 

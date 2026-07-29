@@ -395,6 +395,29 @@ statically stack-typed language. Forth reaches the same shape from the other
 direction by making `LOCATE` immediate; here the position rule does it without
 needing immediacy to exist yet.
 
+## The specification's own representation
+
+**D-45. No function-typed record fields anywhere, including P01.**
+`M04.sig_env` and `M06.wenv` are association lists with total lookup functions
+(`op_of`, `eff_of`, `w_sig`, `w_eff`); an unknown id resolves to a declared
+default rather than failing.
+*Why:* the first-order subset (D-20) was stated as a rule for P02 because P02
+extracts to catcat. But P03 must CONSTRUCT a `wenv` to call `infer`, and
+constructing a function-typed field needs a closure — so the rule was being
+violated in the one place that could not avoid it, and would be violated again
+by anything that ever wants to build a specification environment. Making the
+spec's own environments first-order costs nothing: `op_of` is still a function,
+just a defined one rather than a field.
+*Totality is load-bearing:* `M04.op_of` appears inside the TYPE of `free`, so
+it cannot return an option. The default is the nullary operation of effect 0,
+and it is safe because M06 checks an operation is declared before accepting a
+program that uses it — the default is never what a well-typed program sees.
+*What this actually unblocked:* `E06_Repl.mk_wenv` had been faking the
+operation table with closures returning junk, because there was no honest way
+to build one. Handler typechecking reads exactly that table (`M06.infer_impls`),
+so the fake would have accepted every handler implementation without complaint.
+This is why it is a prerequisite for the effect system and not a cleanup.
+
 ---
 
 **D-26. Wrapping unsafe primitives into the linear system is a recurring

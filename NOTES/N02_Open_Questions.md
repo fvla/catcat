@@ -51,17 +51,16 @@ become environment-relative first — which D-25 partly does anyway.
 Reserved, recommended, uncommitted. Natural reading: `'word` is `{word}` for a
 single word.
 
-**Q-10. `wenv` and `sig_env` have function-typed fields.**
-`M06_Typing.wenv` is `{ w_sig : word_id -> srow; … }` and `M04_Effects.sig_env`
-likewise. Constructing one needs a closure, which breaks the first-order subset
-(D-20) — so `E06_Repl.mk_wenv` is currently the only subset violation in P03,
-and it blocks catcat-extraction of that module.
-*Found by:* writing the REPL, which must build a `wenv` to call `infer`.
-*Fix:* change both records to association lists in P01, and add lookup helpers.
-Mechanical, but it touches the spec, so it wants doing deliberately rather than
-in passing.
-*Cost of leaving open:* nothing today — the OCaml build is unaffected. It
-becomes blocking when P03 needs to self-host.
+**Q-10. `wenv` and `sig_env` have function-typed fields.** — **CLOSED** (D-45).
+Both are association lists with total lookup functions (`M04.op_of`,
+`M04.eff_of`, `M06.w_sig`, `M06.w_eff`). `E06_Repl` no longer builds a closure
+and P03 is inside the first-order subset throughout.
+
+What made this worth doing ahead of the effect system rather than as cleanup:
+`mk_wenv` had been faking the operation table, returning a nullary signature
+for every id, because there was no honest way to build one. Handler
+typechecking reads that table. The fake would have silently accepted every
+handler implementation.
 
 **Q-11. Inline signature display in the editor.** (D-31)
 Every word's stack effect is now computed whether or not it is written down, so

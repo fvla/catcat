@@ -20,14 +20,13 @@ module E06_Repl
 ///   check that a line's inputs actually match the live stack, and report a
 ///   real error instead of getting stuck at runtime.
 ///
-/// KNOWN SUBSET VIOLATION
-///   `mk_wenv` builds `M06_Typing.wenv`, whose fields are FUNCTIONS
-///   (`w_sig : word_id -> srow`). Constructing one requires a closure, which
-///   breaks P02's first-order discipline (D-20) and therefore blocks
-///   catcat-extraction of this module. The same is true of `M04.sig_env`.
-///   Fixing it means changing those records to association lists in P01.
-///   Recorded in N02 rather than papered over: the OCaml build is unaffected,
-///   so nothing here fails today.
+/// FIRST-ORDER THROUGHOUT
+///   `mk_wenv` used to build a `wenv` out of closures, because `wenv`'s fields
+///   were functions. That was P03's only violation of the first-order subset
+///   (D-20) and it blocked catcat-extraction of this module. M04 and M06 now
+///   hold association lists (D-45), so the session simply hands over the tables
+///   it was already keeping — and the fake operation table, which returned a
+///   nullary signature for every id, is gone with it.
 
 open FStar.List.Tot
 open M01_Kinds
@@ -50,8 +49,9 @@ open E05_Locate
 
 noeq type session = {
   se_nenv  : nenv;
-  /// Backing table for `mk_wenv`.
-  se_defs  : list (word_id & srow);
+  /// What M06 checks against. Carried directly now that it is a pair of
+  /// tables rather than a bundle of closures; `install_def` conses onto it.
+  se_wenv  : wenv;
   se_dict  : rdict;
   se_next  : word_id;
   se_stack : rstack;
@@ -92,27 +92,20 @@ let prelude_nenv : nenv = [
   { n_name = "false"; n_id = w_false; n_sig = push_bool };
 ]
 
-let rec nenv_defs (e:nenv) : Tot (list (word_id & srow)) (decreases e) =
+/// Every prelude word is pure, so the effect row is `pure_row` throughout.
+/// That stops being true at the first `effect` declaration.
+let rec nenv_decls (e:nenv) : Tot (list (word_id & wdecl)) (decreases e) =
   match e with
   | []     -> []
-  | n :: r -> (n.n_id, n.n_sig) :: nenv_defs r
+  | n :: r -> (n.n_id, { wd_sig = n.n_sig; wd_eff = pure_row }) :: nenv_decls r
 
 let init_session : session = {
   se_nenv  = prelude_nenv;
-  se_defs  = nenv_defs prelude_nenv;
+  se_wenv  = { w_defs = nenv_decls prelude_nenv; w_ops = empty_sig_env };
   se_dict  = prelude;
   se_next  = w_user_base;
   se_stack = [];
   se_shape = [];
-}
-
-/// See the KNOWN SUBSET VIOLATION note in the header: these closures are the
-/// only ones in P03.
-let mk_wenv (defs:list (word_id & srow)) : Tot wenv = {
-  w_sig = (fun w -> match assoc w defs with Some s -> s | None -> sid);
-  w_eff = (fun _ -> pure_row);
-  w_ops = { op_of  = (fun _ -> { op_pre = []; op_post = [] });
-            eff_of = (fun _ -> 0) };
 }
 
 (* ------------------------------------------------------------------------ *)
@@ -142,7 +135,7 @@ let fuel : nat = 1000000
 /// rather than blaming the program.
 let install_def (s:session) (name:string) (declared:option srow) (row:srow) (t:term)
   : Tot (session & string) =
-  let env = mk_wenv s.se_defs in
+  let env = s.se_wenv in
   match infer env t with
   | None -> (s, "error: " ^ name ^ " does not typecheck")
   | Some (got, _) ->
@@ -156,7 +149,9 @@ let install_def (s:session) (name:string) (declared:option srow) (row:srow) (t:t
       let id = s.se_next in
       let s' = { s with
         se_nenv = ({ n_name = name; n_id = id; n_sig = row }) :: s.se_nenv;
-        se_defs = (id, row) :: s.se_defs;
+        se_wenv = { s.se_wenv with
+                      w_defs = (id, { wd_sig = row; wd_eff = pure_row })
+                               :: s.se_wenv.w_defs };
         se_dict = dict_extend s.se_dict id (WDef t);
         se_next = id + 1 } in
       (s', "defined " ^ name ^ " " ^ render_row row)
@@ -185,7 +180,7 @@ let eval_decl (s:session) (d:sdecl) : Tot (session & string) =
     (match elab_expr s.se_nenv s.se_shape body with
      | Inl e -> (s, "error: " ^ e)
      | Inr t ->
-       let env = mk_wenv s.se_defs in
+       let env = s.se_wenv in
        (match infer env t with
         | None -> (s, "error: expression does not typecheck")
         | Some (row, _) ->

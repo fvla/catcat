@@ -49,7 +49,7 @@ noeq type mstate = {
 /// effects suspend, and it is why the continuation is explicit here.
 noeq type mresult (env:sig_env) =
   | MDone    : dstack -> mresult env
-  | MEffect  : op:op_id -> vstack (env.op_of op).op_pre -> kont -> mresult env
+  | MEffect  : op:op_id -> vstack (op_of env op).op_pre -> kont -> mresult env
   | MStuck   : mstate -> mresult env
 
 (* ------------------------------------------------------------------------ *)

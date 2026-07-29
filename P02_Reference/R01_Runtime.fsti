@@ -22,8 +22,9 @@ module R01_Runtime
 ///     * No closures, no higher-order functions, no partial application.
 ///       catcat has no runtime function values (D02 6), so a continuation must
 ///       be DATA. R02 defunctionalises accordingly.
-///     * No function-typed record fields. M04's `sig_env` uses them; the
-///       interpreter uses association lists instead.
+///     * No function-typed record fields. Association lists with a total
+///       lookup instead -- which is now what M04's `sig_env` and M06's `wenv`
+///       are too, so this rule holds across P01 as well (D-45).
 ///     * All recursion structural, with explicit measures where F* needs them.
 ///     * Plain inductives only: no typeclasses, no indexed families, no
 ///       implicit arguments that survive erasure.

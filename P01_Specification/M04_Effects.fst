@@ -46,13 +46,44 @@ type erow = list (eff_id & stage)
 
 let pure_row : erow = []
 
+/// One operation's declaration: which effect it belongs to, and its signature.
+type op_decl = { od_eff : eff_id; od_sig : op_sig }
+
 /// The ambient declaration table. Keeping operations in a table rather than
 /// inside the `free` type is what lets a handler replace an operation's
 /// implementation without changing any program's type.
-noeq type sig_env = {
-  op_of  : op_id -> op_sig;
-  eff_of : op_id -> eff_id;
-}
+///
+/// AN ASSOCIATION LIST, NOT A FUNCTION (D-45). The obvious spelling of this
+/// record is `{ op_of : op_id -> op_sig; eff_of : op_id -> eff_id }`, and it
+/// was, until the REPL had to build one: constructing a function-typed field
+/// needs a closure, which is outside the first-order subset every extractable
+/// module is written in (D-20). A table is constructible by anything that can
+/// build a list, which is the whole point.
+type sig_env = { se_ops : list (op_id & op_decl) }
+
+let empty_sig_env : sig_env = { se_ops = [] }
+
+/// The declaration an UNDECLARED operation resolves to.
+///
+/// A total function is not a convenience here, it is a requirement: `op_of`
+/// appears inside the TYPE of `free`, so it cannot return an option and it
+/// cannot fail. An undeclared id gets the nullary operation of effect 0, and
+/// nothing is thereby made well typed that should not be — M06 checks that an
+/// operation is declared before it will accept a program using it.
+let op_unknown : op_decl = { od_eff = 0; od_sig = { op_pre = []; op_post = [] } }
+
+let rec lookup_op (ops:list (op_id & op_decl)) (o:op_id)
+  : Tot op_decl (decreases ops) =
+  match ops with
+  | []            -> op_unknown
+  | (o', d) :: r  -> if o' = o then d else lookup_op r o
+
+let op_of (env:sig_env) (o:op_id) : Tot op_sig = (lookup_op env.se_ops o).od_sig
+
+let eff_of (env:sig_env) (o:op_id) : Tot eff_id = (lookup_op env.se_ops o).od_eff
+
+let declared (env:sig_env) (o:op_id) : Tot bool =
+  existsb (fun (o', _) -> o' = o) env.se_ops
 
 (* ------------------------------------------------------------------------ *)
 (* The free monad                                                           *)
@@ -66,8 +97,8 @@ noeq type sig_env = {
 noeq type free (env:sig_env) (a:seg) : Type =
   | Pure : vstack a -> free env a
   | Op   : op:op_id
-         -> vstack (env.op_of op).op_pre
-         -> (vstack (env.op_of op).op_post -> free env a)
+         -> vstack (op_of env op).op_pre
+         -> (vstack (op_of env op).op_post -> free env a)
          -> free env a
 
 let rec fbind (#env:sig_env) (#a #b:seg)
@@ -126,7 +157,7 @@ let rec within (#env:sig_env) (#a:seg) (row:erow) (m:free env a)
   : Tot prop (decreases m) =
   match m with
   | Pure _      -> True
-  | Op op _ k   -> eff_mem (env.eff_of op) row /\
+  | Op op _ k   -> eff_mem (eff_of env op) row /\
                    (forall res. within row (k res))
 
 /// Purity is the empty row: no operations at all.
@@ -143,7 +174,7 @@ let rec lemma_within_weaken (#env:sig_env) (#a:seg)
   match m with
   | Pure _    -> ()
   | Op _ _ k  ->
-    let aux (res:vstack (env.op_of (Op?.op m)).op_post)
+    let aux (res:vstack (op_of env (Op?.op m)).op_post)
       : Lemma (within row1 (k res) ==> within row2 (k res)) =
       lemma_within_weaken row1 row2 (k res)
     in
