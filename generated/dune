@@ -15,6 +15,6 @@
  (modules
    M01_Kinds M02_Stacks M03_Signatures M04_Effects M05_Terms M06_Typing
    R01_Runtime R02_Machine R03_Prelude R04_Erasure R05_Driver
-   E01_Lexer E02_Ast E03_Parser E04_Elaborate E05_Repl)
+   E01_Lexer E02_Ast E03_Parser E04_Elaborate E05_Locate E06_Repl)
  (flags (:standard -w -a))
  (libraries fstar.lib zarith))

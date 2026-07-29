@@ -28,7 +28,7 @@ REF_MODULES := +M01_Kinds +M02_Stacks +M03_Signatures +M04_Effects +M05_Terms \
 
 # ...plus the elaborator, for the REPL.
 ALL_MODULES := $(REF_MODULES) +E01_Lexer +E02_Ast +E03_Parser +E04_Elaborate \
-               +E05_Repl
+               +E05_Locate +E06_Repl
 
 .PHONY: all extract repl catcat verify verify-spec verify-ref verify-elab interp admits clean
 
@@ -78,7 +78,7 @@ verify-elab:
 # no code for them.
 REF_IMPL := $(sort $(wildcard $(REF_DIR)/R*.fst))
 
-generated/E05_Repl.ml: $(SPEC_SRC) $(REF_SRC) $(ELAB_SRC)
+generated/E06_Repl.ml: $(SPEC_SRC) $(REF_SRC) $(ELAB_SRC)
 	@mkdir -p generated $(FSTAR_CACHE_DIR)
 	$(FSTAR_CHK) --codegen OCaml --extract '$(ALL_MODULES)' \
 		--odir generated $(SPEC_DIR)/M06_Typing.fst
@@ -89,12 +89,12 @@ generated/E05_Repl.ml: $(SPEC_SRC) $(REF_SRC) $(ELAB_SRC)
 			--odir generated $$m || exit 1; \
 	done
 
-interp: generated/E05_Repl.ml
+interp: generated/E06_Repl.ml
 	dune build bin/interp.exe
 	./_build/default/bin/interp.exe
 
 # The REPL: read a line of catcat, elaborate, typecheck, evaluate, print.
-catcat: generated/E05_Repl.ml
+catcat: generated/E06_Repl.ml
 	dune build bin/catcat.exe
 	@echo "built ./_build/default/bin/catcat.exe"
 

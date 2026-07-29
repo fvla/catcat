@@ -368,6 +368,33 @@ name, and neither the lexer nor `E04` grows a case. Until now there was no way
 to write a `bool` at all, so `and`/`or`/`not` were reachable only through a
 comparison.
 
+## Inspection
+
+**D-43. `locate` decompiles the core term; no source text is retained.**
+`E05_Locate.show_items` renders a `M05.term` back into surface syntax, using
+the session's name environment to turn `word_id`s back into names.
+*Why:* keeping the source text alongside the definition means keeping two
+things in agreement, and every pass that rewrites a term — macro expansion
+today, `specialize` from M6 on — would have to maintain the copy. A term cannot
+go stale relative to itself. The second reason is the one that decided it:
+because the output is surface syntax that **re-parses to the same term**,
+`locate` is a test of the elaborator rather than a convenience. Verified by
+feeding `locate abs`'s output back in, including nested `if`.
+*Consequence:* where the surface language cannot spell a core construct, the
+rendering is deliberately **not** valid syntax — `pick.2`, `#7` for a word with
+no name in scope — rather than a plausible-looking lie. Deep stack access is
+the standing case: `$x` locals are gone by then and their names with them.
+
+**D-44. `locate` is a declaration, recognised by position, not a word.**
+Like `define`, `locate` is matched at the start of a declaration and nothing
+reserves the name — `define locate { 42 }` is still legal, and `locate` inside
+a body is an ordinary word.
+*Why:* its argument is a NAME, not a value. It has nothing to do with the stack
+and therefore has no signature to give it, so it cannot be a word in a
+statically stack-typed language. Forth reaches the same shape from the other
+direction by making `LOCATE` immediate; here the position rule does it without
+needing immediacy to exist yet.
+
 ---
 
 **D-26. Wrapping unsafe primitives into the linear system is a recurring

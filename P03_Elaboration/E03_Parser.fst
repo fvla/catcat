@@ -376,12 +376,19 @@ let parse_define (ts:list token) : Tot (presult sdecl) =
     PErr ("expected '(' or '{' after 'define " ^ name ^ "'")
   | _ -> PErr "expected a name after 'define'"
 
-/// One declaration. A leading `define` starts a definition; anything else is
-/// an expression run to the end of input.
+/// One declaration. A leading `define` starts a definition, a leading `locate`
+/// an inspection; anything else is an expression run to the end of input.
+///
+/// Neither word is reserved — both are recognised by POSITION, at the start of
+/// a declaration, so `define locate { … }` remains legal and a `locate` inside
+/// a body is an ordinary word. This is the same rule that keeps `then`, `else`
+/// and `endif` free (D-32, D-34).
 let parse_decl (ts:list token) : Tot (presult sdecl) =
   match ts with
   | TkWord "define" :: rest -> parse_define rest
-  | _ -> (match parse_terms false [] ts with
+  | TkWord "locate" :: TkWord name :: rest -> POk (SdLocate name) rest
+  | TkWord "locate" :: _ -> PErr "expected a word after 'locate'"
+  | _ ->(match parse_terms false [] ts with
           | PErr e -> PErr e
           | POk body tail -> POk (SdExpr body) tail)
 

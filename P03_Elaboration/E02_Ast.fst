@@ -115,6 +115,14 @@ type sdecl =
   | SdDefine      : string -> ssig -> list sterm -> sdecl
   /// `define name { body }` — signature inferred from the body (D-31).
   | SdDefineInfer : string -> list sterm -> sdecl
+  /// `locate name` — print what `name` is: a macro production, a primitive, or
+  /// a definition decompiled back to surface syntax (E05_Locate).
+  ///
+  /// A declaration rather than a word, for the same reason `define` is one: its
+  /// argument is a NAME, not a value, so it has nothing to do with the stack
+  /// and cannot be given a signature. Forth reaches the same shape from the
+  /// other direction, by making `LOCATE` immediate.
+  | SdLocate      : string -> sdecl
   /// A bare sequence of terms, evaluated against the current REPL stack.
   | SdExpr   : list sterm -> sdecl
 

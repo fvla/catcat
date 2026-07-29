@@ -1,6 +1,6 @@
-module E05_Repl
+module E06_Repl
 
-/// P03, module 05: the REPL session.
+/// P03, module 06: the REPL session.
 ///
 /// SUMMARY
 ///   Ties the whole pipeline together for one line of input:
@@ -42,37 +42,7 @@ open R05_Driver
 open E02_Ast
 open E03_Parser
 open E04_Elaborate
-
-(* ------------------------------------------------------------------------ *)
-(* Rendering types (diagnostics)                                            *)
-(* ------------------------------------------------------------------------ *)
-
-let render_prim (p:prim) : Tot string =
-  match p with
-  | PI8 -> "i8"     | PI16 -> "i16"   | PI32 -> "i32"   | PI64 -> "i64"
-  | PU8 -> "u8"     | PU16 -> "u16"   | PU32 -> "u32"   | PU64 -> "u64"
-  | PF32 -> "f32"   | PF64 -> "f64"
-  | PBool -> "bool" | PUnit -> "unit"
-
-let rec render_ty (d:dtype) : Tot string (decreases (dtype_size d)) =
-  match d with
-  | TPrim p      -> render_prim p
-  | TName n      -> "@" ^ string_of_int n
-  | TBox u       -> "Box[" ^ render_ty u ^ "]"
-  | TRc u        -> "Rc[" ^ render_ty u ^ "]"
-  | TSeal n _ _  -> "<" ^ string_of_int n ^ ">"
-  | TSum _       -> "sum"
-
-/// Rendered bottom-to-top, matching the surface convention: a core list is
-/// top-first, so it is reversed on the way out.
-let rec render_tys (ds:list dtype) : Tot string (decreases ds) =
-  match ds with
-  | []      -> ""
-  | d :: [] -> render_ty d
-  | d :: r  -> render_ty d ^ " " ^ render_tys r
-
-let render_row (s:srow) : Tot string =
-  "( " ^ render_tys (rev s.pre) ^ " -- " ^ render_tys (rev s.post) ^ " )"
+open E05_Locate
 
 (* ------------------------------------------------------------------------ *)
 (* Session state                                                            *)
@@ -205,6 +175,11 @@ let eval_decl (s:session) (d:sdecl) : Tot (session & string) =
     (match elab_define_infer s.se_nenv body with
      | Inl e         -> (s, "error: " ^ e)
      | Inr (row, t)  -> install_def s name None row t)
+
+  /// Pure inspection: no term is elaborated, nothing runs, the session is
+  /// returned untouched. `locate` is the one declaration that cannot fail
+  /// interestingly, which is why it is safe to type at any point.
+  | SdLocate name -> (s, locate s.se_nenv s.se_dict name)
 
   | SdExpr body ->
     (match elab_expr s.se_nenv s.se_shape body with

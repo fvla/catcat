@@ -4,7 +4,7 @@
    elaborate (E04) -> typecheck (M06) -> evaluate (R02/R05). A parse or type
    error leaves the session untouched, so a bad line costs nothing.
 
-   Everything of substance lives in E05_Repl; this file is a terminal loop.
+   Everything of substance lives in E06_Repl; this file is a terminal loop.
    With arguments, it runs them as lines and exits — which is how the
    regression script drives it. *)
 
@@ -15,7 +15,7 @@ let banner () =
   print_endline ""
 
 let step session line =
-  let session, out = E05_Repl.eval_line session line in
+  let session, out = E06_Repl.eval_line session line in
   if out <> "" then print_endline out;
   session
 
@@ -26,7 +26,7 @@ let rec loop session =
   | exception End_of_file -> print_newline ()
   | ":q" -> ()
   | ":s" ->
-      print_endline (E05_Repl.show_stack session);
+      print_endline (E06_Repl.show_stack session);
       loop session
   | line -> loop (step session line)
 
@@ -34,7 +34,7 @@ let () =
   let args = List.tl (Array.to_list Sys.argv) in
   if args = [] then begin
     banner ();
-    loop E05_Repl.init_session
+    loop E06_Repl.init_session
   end
   else
     (* Non-interactive: run each argument as a line. *)
@@ -43,4 +43,4 @@ let () =
          (fun session line ->
            print_endline ("catcat> " ^ line);
            step session line)
-         E05_Repl.init_session args)
+         E06_Repl.init_session args)
