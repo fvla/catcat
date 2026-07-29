@@ -287,6 +287,21 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
      | PErr e -> PErr e
      | POk h after -> parse_terms closing (h :: acc) after)
 
+  /// `with { old new … } { body }`. Same reason as `handle` for not being a
+  /// macro: the rebinding block is a list of name pairs, not a term list.
+  | TkWord "with" :: TkLBrace :: r1 ->
+    (match parse_rebinds [] r1 with
+     | PErr e -> PErr e
+     | POk su r2 ->
+       (match r2 with
+        | TkLBrace :: r3 ->
+          (match parse_terms true [] r3 with
+           | PErr e -> PErr e
+           | POk body r4 -> parse_terms closing (StWith su body :: acc) r4)
+        | _ -> PErr "expected '{' opening the body of a 'with'"))
+  | TkWord "with" :: _ ->
+    PErr "expected '{ old new … }' after 'with'"
+
   | TkWord w :: rest ->
     (match lookup_macro macro_table w with
      | None -> parse_terms closing (StWord w :: acc) rest
@@ -391,6 +406,21 @@ and parse_impls (acc:list (string & list sterm)) (ts:list token)
   | [] -> PErr "expected '}' closing the implementations, found end of input"
   | t :: _ ->
     PErr ("expected an operation name or '}' here, found " ^ render_token t)
+
+/// The rebindings of a `with`, up to the closing `}`: pairs of plain word
+/// names, `replaced` then `replacement`.
+and parse_rebinds (acc:list (string & string)) (ts:list token)
+  : Tot (r:presult (list (string & string))
+         { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases %[length ts; 4]) =
+  match ts with
+  | TkRBrace :: rest -> POk (rev acc) rest
+  | TkWord a :: TkWord b :: r1 -> parse_rebinds ((a, b) :: acc) r1
+  | TkWord a :: _ ->
+    PErr ("expected a replacement word after '" ^ a ^ "' in this 'with'")
+  | [] -> PErr "expected '}' closing the rebindings, found end of input"
+  | t :: _ ->
+    PErr ("expected a word or '}' here, found " ^ render_token t)
 
 /// The state segment of an `over ( … )`, up to the closing paren. Types only:
 /// there is no `--` and no named parameter, because this is one side of a

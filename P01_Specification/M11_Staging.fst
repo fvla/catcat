@@ -60,6 +60,28 @@ assume val specialize_typed (env:wenv) (d:dict env.w_ops) (t:term { well_typed e
   : Lemma (well_typed env (specialize env d t))
 
 (* ------------------------------------------------------------------------ *)
+(* Word rebinding: specialization in its first useful form                  *)
+(* ------------------------------------------------------------------------ *)
+
+/// `M05.subst_words` IS `specialize` RESTRICTED TO ONE KIND OF STATIC EFFECT,
+/// and it is the first piece of D-02 that actually runs.
+///
+/// Resolving a word against a dictionary frame is a static effect being
+/// discharged (D-37): the surface `with { old new } { body }` installs a
+/// Dictionary handler, the elaborator discharges it immediately, and the
+/// residual program is that substitution. Nothing about the rebinding survives
+/// into the term, which is exactly what E3 below says a fully static effect
+/// must cost -- demonstrated rather than assumed.
+///
+/// It lives in M05 rather than here because it needs no environment: it is a
+/// rewrite of syntax, not a use of the typing judgment. That also keeps it
+/// inside the modules P03 extracts, which the general `specialize` is not.
+///
+/// The general `specialize` will subsume it by inlining the replacement as
+/// well; keeping it separate now means the substitution is DEFINED and runs,
+/// where `specialize` is still `assume val`. E7 below states what it preserves.
+
+(* ------------------------------------------------------------------------ *)
 (* The reflective tower                                                     *)
 (* ------------------------------------------------------------------------ *)
 
@@ -124,6 +146,29 @@ assume val stage_required (env:wenv) (t:term { well_typed env t }) : Tot stage_r
 ///     reachable from `t`, so a linker may omit all of them. The theorem that
 ///     makes the reflective tower's binary cost genuinely opt-in rather than
 ///     merely usually-small.
+///
+/// E7  REBINDING PRESERVES SIGNATURES.
+///     If every pair `(w, w')` in `su` satisfies `w_sig env w == w_sig env w'`,
+///     then for every `t`,
+///
+///         fst_of (infer env (subst_words su t))  ==  fst_of (infer env t)
+///
+///     and in particular `well_typed env t ==> well_typed env (subst_words su t)`.
+///     The effect ROW may legitimately differ: a replacement is allowed to
+///     perform effects the original did not, which is the whole reason to
+///     rebind a word.
+///
+///     STATED IN PROSE RATHER THAN AS A LEMMA, because a stub proving nothing
+///     would be worse than an honest gap. Discharging it is a mutual induction
+///     over `infer` / `infer_branches` / `infer_impls`: every case but `TWord`
+///     is structural and immediate, `TWord` is the hypothesis, and `THandle`
+///     needs additionally that `op_of env.w_ops` is unchanged -- which holds
+///     because `subst_words_impls` deliberately does not substitute the key.
+///
+///     `E04_Elaborate` currently enforces the hypothesis by CHECKING, at the
+///     point a `with` is elaborated, that the two words have equal signatures.
+///     That check is what makes the unproved theorem safe to rely on today; it
+///     becomes redundant, not wrong, once E7 is discharged.
 ///
 /// E6  TOWER COLLAPSE.
 ///     Specializing an interpreter for catcat, written in catcat, against a

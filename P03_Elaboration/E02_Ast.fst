@@ -88,6 +88,12 @@ type sterm =
   /// resolved against the effect named here.
   | StHandle : string -> list sty -> list sterm
              -> list (string & list sterm) -> list sterm -> sterm
+  /// `with { old new … } { body }` — run `body` with words rebound.
+  ///
+  /// Static by default (D-37): the rebinding is discharged during elaboration
+  /// and leaves nothing in the core term, so it costs exactly nothing. The
+  /// pairs are `(replaced, replacement)`, both plain word names.
+  | StWith   : list (string & string) -> list sterm -> sterm
 
 let rec sterm_size (t:sterm) : Tot pos =
   match t with
@@ -97,6 +103,7 @@ let rec sterm_size (t:sterm) : Tot pos =
   | StBlock ts -> 1 + sterms_size ts
   | StCase bs  -> 1 + sterm_lists_size bs
   | StHandle _ _ i im b -> 1 + sterms_size i + simpls_size im + sterms_size b
+  | StWith _ b -> 1 + sterms_size b
 
 and sterms_size (ts:list sterm) : Tot nat =
   match ts with
@@ -185,6 +192,9 @@ let rec count_var (x:string) (t:sterm)
   ///
   /// The body needs no inflation either, unlike a branch: it runs exactly once.
   | StHandle _ _ _ _ b -> count_var_list x b
+  /// `with` does not change the stack at all, so its body counts exactly as if
+  /// it had been written in place — which, after elaboration, it was.
+  | StWith _ b -> count_var_list x b
   | _          -> 0
 
 and count_var_list (x:string) (ts:list sterm)

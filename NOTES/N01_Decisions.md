@@ -438,6 +438,38 @@ has no such object — stated as an obligation in `R05_Driver.fsti`, because the
 place it could quietly stop being true is a backend that implements built-in
 effects by copying this driver's shape.
 
+**D-37. `!Dict` is to effect rows what the implicit row variable is to stack
+signatures** (D-04). Pervasive, never written, static by default, and made
+explicit only when a program wants to talk about it.
+*Why:* a word's meaning always depends on the dictionary it was elaborated
+against — that is what an interpreter is doing statefully, and `!Dict` is the
+direct encoding of it. Rows nonetheless stay clean, because a statically
+resolved word is `TWord w` in the core, not a `Dict` operation: the implicitness
+is a surface and elaboration notion, and `M04.within` never sees it.
+*Consequence, and it is the load-bearing one:* static `with` needs no row entry
+at all. A rebinding that is discharged at elaboration leaves no trace, which is
+M11's E3 — a fully static effect costs nothing — holding by construction rather
+than by theorem.
+*Not yet implemented:* the dynamic opt-in, which would add a real `!Dict` entry
+to the row and consult the handler chain on `TWord` at runtime.
+
+**D-50. Static `with` is word-id substitution over the elaborated term, and it
+is the first running piece of D-02.** `with { old new … } { body }` elaborates
+the body under the ORIGINAL names, then rewrites word ids with
+`M05.subst_words`.
+*Why elaborate under the original names:* the shape model stays the one the
+reader wrote, and the substitution provably cannot disturb it, because the
+rebinding is required to preserve the signature. The effect ROW may change
+freely, and that is the point — rebinding `noisy` to a pure word makes the
+enclosing definition pure, which is reinterpretation of a program by overriding
+words.
+*Why it matters beyond convenience:* this is `specialize` restricted to one
+kind of static effect. `locate` on a definition that used `with` shows the
+substituted words and no trace of the `with`, so E3 is demonstrated by running
+the binary rather than assumed by a theorem that is still unproved.
+*The signature check is the hypothesis of M11's E7*, enforced by the elaborator
+because E7 is stated and not proved. It becomes redundant, not wrong, once it is.
+
 **D-38. `effect` and `handle` are parser built-ins, not macros.** They need
 sub-grammars — a block of `op { … }` pairs is not a term list — and the macro
 slot vocabulary should not be stretched to cover them before it has been

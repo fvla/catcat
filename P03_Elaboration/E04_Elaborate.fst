@@ -241,6 +241,31 @@ let elab_var (cs:counts) (sh:shape) (x:string)
       Inl ("$" ^ x ^ " has a non-copyable type and is read more than once; \
             a linear local must be read exactly once")
 
+/// Resolve a `with`'s rebindings to word ids, requiring EQUAL SIGNATURES.
+///
+/// Effects may differ freely — a replacement performing effects the original
+/// did not is the main reason to rebind at all, and `M06.infer` recomputes the
+/// row from the substituted term. What may not differ is the stack effect,
+/// because the body is elaborated against the ORIGINAL one.
+///
+/// This check is the hypothesis of M11's obligation E7, enforced here because
+/// E7 is stated and not yet proved. It becomes redundant, not wrong, when it is.
+let rec resolve_rebinds (env:nenv) (su:list (string & string))
+  : Tot (either string (list (word_id & word_id))) (decreases su) =
+  match su with
+  | [] -> Inr []
+  | (a, b) :: r ->
+    (match lookup_name env a, lookup_name env b with
+     | None, _ -> Inl ("with: unknown word: " ^ a)
+     | _, None -> Inl ("with: unknown word: " ^ b)
+     | Some na, Some nb ->
+       if na.n_sig <> nb.n_sig
+       then Inl ("with: " ^ b ^ " cannot replace " ^ a
+                 ^ "; their signatures differ")
+       else (match resolve_rebinds env r with
+             | Inl e   -> Inl e
+             | Inr ids -> Inr ((na.n_id, nb.n_id) :: ids)))
+
 let elab_lit (n:int) : Tot (either string term) =
   if -(pow2 63) <= n && n < pow2 63
   then Inr (TLit (LPrim PI64 n))
@@ -353,7 +378,30 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
            | Inl e -> Inl e
            | Inr (shb, bts) ->
              elab_terms env cs (anon_slots st @ shb)
-               (THandle eid st it ims (seq_of bts) :: acc) rest)))
+               (THandle eid st it ims (seq_of bts) :: acc) rest))
+
+     /// STATIC `with`: D-02's first running witness.
+     ///
+     /// The body is elaborated normally — under the ORIGINAL names, so the
+     /// shape model is the one the reader wrote — and the rebinding is then
+     /// discharged by substituting word ids in the core term
+     /// (`M11.subst_words`). Nothing survives into the term, which is exactly
+     /// what M11's E3 says a fully static effect must cost, demonstrated
+     /// rather than assumed.
+     ///
+     /// The signature check is what licenses elaborating under the original
+     /// names: with equal signatures the substitution cannot change the shape,
+     /// so the model stays accurate. It is also the hypothesis of M11's E7,
+     /// enforced here because E7 is not yet proved.
+     | StWith su body ->
+       (match resolve_rebinds env su with
+        | Inl e -> Inl e
+        | Inr ids ->
+          (match elab_terms env cs sh [] body with
+           | Inl e -> Inl e
+           | Inr (shb, bts) ->
+             elab_terms env cs shb
+               (subst_words ids (seq_of bts) :: acc) rest)))
 
 /// Elaborate each branch against the SAME entry shape and require them to
 /// agree on the exit shape.
@@ -691,7 +739,20 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
         | Inr (_, stseg, _, _) ->
           (match infer_terms env cs st body with
            | Inl e    -> Inl e
-           | Inr stb  -> infer_terms env cs (ipush_post stseg stb) rest)))
+           | Inr stb  -> infer_terms env cs (ipush_post stseg stb) rest))
+
+     /// A `with` is invisible to this pass by construction: the rebindings are
+     /// required to have equal signatures, so the body models identically
+     /// whether or not it is substituted. The resolution still runs, so an
+     /// unknown or mismatched name is reported here too rather than only in
+     /// pass 2.
+     | StWith su body ->
+       (match resolve_rebinds env su with
+        | Inl e -> Inl e
+        | Inr _ ->
+          (match infer_terms env cs st body with
+           | Inl e   -> Inl e
+           | Inr st' -> infer_terms env cs st' rest)))
 
 /// Run each branch from the same entry stack, threading the accumulated
 /// substitution and pulled inputs forward, and require the branches to agree.

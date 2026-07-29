@@ -197,6 +197,54 @@ let rec seq_of (ts:list term) : Tot term =
   | []     -> TNil
   | t :: r -> TSeq t (seq_of r)
 
+(* ------------------------------------------------------------------------ *)
+(* Word rebinding                                                           *)
+(* ------------------------------------------------------------------------ *)
+
+/// Rewrite every `TWord w` for which `su` gives a replacement.
+///
+/// This is `M11.specialize` restricted to one kind of static effect, and the
+/// first piece of D-02 that runs: surface `with { old new } { body }` installs
+/// a Dictionary handler, the elaborator discharges it immediately, and the
+/// residual program is this substitution. Nothing about the rebinding survives.
+/// See M11's header for why that is the zero-cost theorem in miniature, and E7
+/// for what it preserves.
+///
+/// Defined here rather than in M11 because it needs no environment -- it is a
+/// rewrite of syntax, not a use of the typing judgment.
+let subst_word (su:list (word_id & word_id)) (w:word_id) : Tot word_id =
+  match assoc w su with
+  | Some w' -> w'
+  | None    -> w
+
+/// Measure as above: the rank orders `list(1) > term(0)`.
+let rec subst_words (su:list (word_id & word_id)) (t:term)
+  : Tot term (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TWord w              -> TWord (subst_word su w)
+  | TSeq a b             -> TSeq (subst_words su a) (subst_words su b)
+  | TCase variants bs    -> TCase variants (subst_words_list su bs)
+  | THandle e st i im b  -> THandle e st (subst_words su i)
+                                    (subst_words_impls su im)
+                                    (subst_words su b)
+  | TSpecialize b        -> TSpecialize (subst_words su b)
+  | _                    -> t
+
+and subst_words_list (su:list (word_id & word_id)) (ts:list term)
+  : Tot (list term) (decreases %[terms_size ts; 1]) =
+  match ts with
+  | []     -> []
+  | t :: r -> subst_words su t :: subst_words_list su r
+
+/// An implementation's KEY is not substituted, only its body. The key says
+/// which operation is being implemented; rebinding it would change which
+/// handler answers, rather than what that handler does.
+and subst_words_impls (su:list (word_id & word_id)) (im:list (op_id & term))
+  : Tot (list (op_id & term)) (decreases %[impls_size im; 1]) =
+  match im with
+  | []            -> []
+  | (o, t) :: r   -> (o, subst_words su t) :: subst_words_impls su r
+
 /// Whether a term mentions `TSpecialize` anywhere. The linker uses the
 /// analogous predicate over the whole dependency tree to decide how much of
 /// the compiler to embed in the output binary (D04): if this is false
