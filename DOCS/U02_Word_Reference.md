@@ -1,9 +1,9 @@
 # U02 — Word Reference
 
 Every word the language provides today. That is a short list: eleven primitives,
-two constants, and three stack shuffles.
+two constants, two IO operations, and three stack shuffles.
 
-> **Current as of commit `9a21cf0`.**
+> **Current as of commit `da9b722`.**
 > Source of truth:
 > [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
@@ -153,16 +153,47 @@ define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
 
 Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`.
 `define` itself is not a reserved word either; it is recognised by position at
-the start of a declaration, and so is `locate`. `then`, `else` and `endif` are
-likewise free — they are keywords only inside a conditional. The one name that
-is effectively taken is `if`, which the macro table claims: a definition of it
-is accepted but can never be called ([U01](U01_Grammar.md) §1).
+the start of a declaration, and so are `effect` and `locate`. `then`, `else`,
+`endif`, `over`, `init` and `declare` are likewise free — each is a keyword only
+inside the construct that introduces it. Three names are effectively taken —
+`if`, `handle` and `with` — because they are dispatched on wherever a term may
+start: a definition of one is accepted but can never be called
+([U01](U01_Grammar.md) §1).
 
 Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).
 
 ---
 
-## 7. Inspecting: `locate`
+## 7. IO
+
+| Word | Signature | Meaning |
+|---|---|---|
+| `print` | `( i64 -- !IO )` | write the top of the stack and a newline |
+| `read` | `( -- i64 !IO )` | read a line and push it as an `i64` |
+
+```
+catcat> 42 print
+42
+catcat> echo 5 | catcat.exe 'read dup * print'
+25
+```
+
+These are **operations of the built-in `IO` effect**, not primitives — `locate
+print` says so. Nothing in the effect system is special-cased for them; the only
+asymmetry is that the interpreter owns effect id 0 while `effect` allocates from
+1 upward, so no program can declare another host-serviced effect.
+
+`IO` is nevertheless an effect like any other and can be intercepted with
+`handle` — see [U01](U01_Grammar.md) §6, which also covers declaring effects,
+writing handlers, and what `!IO` in a signature now means.
+
+A malformed `read` (not a number, or end of input) yields `0` rather than
+failing. That is a REPL convenience, not a decision: there is no error type to
+return yet.
+
+---
+
+## 8. Inspecting: `locate`
 
 ```
 locate <word>
@@ -184,7 +215,7 @@ description, including how deep stack access and unnamed ids are rendered, is in
 
 ---
 
-## 8. The REPL
+## 9. The REPL
 
 ```
 make catcat

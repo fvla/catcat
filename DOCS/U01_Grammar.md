@@ -5,7 +5,7 @@ describes the implemented language, not the designed one: where the two differ,
 that is called out rather than glossed. For the designed language see
 [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md).
 
-> **Current as of commit `9a21cf0`.**
+> **Current as of commit `da9b722`.**
 > Source of truth: [E01_Lexer.fst](../P03_Elaboration/E01_Lexer.fst) (lexing),
 > [E03_Parser.fst](../P03_Elaboration/E03_Parser.fst) (grammar),
 > [E02_Ast.fst](../P03_Elaboration/E02_Ast.fst) (the tree it produces),
@@ -20,10 +20,13 @@ that is called out rather than glossed. For the designed language see
 ```ebnf
 program    = decl* ;
 
-decl       = define | locate | expression ;
+decl       = define | effect | locate | expression ;
 
 define     = "define" word "(" signature ")" "{" term* "}"
            | "define" word                   "{" term* "}" ;   (* inferred *)
+
+effect     = "effect" word "{" declare* "}" ;                  (* see §6 *)
+declare    = "declare" word "(" signature ")" ;
 
 locate     = "locate" word ;                                   (* see §5 *)
 
@@ -42,9 +45,19 @@ term       = integer
            | word
            | "$" name
            | conditional
+           | handle
+           | with
            | "{" term* "}" ;
 
 conditional = "if" block "then" block [ "else" block ] "endif" ;
+
+handle      = "handle" word "over" "(" type* ")"                (* see §6 *)
+              "init" block "{" impl* "}" block ;
+impl        = word block ;
+
+with        = "with" "{" rebind* "}" block ;                    (* see §7 *)
+rebind      = word word ;
+
 block       = "{" term* "}" ;
 ```
 
@@ -52,20 +65,22 @@ The `conditional` production is written out here for readability, but it is not
 built into the parser: it is one entry in a **macro table** (§5), and the parser
 that reads it is generic over the table.
 
-**`define` and `locate` are not reserved words.** Both are recognised by
-*position* — first token of a declaration — so `define locate { 42 }` is legal
-and `locate` inside a body is an ordinary word. The same rule leaves `then`,
-`else` and `endif` free everywhere outside a conditional.
+**`define`, `effect` and `locate` are not reserved words.** All three are
+recognised by *position* — first token of a declaration — so `define locate
+{ 42 }` is legal and `locate` inside a body is an ordinary word. The same rule
+leaves `then`, `else`, `endif`, `over`, `init` and `declare` free everywhere
+outside the construct that introduces them.
 
-`if` is the one word that is effectively taken, and by the macro table rather
-than by the grammar: `define if { 9 }` is accepted, but every later `if` is read
-as the macro, so the definition can never be called. Nothing warns about this
-yet.
+**Three words are effectively taken**, not by the grammar but by being dispatched
+on wherever a term may start: `if` (the macro table), `handle` and `with`. Each
+is still *definable* — `define if { 9 }` is accepted — but every later use is
+read as the construct, so the definition can never be called. Nothing warns
+about this yet.
 
 `{ … }` parses as a term anywhere, but the only constructs that **consume** one
-are `define` and the conditional of §4. A block appearing anywhere else is
-rejected by the elaborator: general block consumers need macros or handlers,
-and neither exists yet.
+are `define`, the conditional of §4, and the handler and rebinding forms of §6
+and §7. A block appearing anywhere else is rejected by the elaborator, since
+general block consumers need user-defined macros, which do not exist yet.
 
 **An expression runs to the end of the input.** A `define` may be followed by
 more declarations on the same line; an expression may not, because every
@@ -76,7 +91,7 @@ define a { 1 } define b { 2 } a b +     \ three declarations, fine
 1 2 + define c { 3 }                    \ error: unknown word: define
 ```
 
-This is a consequence of the no-lookahead rule (§6), not an oversight: nothing
+This is a consequence of the no-lookahead rule (§8), not an oversight: nothing
 marks where an expression ends, so it ends at the input.
 
 ---
@@ -100,7 +115,7 @@ the deliberate divergence from Forth that makes precise tooling possible.
 ```
 
 Everything inside a `( … )` is space-separated and the arrow is no exception.
-Requiring the space is also what keeps the scanner lookahead-free (§6). As a
+Requiring the space is also what keeps the scanner lookahead-free (§8). As a
 consequence `--` cannot be used as a user word name.
 
 **Sigils**, recognised by first character, so the parser never needs to guess
@@ -110,7 +125,7 @@ which region of a signature it is in:
 |---|---|---|
 | `$x` | local variable | works |
 | `#T` | parametric type | parses, rejected by the elaborator |
-| `!Eff` | effect | parses, **silently discarded** — see §7 |
+| `!Eff` | effect | works — resolved and checked (§6) |
 
 **Integers** are an optional `-` followed by at least one digit. The digit
 requirement is what lets `-` be a word:
@@ -188,7 +203,7 @@ define sign { dup 0 < if { } then { pop -1 } else { pop 1 } endif }
 **`endif` is mandatory; `else` is not.** The terminator is what keeps the
 grammar free of an ε-branch, and that in turn is what lets `then`, `else` and
 `endif` stay ordinary word names everywhere outside this construct — nothing is
-reserved. See §6.
+reserved. See §8.
 
 ### What the branches must agree on
 
@@ -239,8 +254,8 @@ of slots, then an alternation keyed on a word that is always consumed.
 The whole table is checked to be LL(1) by `ll1_ok`, which requires that no two
 macros share a leading word and no two alternatives of one macro share a key.
 That check is run over the shipped table with `assert_norm`, not asserted in
-prose — it is the seed of the verified CFG-to-recursive-descent generator §6
-explains.
+prose — it is the seed of the verified CFG-to-recursive-descent generator that
+§8 explains.
 
 Two properties are deliberate and worth relying on:
 
@@ -313,7 +328,180 @@ paragraph actually compiles to.
 
 ---
 
-## 6. No lookahead
+## 6. Effects and handlers
+
+### Declaring an effect
+
+```
+effect Counter {
+    declare tick  ( -- i64 )
+    declare reset ( -- )
+}
+```
+
+**The signature is not optional here.** An operation has no body, so there is
+nothing to infer one from — this is the one place §3's "the signature is
+optional" does not apply, and the error says so.
+
+An operation is called exactly like a word, because it *is* one: `tick` is a
+`TWord` in the core and typed by the same rule. What it adds is an effect on
+the row of everything that calls it.
+
+```
+catcat> define twice { tick tick + }
+defined twice ( -- i64 !Counter )
+```
+
+### `!Eff` in a signature
+
+Effects propagate automatically and are **checked** against a written
+signature. An unwritten signature is not a claim of purity, so this only bites
+when you wrote one:
+
+```
+catcat> define bad  ( -- i64 )          { tick }
+error: bad declares no effects but its body has !Counter
+catcat> define good ( -- i64 !Counter ) { tick }
+defined good ( -- i64 !Counter )
+```
+
+### Handling
+
+```
+handle Counter over ( i64 ) init { 0 } { tick { dup 1 + } } { tick tick + }
+```
+
+A handler is a **stateful object, not a continuation consumer.** An operation
+call runs its implementation, which *returns*; nothing is captured, saved or
+resumed. `over ( … )` gives the state segment and `init { … }` produces it.
+
+Each implementation is checked at the operation's signature with the state
+framed **on top**, so it reads `( args… state -- results… state )`. The state
+is the receiver, and a receiver is pushed last:
+
+```
+tick  ( state -- i64 state )      \ implemented as  { dup 1 + }
+reset ( state -- state )          \ implemented as  { pop 0 }
+```
+
+**When the body finishes, the final state is left on the stack**, above what
+the body produced — the handler is the object, and the object outlives the
+block. So the example above leaves `1 2`: `tick tick +` is `0 + 1`, with the
+count `2` on top.
+
+A handler is a term, so it nests inside a definition and discharges the effect
+there:
+
+```
+catcat> define nostate ( -- i64 ) { handle Counter over ( ) init { } { tick { 5 } } { twice } }
+defined nostate ( -- i64 )
+```
+
+`over ( )` with an empty `init { }` is the stateless case. It is the degenerate
+case of the same rule, not a separate form.
+
+**An operation that is not implemented forwards outward** to the next handler,
+which is what makes partial overriding possible. Implementing something that is
+not an operation of the named effect is an error.
+
+**Re-entering a handler while its own state is out on loan is reported**, not
+served a stale copy:
+
+```
+catcat> handle Counter over ( i64 ) init { 0 } { tick { tick swap } } { tick }
+STUCK: handler re-entered while its own state is in use
+```
+
+That is a dynamic borrow check in a language whose linearity is otherwise
+static. It is recorded as an open question, not claimed as the final answer.
+
+### `IO`, and effects only the host can supply
+
+```
+| Word | Signature |
+|---|---|
+| `print` | `( i64 -- !IO )` |
+| `read` | `( -- i64 !IO )` |
+```
+
+```
+catcat> 42 print
+42
+catcat> define greet ( -- !IO ) { 1 print 2 print }
+```
+
+These are **ordinary operations of an ordinary effect**. Nothing about the
+effect system is special-cased for them, and the only asymmetry is over who may
+*declare* one: the host owns effect 0 and `effect` allocates from 1 upward, so
+no program can bring a new host-serviced effect into existence. That is what
+"suppliable only by the compiler or interpreter" means — it is a fact about who
+owns the identifier, not a restriction the effect system had to grow.
+
+What it does **not** mean is that `IO` is unhandleable. It is an effect like any
+other, so you can intercept it:
+
+```
+catcat> handle IO over ( ) init { } { print { pop } } { 1 print }
+ok  (empty)
+```
+
+Nothing was printed: the handler swallowed it. Mocking `IO` for a test is the
+same construct as §7's rebinding, reached from the other direction, and it falls
+out of the design rather than being added to it.
+
+An `IO` operation with no handler in scope escapes every frame and reaches the
+REPL, which is the outermost handler and performs it for real.
+
+A user effect that reaches the top level with nobody handling it is reported
+rather than performed:
+
+```
+catcat> 1 tick
+unhandled: tick escaped with no handler in scope
+```
+
+---
+
+## 7. Rebinding words with `with`
+
+```
+with { old new … } { body }
+```
+
+Runs `body` with words rebound. **Static**: the rebinding is discharged during
+elaboration and leaves *nothing* in the compiled program.
+
+```
+catcat> define noisy ( i64 -- i64 !IO ) { dup print }
+catcat> define quiet ( i64 -- i64 )     { 1 * }
+catcat> define t2 { with { noisy quiet } { noisy noisy } }
+defined t2 ( i64 -- i64 )
+catcat> locate t2
+define t2 ( i64 -- i64 ) {
+  quiet quiet
+}
+```
+
+Two things are worth reading off that transcript. The `with` is *gone* from the
+decompiled body — it cost nothing, because it was resolved before the program
+existed. And `t2` is **pure**: rebinding an `!IO` word to a pure one removes the
+effect from the row. Reinterpreting a program by overriding the words it calls
+is the intended use.
+
+**The replacement must have the same signature.** Effects may differ freely —
+that is the point — but the stack effect may not, because the body is
+elaborated against the original.
+
+```
+catcat> define bad2 { with { slow not } { 1 } }
+error: with: not cannot replace slow; their signatures differ
+```
+
+There is no dynamic form yet: every `with` is resolved at elaboration time.
+
+---
+
+## 8. No lookahead
 
 A hard constraint on the grammar, not a property of the current parser: **the
 lexer is a plain DFA and the parser is LL(1).** Every decision is made on the
@@ -340,7 +528,7 @@ point consumes a keyword instead.
 
 ---
 
-## 7. Not yet implemented
+## 9. Not yet implemented
 
 Each is specified in [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md) and
 absent from the implementation. Listed because the gap between the two documents
@@ -348,17 +536,22 @@ is otherwise invisible.
 
 | Feature | State |
 |---|---|
-| `!Eff` in a signature | parses, then **silently dropped**; `( -- i64 !IO )` records `( -- i64 )` |
 | loops, recursion | not parsed — `if` is the whole of control flow |
 | `#T` generics | parses, elaborator rejects |
 | `let` and `let (…)` | not parsed |
-| effects, handlers | not parsed |
+| dynamic `with` / `!Dict` | every rebinding is resolved at elaboration (§7); there is no runtime dictionary lookup |
+| generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
 | strings `"…"`, quotation `'…'`, backtick | not lexed |
 | user-defined macros | the framework exists (§5); the table is built in and only the compiler can add to it |
 | `Box`/`Rc` construction | types exist; no surface word builds one |
 | source positions in errors | absent — errors are messages without spans |
 
-The effect row being **silently discarded** is the one that can mislead: the
-signature is accepted and the effect vanishes without a warning. It is a
-placeholder for the D03 pass, not a design decision.
+Two entries left this table recently and are worth naming, because a reader of
+an older copy will look for them. `!Eff` in a signature used to be **parsed and
+silently dropped** — the misleading gap — and is now resolved and checked (§6).
+Effects and handlers used to be absent entirely.
+
+**Handler state aliasing is checked at runtime**, not statically (§6). That is a
+gap in a different sense: the language is safe, but the check is dynamic where
+everything else about linearity is static.
