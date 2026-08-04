@@ -295,32 +295,112 @@ let show_prim_op (o:prim_op) : Tot string =
 (* Macros                                                                   *)
 (* ------------------------------------------------------------------------ *)
 
-let show_slot (s:E03_Parser.mslot) : Tot string =
+/// Surface terms, for a macro's template. `show_term` above renders CORE terms
+/// and cannot be reused: a template has not been elaborated and still holds
+/// names, `$x` slot references and unresolved effects. Two renderers is the
+/// honest cost of `locate` showing a macro as what it is rather than as what it
+/// would become.
+let rec show_sty (t:sty) : Tot string (decreases (sty_size t)) =
+  match t with
+  | StyName n -> n
+  | StyVar n  -> "#" ^ n
+  | StyBox u  -> "Box[" ^ show_sty u ^ "]"
+  | StyRc u   -> "Rc[" ^ show_sty u ^ "]"
+
+let rec show_stys (ts:list sty) : Tot string (decreases ts) =
+  match ts with
+  | []      -> ""
+  | t :: [] -> show_sty t
+  | t :: r  -> show_sty t ^ " " ^ show_stys r
+
+let rec show_spairs (ps:list (string & string)) : Tot string (decreases ps) =
+  match ps with
+  | []            -> ""
+  | (a, b) :: []  -> a ^ " " ^ b
+  | (a, b) :: r   -> a ^ " " ^ b ^ " " ^ show_spairs r
+
+let rec show_sterm (t:sterm) : Tot string (decreases %[(sterm_size t <: nat); 0]) =
+  match t with
+  | StInt n    -> string_of_int n
+  | StWord w   -> w
+  | StVar x    -> "$" ^ x
+  | StBlock ts -> braces (show_sterms ts)
+  /// A two-branch `StCase` is what `if` expands to and the only shape the
+  /// surface language can produce, so it is printed back as an `if` — the same
+  /// reconstruction `show_items` does for the core, and for the same reason:
+  /// the output has to re-parse. The empty false branch is the else-less form.
+  | StCase [f; t] ->
+    "if { } then " ^ braces (show_sterms t)
+    ^ (if Nil? f then "" else " else " ^ braces (show_sterms f))
+    ^ " endif"
+  /// Anything else has no surface spelling. `case` is deliberately not a word.
+  | StCase bs  -> "case" ^ show_sbranches bs
+  | StHandle e tys i im b ->
+    "handle " ^ e ^ " over ( " ^ show_stys tys ^ " ) init "
+    ^ braces (show_sterms i) ^ " {" ^ show_simpls im ^ " } "
+    ^ braces (show_sterms b)
+  | StWith su b -> "with { " ^ show_spairs su ^ " } " ^ braces (show_sterms b)
+
+and show_sterms (ts:list sterm) : Tot string (decreases %[sterms_size ts; 1]) =
+  match ts with
+  | []      -> ""
+  | t :: [] -> show_sterm t
+  | t :: r  -> show_sterm t ^ " " ^ show_sterms r
+
+and show_sbranches (bs:list (list sterm))
+  : Tot string (decreases %[sterm_lists_size bs; 2]) =
+  match bs with
+  | []     -> ""
+  | b :: r -> " " ^ braces (show_sterms b) ^ show_sbranches r
+
+and show_simpls (im:list (string & list sterm))
+  : Tot string (decreases %[simpls_size im; 2]) =
+  match im with
+  | []           -> ""
+  | (o, ts) :: r -> " " ^ o ^ " " ^ braces (show_sterms ts) ^ show_simpls r
+
+(* --- productions --------------------------------------------------------- *)
+
+let show_slot (s:E02_Ast.mslot) : Tot string =
   match s with
-  | MsBlock     -> "{ }"
-  | MsWord      -> "<word>"
+  | MsBlock n   -> "{ $" ^ n ^ " }"
+  | MsWord n    -> "$" ^ n
   | MsKeyword k -> k
 
-let rec show_slots (ss:list E03_Parser.mslot) : Tot string (decreases ss) =
+let rec show_slots (ss:list E02_Ast.mslot) : Tot string (decreases ss) =
   match ss with
   | []     -> ""
   | s :: r -> " " ^ show_slot s ^ show_slots r
 
 /// One line per alternative, spelled out in full. A macro is a grammar
 /// production (D-35), and the readable form of a production with keyed
-/// alternatives is just the list of sentences it accepts.
-let rec show_macro_alts (name:string) (pre:list E03_Parser.mslot) (bs:list mbranch)
+/// alternatives is just the list of sentences it accepts, each followed by what
+/// it turns into.
+///
+/// `bodies` is false for the built-in `if`, whose expansion is a `case` and has
+/// no surface spelling to print — showing `->` followed by nothing would be a
+/// worse lie than omitting it.
+let rec show_macro_alts (bodies:bool) (name:string) (pre:list E02_Ast.mslot)
+                        (bs:list mbranch)
   : Tot string (decreases bs) =
   match bs with
   | []     -> ""
-  | b :: r -> "\n  " ^ name ^ show_slots pre ^ " " ^ b.mb_key ^ show_slots b.mb_slots
-              ^ show_macro_alts name pre r
+  | b :: r -> "\n  " ^ name ^ show_slots pre ^ " " ^ b.mb_key
+              ^ show_slots b.mb_slots
+              ^ (if bodies then "\n    -> " ^ braces (show_sterms b.mb_body)
+                 else "")
+              ^ show_macro_alts bodies name pre r
 
 let show_macro (p:mprod) : Tot string =
+  let bodies = not p.mp_builtin in
   "macro " ^ p.mp_name
   ^ (if Nil? p.mp_branches
      then "\n  " ^ p.mp_name ^ show_slots p.mp_pre
-     else show_macro_alts p.mp_name p.mp_pre p.mp_branches)
+          ^ (if bodies then "\n    -> " ^ braces (show_sterms p.mp_body) else "")
+     else show_macro_alts bodies p.mp_name p.mp_pre p.mp_branches)
+  ^ (if p.mp_builtin
+     then "\n  \\ built in: expands to a case, which has no surface spelling"
+     else "")
 
 (* ------------------------------------------------------------------------ *)
 (* locate                                                                   *)
@@ -332,8 +412,8 @@ let show_macro (p:mprod) : Tot string =
 /// a leading word matching the macro table invokes the macro, whatever else is
 /// bound to the name. Reporting the dictionary entry instead would tell the
 /// user about a binding their program cannot reach.
-let locate (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
-  match lookup_macro macro_table x with
+let locate (mt:list mprod) (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
+  match lookup_macro mt x with
   | Some p -> show_macro p
   | None ->
     match lookup_name e x with

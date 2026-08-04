@@ -131,6 +131,107 @@ and sterm_lists_size (bs:list (list sterm)) : Tot nat =
   | b :: r -> 1 + sterms_size b + sterm_lists_size r
 
 (* ------------------------------------------------------------------------ *)
+(* Macros                                                                   *)
+(* ------------------------------------------------------------------------ *)
+
+/// A MACRO IS A GRAMMAR PRODUCTION PLUS A TEMPLATE (D-35).
+///
+/// It declares what it consumes to its right — a fixed sequence of slots, then
+/// optionally an alternation keyed on a literal word — and the surface terms to
+/// put in its place, with each slot's capture substituted for `$name`.
+///
+/// These types live in the AST rather than in the parser because a macro
+/// declaration is now something a program WRITES, so `mprod` is part of the
+/// syntax tree and not merely a parser table.
+type mslot =
+  /// `{ $x }` — a block, captured as its term list and spliced at `$x`.
+  | MsBlock   : string -> mslot
+  /// `$x` — one identifier, captured as a word.
+  | MsWord    : string -> mslot
+  /// A literal word that must appear. Consumed, captures nothing.
+  | MsKeyword : string -> mslot
+
+/// What a slot captured, tagged with the name it is bound to. `McKey` records
+/// which alternative was taken and binds nothing — a macro dispatches on the
+/// key by having a separate template per branch, so it never needs to read it.
+noeq type mcap =
+  | McBlock : string -> list sterm -> mcap
+  | McWord  : string -> string -> mcap
+  | McKey   : string -> mcap
+
+type mbranch = {
+  /// The word that selects this alternative. Consumed.
+  mb_key   : string;
+  mb_slots : list mslot;
+  mb_body  : list sterm;
+}
+
+type mprod = {
+  /// The leading word that invokes the macro.
+  mp_name     : string;
+  /// Slots consumed before the alternation.
+  mp_pre      : list mslot;
+  /// Keyed alternatives. Empty means the production ends after `mp_pre`, and
+  /// `mp_body` is the template.
+  mp_branches : list mbranch;
+  mp_body     : list sterm;
+  /// `if` alone. Its expansion is `StCase`, which has no surface spelling, so
+  /// no template could express it. Everything else in the table is a template
+  /// and this is the flag that says so honestly rather than dispatching on the
+  /// name behind the reader's back.
+  mp_builtin  : bool;
+}
+
+(* --- template substitution ----------------------------------------------- *)
+
+let rec cap_of (caps:list mcap) (x:string) : Tot (option mcap) (decreases caps) =
+  match caps with
+  | []                -> None
+  | McBlock n ts :: r -> if n = x then Some (McBlock n ts) else cap_of r x
+  | McWord n w :: r   -> if n = x then Some (McWord n w)   else cap_of r x
+  | McKey _ :: r      -> cap_of r x
+
+/// Instantiate a template. Each term expands to a LIST, because a block slot
+/// splices its contents rather than nesting them — `{ $b $b }` with `$b` bound
+/// to `1 +` gives `1 + 1 +`, not two blocks.
+///
+/// A `$x` naming no slot is left alone: it is an ordinary local read, and a
+/// macro whose template genuinely wants one is writing about the stack of
+/// whatever encloses the expansion. Nothing here is hygienic, and that is
+/// stated rather than hidden — see D-53.
+let rec subst_term (caps:list mcap) (t:sterm)
+  : Tot (list sterm) (decreases %[(sterm_size t <: nat); 0]) =
+  match t with
+  | StVar x -> (match cap_of caps x with
+                | Some (McBlock _ inner) -> inner
+                | Some (McWord _ w)      -> [StWord w]
+                | _                      -> [StVar x])
+  | StBlock ts            -> [StBlock (subst_terms caps ts)]
+  | StCase bs             -> [StCase (subst_lists caps bs)]
+  | StHandle e tys i im b -> [StHandle e tys (subst_terms caps i)
+                                       (subst_impls caps im) (subst_terms caps b)]
+  | StWith su b           -> [StWith su (subst_terms caps b)]
+  | _                     -> [t]
+
+and subst_terms (caps:list mcap) (ts:list sterm)
+  : Tot (list sterm) (decreases %[sterms_size ts; 1]) =
+  match ts with
+  | []     -> []
+  | t :: r -> subst_term caps t @ subst_terms caps r
+
+and subst_lists (caps:list mcap) (bs:list (list sterm))
+  : Tot (list (list sterm)) (decreases %[sterm_lists_size bs; 2]) =
+  match bs with
+  | []     -> []
+  | b :: r -> subst_terms caps b :: subst_lists caps r
+
+and subst_impls (caps:list mcap) (im:list (string & list sterm))
+  : Tot (list (string & list sterm)) (decreases %[simpls_size im; 2]) =
+  match im with
+  | []           -> []
+  | (o, ts) :: r -> (o, subst_terms caps ts) :: subst_impls caps r
+
+(* ------------------------------------------------------------------------ *)
 (* Declarations                                                             *)
 (* ------------------------------------------------------------------------ *)
 
@@ -153,6 +254,12 @@ type sdecl =
   /// and cannot be given a signature. Forth reaches the same shape from the
   /// other direction, by making `LOCATE` immediate.
   | SdLocate      : string -> sdecl
+  /// `macro name ( slots ) { template }`, or with keyed alternatives.
+  ///
+  /// The production arrives already checked for shape by the parser and gets
+  /// checked for LL(1) compatibility with the table it is about to join by the
+  /// session, which is the one place that knows the table.
+  | SdMacro       : mprod -> sdecl
   /// A bare sequence of terms, evaluated against the current REPL stack.
   | SdExpr   : list sterm -> sdecl
 

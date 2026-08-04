@@ -353,12 +353,48 @@ one macro sharing a key — is the whole LL(1) obligation, and it is *checked*
 over the table by `assert_norm` rather than asserted in prose. This is the seed
 of the planned verified CFG-to-recursive-descent generator: the same property
 that tool must establish, established here on the grammar the language ships.
-*Expanders dispatch on the macro name rather than sitting in the record as a
-field* — a function-typed field would break the first-order subset (D-20), so
-the dispatch is defunctionalised exactly as R02 defunctionalises continuations.
-*Status:* the table is built in and `if` is its only entry. User-defined macros
-are what it exists for and need the elaboration-time interpreter; the shape of
-the table is fixed so that registering one later is registration, not redesign.
+*Expanders were originally dispatched on the macro name* because a
+function-typed field would break the first-order subset (D-20). They are now a
+**template**, which is data, so the dispatch is gone; `if` alone is still
+name-dispatched and carries `mp_builtin = true` to say so, because its expansion
+is a `case` and `case` has no surface spelling.
+*Status:* user-definable — see D-53.
+
+**D-53. A macro's expansion is a TEMPLATE, and templates are expanded at
+declaration time.** `macro name ( slots ) { template }`, with `{ $x }` for a
+block slot, `$x` for a word slot, and a bare word for a consumed keyword; keyed
+alternatives are `alt key ( slots ) { template } … end`. Substituting a block
+slot **splices**, so `{ $b $b }` with `$b = 1 +` gives `1 + 1 +`.
+*Why a template rather than a program:* the user's eventual target is a macro
+that is an ordinary word with an effect letting it consume and transform code,
+which needs an elaboration-time interpreter. A template is the subset of that
+which needs nothing: it is data, so no function-typed field appears, and it is
+enough to define every macro the language currently wants.
+*The termination argument is the declaration order, not a check.* A macro's
+template is parsed against the table **as it stands**, so it may use macros
+declared before it — already expanded by the time it is registered — and cannot
+use itself. Expansion therefore cannot loop, and no fuel or occurs check is
+needed. This property is worth preserving when macros become programs.
+*Nothing is hygienic, and that is stated rather than hidden.* A `$x` in a
+template naming no slot is an ordinary local read, resolved in whatever encloses
+the expansion. Hygiene is a real question and is deferred, not solved.
+*The LL(1) invariant now holds dynamically.* `ll1_extend` decides `ll1_ok` before
+accepting a production and `lemma_ll1_extend` states that every table a session
+parses against therefore satisfies it. `assert_norm` still covers the built-in
+table, but the interesting check moved to run time because the grammar did.
+
+**D-54. Parsing and evaluation interleave, one declaration at a time.**
+`eval_line` lexes the whole line, then repeatedly parses ONE declaration against
+the session's current grammar and runs it.
+*Why:* a `macro` declaration changes the grammar the rest of the input is read
+with, so the old shape — parse the whole line, then evaluate the list — could
+never let a macro take effect where it was written. Forth's `IMMEDIATE` has the
+same shape for the same reason.
+*What it costs, said plainly:* "a parse or type error leaves the session
+untouched" was a documented property and is now only true of LEXING errors. A
+line that half-parses leaves the declarations before the error applied. In a
+REPL where a line is one thought this is nearly never observable, and it is the
+honest price of macros being part of the language rather than of the compiler.
 
 **D-42. `true` and `false` are prelude words, not literals.** Bound to
 `WDef (bool_lit _)` in `R03_Prelude`.

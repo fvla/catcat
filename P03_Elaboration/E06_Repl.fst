@@ -38,6 +38,7 @@ open R01_Runtime
 open R02_Machine
 open R03_Prelude
 open R05_Driver
+open E01_Lexer
 open E02_Ast
 open E03_Parser
 open E04_Elaborate
@@ -59,6 +60,11 @@ noeq type session = {
   /// counter is the whole of that unification at runtime.
   se_next  : word_id;
   se_next_eff : eff_id;
+  /// The macro grammar this session parses against. Starts as the built-in
+  /// table and grows with every accepted `macro` declaration; `ll1_extend`
+  /// refuses one that would cost the grammar its LL(1) property, so the
+  /// invariant `lemma_ll1_extend` states holds at every point in a session.
+  se_macros : list mprod;
   se_stack : rstack;
   /// Static shape of `se_stack`, top-first.
   se_shape : list dtype;
@@ -134,6 +140,7 @@ let init_session : session = {
   se_dict  = prelude;
   se_next  = w_user_base;
   se_next_eff = 1;
+  se_macros = builtin_macros;
   se_stack = [];
   se_shape = [];
 }
@@ -262,6 +269,14 @@ let rec render_ops (e:nenv) (ds:list (string & ssig)) : Tot string (decreases ds
   | []               -> ""
   | (opname, _) :: r -> " " ^ opname ^ render_ops e r
 
+/// One line confirming what a `macro` declaration registered: the sentence it
+/// consumes, and for a branching production the keys that close it. The full
+/// form, templates included, is what `locate` prints.
+let render_prod (p:mprod) : Tot string =
+  show_slots p.mp_pre
+  ^ (if Nil? p.mp_branches then ""
+     else " …, closed by " ^ key_list p.mp_branches)
+
 (* --- suspension ----------------------------------------------------------- *)
 
 /// What the session needs in order to finish a line that stopped mid-way
@@ -282,7 +297,10 @@ noeq type suspension = {
   /// static shape can be restored when the line eventually finishes.
   su_post  : list dtype;
   su_below : list dtype;
-  su_rest  : list sdecl;
+  /// What is LEFT TO PARSE, not left to evaluate. A `macro` declaration
+  /// changes the grammar, so the rest of a line cannot be parsed until
+  /// everything before it has run (D-54).
+  su_rest  : list token;
   su_acc   : string;
 }
 
@@ -351,7 +369,22 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
   /// Pure inspection: no term is elaborated, nothing runs, the session is
   /// returned untouched. `locate` is the one declaration that cannot fail
   /// interestingly, which is why it is safe to type at any point.
-  | SdLocate name -> DDone s (locate s.se_nenv s.se_wenv s.se_dict name)
+  | SdLocate name ->
+    DDone s (locate s.se_macros s.se_nenv s.se_wenv s.se_dict name)
+
+  /// A macro declaration changes the GRAMMAR, so unlike every other
+  /// declaration it affects how the rest of the input is read — which is why
+  /// `eval_line` parses one declaration at a time (D-54).
+  ///
+  /// Nothing is elaborated and nothing runs: a macro has no signature, no word
+  /// id and no dictionary entry, because it does not exist at run time. Its
+  /// template was already expanded against the table in force when it was
+  /// declared, so registering it cannot make expansion loop.
+  | SdMacro p ->
+    (match ll1_extend s.se_macros p with
+     | Inl e   -> DDone s ("error: " ^ e)
+     | Inr mt' -> DDone ({ s with se_macros = mt' })
+                        ("macro " ^ p.mp_name ^ render_prod p))
 
   | SdExpr body ->
     (match elab_expr s.se_nenv s.se_shape body with
@@ -371,37 +404,55 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
 let join_msg (acc msg:string) : Tot string =
   if acc = "" then msg else acc ^ "\n" ^ msg
 
-let rec eval_decls (s:session) (ds:list sdecl) (acc:string)
-  : Tot lresult (decreases ds) =
-  match ds with
-  | []     -> LDone s acc
-  | d :: r ->
-    (match eval_decl s d with
-     | DDone s' msg -> eval_decls s' r (join_msg acc msg)
-     | DEffect op stk k s0 post below ->
-       LEffect op stk k ({ su_sess = s0; su_post = post; su_below = below;
-                           su_rest = r; su_acc = acc }))
+/// Parse ONE declaration against the session's current grammar, run it, and go
+/// on with whatever tokens are left.
+///
+/// Parsing and evaluation interleave because a `macro` declaration changes the
+/// grammar the rest of the input is read with — Forth's `IMMEDIATE` has the
+/// same shape and for the same reason. The cost is real and worth naming: a
+/// parse error part-way through a line no longer leaves the session untouched,
+/// because the declarations before it have already run (D-54).
+let rec eval_tokens (s:session) (ts:list token) (acc:string)
+  : Tot lresult (decreases (length ts)) =
+  match ts with
+  | [] -> LDone s acc
+  | _  ->
+    (match parse_decl s.se_macros ts with
+     | PErr e -> LDone s (join_msg acc ("error: " ^ e))
+     | POk d rest ->
+       (match eval_decl s d with
+        | DDone s' msg ->
+          if length rest < length ts
+          then eval_tokens s' rest (join_msg acc msg)
+          /// A declaration that consumed nothing would spin. The parser's
+          /// refinements make this unreachable, but the loop is total by
+          /// construction rather than by appeal to them.
+          else LDone s' (join_msg acc msg)
+        | DEffect op stk k s0 post below ->
+          LEffect op stk k ({ su_sess = s0; su_post = post; su_below = below;
+                              su_rest = rest; su_acc = acc })))
 
 (* ------------------------------------------------------------------------ *)
 (* Entry point                                                              *)
 (* ------------------------------------------------------------------------ *)
 
-/// Evaluate one line of source. A parse or type error leaves the session
-/// untouched, which is what makes the REPL safe to type into.
+/// Evaluate one line of source. A LEXING error leaves the session untouched; a
+/// parse or type error leaves it as of the last declaration that succeeded,
+/// which is the price of macros taking effect where they are written (D-54).
 ///
 /// `LEffect` means the line is not finished: an operation escaped every
 /// handler and the host must perform it, then call `resume_line`.
 let eval_line (s:session) (src:string) : Tot lresult =
-  match parse src with
+  match lex_line src with
   | Inl e   -> LDone s ("error: " ^ e)
-  | Inr ds  -> eval_decls s ds ""
+  | Inr tks -> eval_tokens s tks ""
 
 /// Carry on after the host has performed an operation. `stk` is the live stack
 /// with the operation's arguments removed and its results pushed.
 let resume_line (su:suspension) (k:kont) (stk:rstack) : Tot lresult =
   match run_expr su.su_sess su.su_post su.su_below
                  (resume su.su_sess.se_dict fuel k stk) with
-  | DDone s' msg -> eval_decls s' su.su_rest (join_msg su.su_acc msg)
+  | DDone s' msg -> eval_tokens s' su.su_rest (join_msg su.su_acc msg)
   | DEffect op stk' k' s0 post below ->
     LEffect op stk' k' ({ su with su_sess = s0; su_post = post; su_below = below })
 
@@ -414,8 +465,8 @@ let unhandled_msg (s:session) (op:op_id) : Tot string =
 /// Finish a line the host has declined to service, running whatever
 /// declarations followed the one that suspended.
 let abandon_line (su:suspension) (op:op_id) : Tot lresult =
-  eval_decls su.su_sess su.su_rest
-             (join_msg su.su_acc (unhandled_msg su.su_sess op))
+  eval_tokens su.su_sess su.su_rest
+              (join_msg su.su_acc (unhandled_msg su.su_sess op))
 
 /// The current stack, rendered bottom-to-top.
 let show_stack (s:session) : Tot string = render_stack s.se_stack

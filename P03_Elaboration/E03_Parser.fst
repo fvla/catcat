@@ -51,37 +51,13 @@ noeq type presult (a:Type) =
 /// property that tool will have to establish, checked here on the one grammar
 /// the language ships.
 ///
-/// STATUS: the table is built in, with `if` its only entry. User-defined
-/// macros — registration from catcat source, via the `Parse` effect of D03 §7
-/// — are what this exists for, and need the elaboration-time interpreter.
-type mslot =
-  /// `{ … }`, captured as its term list.
-  | MsBlock   : mslot
-  /// One identifier, captured as a string.
-  | MsWord    : mslot
-  /// A literal word that must appear. Consumed, captures nothing.
-  | MsKeyword : string -> mslot
-
-/// What a slot captured. A branch key is recorded as `McWord` so the expander
-/// can tell which alternative was taken.
-noeq type mcap =
-  | McBlock : list sterm -> mcap
-  | McWord  : string -> mcap
-
-type mbranch = {
-  /// The word that selects this alternative. Consumed.
-  mb_key   : string;
-  mb_slots : list mslot;
-}
-
-noeq type mprod = {
-  /// The leading word that invokes the macro.
-  mp_name     : string;
-  /// Slots consumed before the alternation.
-  mp_pre      : list mslot;
-  /// Keyed alternatives. Empty means the production ends after `mp_pre`.
-  mp_branches : list mbranch;
-}
+/// STATUS: the table starts with `if` and grows. A `macro` declaration adds a
+/// production and its templates; the session carries the table and rechecks
+/// `ll1_ok` before accepting one, so the grammar the parser runs on is verified
+/// LL(1) at every point in a session and not merely at startup.
+///
+/// The types themselves are in `E02_Ast`, because a production is now something
+/// a PROGRAM writes rather than a table this module owns.
 
 (* --- the LL(1) invariant ------------------------------------------------- *)
 
@@ -203,16 +179,25 @@ let parse_sig_body (ts:list token)
 /// The terminator is mandatory and both alternatives are keyed, which is what
 /// keeps `then`, `else` and `endif` ordinary word names outside this
 /// production (D-34). Verified: they are all still definable.
-let macro_table : list mprod = [
+///
+/// The one BUILT-IN production, and the only one that could not be written as a
+/// `macro` declaration: its expansion is `StCase`, which has no surface
+/// spelling. Its templates are therefore empty and unused, and `mp_builtin`
+/// says so rather than leaving a reader to infer it from the name.
+let builtin_macros : list mprod = [
   { mp_name     = "if";
-    mp_pre      = [MsBlock; MsKeyword "then"; MsBlock];
-    mp_branches = [ { mb_key = "endif"; mb_slots = [] };
-                    { mb_key = "else";  mb_slots = [MsBlock; MsKeyword "endif"] } ] }
+    mp_pre      = [MsBlock "c"; MsKeyword "then"; MsBlock "t"];
+    mp_branches = [ { mb_key = "endif"; mb_slots = []; mb_body = [] };
+                    { mb_key = "else";
+                      mb_slots = [MsBlock "e"; MsKeyword "endif"];
+                      mb_body  = [] } ];
+    mp_body     = [];
+    mp_builtin  = true }
 ]
 
-/// The table really is LL(1), checked rather than asserted in prose.
-let lemma_table_ll1 () : Lemma (ll1_ok macro_table) =
-  assert_norm (ll1_ok macro_table)
+/// The built-in table really is LL(1), checked rather than asserted in prose.
+let lemma_table_ll1 () : Lemma (ll1_ok builtin_macros) =
+  assert_norm (ll1_ok builtin_macros)
 
 let rec lookup_macro (ps:list mprod) (w:string)
   : Tot (option mprod) (decreases ps) =
@@ -232,27 +217,73 @@ let rec key_list (bs:list mbranch) : Tot string (decreases bs) =
   | b :: [] -> "'" ^ b.mb_key ^ "'"
   | b :: r  -> "'" ^ b.mb_key ^ "', " ^ key_list r
 
+(* --- growing the table --------------------------------------------------- *)
+
+/// Add a production, refusing one that would cost the grammar its LL(1)
+/// property. The first two tests exist only to say WHICH rule was broken —
+/// "the grammar would be ambiguous" is a verdict, not a diagnostic — and the
+/// third is the property itself, tested rather than argued.
+let ll1_extend (mt:list mprod) (p:mprod) : Tot (either string (list mprod)) =
+  if Some? (lookup_macro mt p.mp_name)
+  then Inl ("a macro named '" ^ p.mp_name ^ "' already exists; two productions \
+             on the same leading word would need a second token to tell apart")
+  else if not (keys_distinct [] p.mp_branches)
+  then Inl ("two alternatives of '" ^ p.mp_name ^ "' share a key, so the token \
+             that selects between them does not")
+  else if not (ll1_ok (p :: mt))
+  then Inl ("adding '" ^ p.mp_name ^ "' would make the macro grammar ambiguous")
+  else Inr (p :: mt)
+
+/// Every table a session ever parses against is LL(1). Not a vacuous statement
+/// dressed as a lemma: it holds because `ll1_extend` decides the property
+/// before accepting, and it is the whole invariant that lets `parse_terms`
+/// dispatch on the token in hand with no lookahead (D-30).
+let lemma_ll1_extend (mt:list mprod) (p:mprod)
+  : Lemma (match ll1_extend mt p with
+           | Inr mt' -> ll1_ok mt'
+           | Inl _   -> True) = ()
+
 (* --- expansion ----------------------------------------------------------- *)
 
-/// Expanders dispatch on the macro's name rather than living in `mprod` as a
-/// field. That is not a style choice: a function-typed record field would
-/// break the first-order subset P03 shares with P02 (D-20), so the dispatch is
-/// defunctionalised exactly as `R02` defunctionalises continuations.
+/// `if` expands by hand, because `StCase` is not writable in surface syntax.
+/// Everything else expands by substituting captures into a template, which is
+/// what a `macro` declaration supplies.
 ///
 /// Branches are emitted in TAG order, FALSE first (D-33), so `else` precedes
 /// `then`. An absent `else` is `[]` — the empty branch — which is why "the
 /// `then` branch must not change the stack" needs no rule of its own.
 let expand_if (caps:list mcap) : Tot (either string (list sterm)) =
   match caps with
-  | [McBlock cond; McBlock conseq; McWord "endif"] ->
+  | [McBlock _ cond; McBlock _ conseq; McKey "endif"] ->
     Inr (cond @ [StCase [[]; conseq]])
-  | [McBlock cond; McBlock conseq; McWord "else"; McBlock alt] ->
+  | [McBlock _ cond; McBlock _ conseq; McKey "else"; McBlock _ alt] ->
     Inr (cond @ [StCase [alt; conseq]])
   | _ -> Inl "if: malformed expansion"
 
-let expand (name:string) (caps:list mcap) : Tot (either string (list sterm)) =
-  if name = "if" then expand_if caps
-  else Inl ("no expander for macro '" ^ name ^ "'")
+/// Which template a set of captures selects: the production's own when it has
+/// no alternatives, otherwise the one belonging to the branch whose key was
+/// consumed. `McKey` is the only reason the key is recorded at all.
+let rec key_taken (caps:list mcap) : Tot (option string) (decreases caps) =
+  match caps with
+  | []            -> None
+  | McKey k :: _  -> Some k
+  | _ :: r        -> key_taken r
+
+let template_of (p:mprod) (caps:list mcap) : Tot (either string (list sterm)) =
+  if Nil? p.mp_branches then Inr p.mp_body
+  else match key_taken caps with
+       | None   -> Inl (p.mp_name ^ ": no alternative was selected")
+       | Some k -> (match lookup_branch p.mp_branches k with
+                    | None   -> Inl (p.mp_name ^ ": no alternative keyed '" ^ k ^ "'")
+                    | Some b -> Inr b.mb_body)
+
+let expand (p:mprod) (caps:list mcap) : Tot (either string (list sterm)) =
+  if p.mp_builtin
+  then (if p.mp_name = "if" then expand_if caps
+        else Inl ("no expander for built-in macro '" ^ p.mp_name ^ "'"))
+  else match template_of p caps with
+       | Inl e    -> Inl e
+       | Inr body -> Inr (subst_terms caps body)
 
 (* ------------------------------------------------------------------------ *)
 (* Terms                                                                    *)
@@ -263,7 +294,7 @@ let expand (name:string) (caps:list mcap) : Tot (either string (list sterm)) =
 /// `parse_slots`. Every edge either shortens the token list or drops a rank,
 /// and the only same-length edge is a macro handing its own slot list to the
 /// slot parser.
-let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
+let rec parse_terms (mt:list mprod) (closing:bool) (acc:list sterm) (ts:list token)
   : Tot (r:presult (list sterm) { POk? r ==> length (POk?._1 r) <= length ts })
         (decreases %[length ts; 2]) =
   match ts with
@@ -273,7 +304,7 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
   | TkRBrace :: rest -> if closing
                         then POk (rev acc) rest
                         else PErr "unexpected '}'"
-  | TkInt n :: rest -> parse_terms closing (StInt n :: acc) rest
+  | TkInt n :: rest -> parse_terms mt closing (StInt n :: acc) rest
 
   /// A word that names a macro invokes it; anything else is an ordinary word.
   /// The expansion is spliced into the enclosing sequence, so a macro's output
@@ -283,9 +314,9 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
   /// macro slot vocabulary should not be stretched to cover that before it has
   /// been exercised on the constructs it already fits.
   | TkWord "handle" :: rest ->
-    (match parse_handle rest with
+    (match parse_handle mt rest with
      | PErr e -> PErr e
-     | POk h after -> parse_terms closing (h :: acc) after)
+     | POk h after -> parse_terms mt closing (h :: acc) after)
 
   /// `with { old new … } { body }`. Same reason as `handle` for not being a
   /// macro: the rebinding block is a list of name pairs, not a term list.
@@ -295,28 +326,28 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
      | POk su r2 ->
        (match r2 with
         | TkLBrace :: r3 ->
-          (match parse_terms true [] r3 with
+          (match parse_terms mt true [] r3 with
            | PErr e -> PErr e
-           | POk body r4 -> parse_terms closing (StWith su body :: acc) r4)
+           | POk body r4 -> parse_terms mt closing (StWith su body :: acc) r4)
         | _ -> PErr "expected '{' opening the body of a 'with'"))
   | TkWord "with" :: _ ->
     PErr "expected '{ old new … }' after 'with'"
 
   | TkWord w :: rest ->
-    (match lookup_macro macro_table w with
-     | None -> parse_terms closing (StWord w :: acc) rest
+    (match lookup_macro mt w with
+     | None -> parse_terms mt closing (StWord w :: acc) rest
      | Some p ->
-       (match parse_macro p rest with
+       (match parse_macro mt p rest with
         | PErr e -> PErr e
         | POk caps after ->
-          (match expand w caps with
+          (match expand p caps with
            | Inl e   -> PErr e
-           | Inr exp -> parse_terms closing (rev exp @ acc) after)))
-  | TkDollar n :: rest -> parse_terms closing (StVar n :: acc) rest
+           | Inr exp -> parse_terms mt closing (rev exp @ acc) after)))
+  | TkDollar n :: rest -> parse_terms mt closing (StVar n :: acc) rest
   | TkLBrace :: rest ->
-    (match parse_terms true [] rest with
+    (match parse_terms mt true [] rest with
      | PErr e -> PErr e
-     | POk inner after -> parse_terms closing (StBlock inner :: acc) after)
+     | POk inner after -> parse_terms mt closing (StBlock inner :: acc) after)
   | t :: _ -> PErr ("unexpected " ^ render_token t ^ " in a term sequence")
 
 /// Run one macro's production: its fixed slots, then the keyed alternation.
@@ -325,10 +356,10 @@ let rec parse_terms (closing:bool) (acc:list sterm) (ts:list token)
 /// not lookahead (D-30). With no keyed alternative matching, the error names
 /// the keys that would have, which is the whole diagnostic a missing `endif`
 /// needs.
-and parse_macro (p:mprod) (ts:list token)
+and parse_macro (mt:list mprod) (p:mprod) (ts:list token)
   : Tot (r:presult (list mcap) { POk? r ==> length (POk?._1 r) <= length ts })
         (decreases %[length ts; 1]) =
-  match parse_slots [] p.mp_pre ts with
+  match parse_slots mt [] p.mp_pre ts with
   | PErr e -> PErr e
   | POk caps after ->
     if Nil? p.mp_branches then POk caps after
@@ -340,9 +371,9 @@ and parse_macro (p:mprod) (ts:list token)
          (match lookup_branch p.mp_branches w with
           | None   -> PErr expected
           | Some b ->
-            (match parse_slots [] b.mb_slots rest with
+            (match parse_slots mt [] b.mb_slots rest with
              | PErr e -> PErr e
-             | POk caps2 tail -> POk (caps @ (McWord w :: caps2)) tail))
+             | POk caps2 tail -> POk (caps @ (McKey w :: caps2)) tail))
        | _ -> PErr expected)
 
 /// Consume one slot at a time. Each slot eats at least one token, so a macro
@@ -356,7 +387,7 @@ and parse_macro (p:mprod) (ts:list token)
 /// than optional throughout — a handler with no state still writes
 /// `over ( ) init { }` — which is what keeps it LL(1) without reserving
 /// `over` or `init` outside this production.
-and parse_handle (ts:list token)
+and parse_handle (mt:list mprod) (ts:list token)
   : Tot (r:presult sterm { POk? r ==> length (POk?._1 r) <= length ts })
         (decreases %[length ts; 5]) =
   match ts with
@@ -366,17 +397,17 @@ and parse_handle (ts:list token)
      | POk tys r2 ->
        (match r2 with
         | TkWord "init" :: TkLBrace :: r3 ->
-          (match parse_terms true [] r3 with
+          (match parse_terms mt true [] r3 with
            | PErr e -> PErr e
            | POk init r4 ->
              (match r4 with
               | TkLBrace :: r5 ->
-                (match parse_impls [] r5 with
+                (match parse_impls mt [] r5 with
                  | PErr e -> PErr e
                  | POk impls r6 ->
                    (match r6 with
                     | TkLBrace :: r7 ->
-                      (match parse_terms true [] r7 with
+                      (match parse_terms mt true [] r7 with
                        | PErr e -> PErr e
                        | POk body r8 ->
                          POk (StHandle name tys init impls body) r8)
@@ -391,16 +422,16 @@ and parse_handle (ts:list token)
   | _ -> PErr "expected an effect name after 'handle'"
 
 /// The implementations, up to the closing `}`. Each is `op { … }`.
-and parse_impls (acc:list (string & list sterm)) (ts:list token)
+and parse_impls (mt:list mprod) (acc:list (string & list sterm)) (ts:list token)
   : Tot (r:presult (list (string & list sterm))
          { POk? r ==> length (POk?._1 r) <= length ts })
         (decreases %[length ts; 4]) =
   match ts with
   | TkRBrace :: rest -> POk (rev acc) rest
   | TkWord op :: TkLBrace :: r1 ->
-    (match parse_terms true [] r1 with
+    (match parse_terms mt true [] r1 with
      | PErr e -> PErr e
-     | POk blk r2 -> parse_impls ((op, blk) :: acc) r2)
+     | POk blk r2 -> parse_impls mt ((op, blk) :: acc) r2)
   | TkWord op :: _ ->
     PErr ("expected '{' opening the implementation of " ^ op)
   | [] -> PErr "expected '}' closing the implementations, found end of input"
@@ -439,26 +470,26 @@ and parse_state_tys (acc:list sty) (ts:list token)
        then parse_state_tys (t :: acc) after
        else PErr "handler state made no progress")
 
-and parse_slots (acc:list mcap) (ss:list mslot) (ts:list token)
+and parse_slots (mt:list mprod) (acc:list mcap) (ss:list mslot) (ts:list token)
   : Tot (r:presult (list mcap) { POk? r ==> length (POk?._1 r) <= length ts })
         (decreases %[length ts; 0]) =
   match ss with
   | [] -> POk (rev acc) ts
-  | MsBlock :: sr ->
+  | MsBlock n :: sr ->
     (match ts with
      | TkLBrace :: rest ->
-       (match parse_terms true [] rest with
+       (match parse_terms mt true [] rest with
         | PErr e -> PErr e
-        | POk inner after -> parse_slots (McBlock inner :: acc) sr after)
-     | _ -> PErr "expected '{' opening a block here")
-  | MsWord :: sr ->
+        | POk inner after -> parse_slots mt (McBlock n inner :: acc) sr after)
+     | _ -> PErr ("expected '{' opening a block for $" ^ n))
+  | MsWord n :: sr ->
     (match ts with
-     | TkWord w :: rest -> parse_slots (McWord w :: acc) sr rest
-     | _ -> PErr "expected a word here")
+     | TkWord w :: rest -> parse_slots mt (McWord n w :: acc) sr rest
+     | _ -> PErr ("expected a word for $" ^ n))
   | MsKeyword k :: sr ->
     (match ts with
      | TkWord w :: rest ->
-       if w = k then parse_slots acc sr rest
+       if w = k then parse_slots mt acc sr rest
        else PErr ("expected '" ^ k ^ "', found '" ^ w ^ "'")
      | _ -> PErr ("expected '" ^ k ^ "' here"))
 
@@ -471,7 +502,7 @@ and parse_slots (acc:list mcap) (ss:list mslot) (ts:list token)
 ///
 /// The choice between the two rests on the single token after the name, so
 /// this stays LL(1) — no backtracking, no second-token peek (D-30).
-let parse_define (ts:list token) : Tot (presult sdecl) =
+let parse_define (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
   match ts with
   | TkWord name :: TkLParen :: rest ->
     (match parse_sig_body rest with
@@ -479,12 +510,12 @@ let parse_define (ts:list token) : Tot (presult sdecl) =
      | POk sg after ->
        (match after with
         | TkLBrace :: body_ts ->
-          (match parse_terms true [] body_ts with
+          (match parse_terms mt true [] body_ts with
            | PErr e -> PErr e
            | POk body tail -> POk (SdDefine name sg body) tail)
         | _ -> PErr ("expected '{' opening the body of " ^ name)))
   | TkWord name :: TkLBrace :: body_ts ->
-    (match parse_terms true [] body_ts with
+    (match parse_terms mt true [] body_ts with
      | PErr e -> PErr e
      | POk body tail -> POk (SdDefineInfer name body) tail)
   | TkWord name :: _ ->
@@ -524,37 +555,124 @@ let parse_effect (ts:list token) : Tot (presult sdecl) =
   | TkWord name :: _ -> PErr ("expected '{' after 'effect " ^ name ^ "'")
   | _ -> PErr "expected a name after 'effect'"
 
+(* ------------------------------------------------------------------------ *)
+(* Macro declarations                                                       *)
+(* ------------------------------------------------------------------------ *)
+
+/// The slot list of a production, up to `)`.
+///
+///     { $x }   a block slot, spliced at `$x` in the template
+///     $x       a word slot, substituted at `$x`
+///     w        a literal word that must appear, capturing nothing
+///
+/// One token decides which, every time: `{`, `$`, a word, or `)`. That is the
+/// LL(1) property the macro system is supposed to demonstrate, so the syntax
+/// for declaring one had better have it too.
+let rec parse_mslots (acc:list mslot) (ts:list token)
+  : Tot (r:presult (list mslot) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | TkRParen :: rest -> POk (rev acc) rest
+  | TkLBrace :: TkDollar n :: TkRBrace :: rest ->
+    parse_mslots (MsBlock n :: acc) rest
+  | TkLBrace :: _ ->
+    PErr "a block slot is written '{ $name }'"
+  | TkDollar n :: rest -> parse_mslots (MsWord n :: acc) rest
+  | TkWord w :: rest   -> parse_mslots (MsKeyword w :: acc) rest
+  | [] -> PErr "expected ')' closing the slots of a macro, found end of input"
+  | t :: _ -> PErr ("unexpected " ^ render_token t ^ " in a macro's slots")
+
+/// `alt key ( slots ) { template } … end`.
+let rec parse_malts (mt:list mprod) (acc:list mbranch) (ts:list token)
+  : Tot (presult (list mbranch)) (decreases (length ts)) =
+  match ts with
+  | TkWord "end" :: rest -> POk (rev acc) rest
+  | TkWord "alt" :: TkWord key :: TkLParen :: r1 ->
+    (match parse_mslots [] r1 with
+     | PErr e -> PErr e
+     | POk ss r2 ->
+       (match r2 with
+        | TkLBrace :: r3 ->
+          (match parse_terms mt true [] r3 with
+           | PErr e -> PErr e
+           | POk body r4 ->
+             if length r4 < length ts
+             then parse_malts mt ({ mb_key = key; mb_slots = ss; mb_body = body }
+                                  :: acc) r4
+             else PErr "macro alternative made no progress")
+        | _ -> PErr ("expected '{' opening the template of alternative '"
+                     ^ key ^ "'")))
+  | TkWord "alt" :: TkWord key :: _ ->
+    PErr ("expected '(' after 'alt " ^ key ^ "'; a keyed alternative with no \
+          slots of its own writes '( )'")
+  | TkWord "alt" :: _ -> PErr "expected a key word after 'alt'"
+  | [] -> PErr "expected 'alt' or 'end' here, found end of input"
+  | t :: _ -> PErr ("expected 'alt' or 'end' here, found " ^ render_token t)
+
+/// `macro name ( slots ) { template }`, or with keyed alternatives:
+///
+///     macro name ( slots )
+///       alt key1 ( slots ) { template }
+///       alt key2 ( slots ) { template }
+///     end
+///
+/// `macro` is already consumed. The choice between the two forms rests on the
+/// single token after `)` — `{` or `alt` — and `alt` and `end` are keywords
+/// only inside this production, so neither is reserved anywhere else.
+///
+/// THE TEMPLATE IS PARSED AGAINST THE TABLE AS IT STANDS, which has two
+/// consequences worth stating. A macro may use macros declared before it, and
+/// their expansions are already done by the time it is registered. And a macro
+/// cannot use itself, so expansion cannot loop — termination is a property of
+/// the declaration order, not a check (D-53).
+let parse_macro_decl (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
+  match ts with
+  | TkWord name :: TkLParen :: r1 ->
+    (match parse_mslots [] r1 with
+     | PErr e -> PErr e
+     | POk pre r2 ->
+       (match r2 with
+        | TkLBrace :: r3 ->
+          (match parse_terms mt true [] r3 with
+           | PErr e -> PErr e
+           | POk body r4 ->
+             POk (SdMacro ({ mp_name = name; mp_pre = pre; mp_branches = [];
+                             mp_body = body; mp_builtin = false })) r4)
+        | TkWord "alt" :: _ ->
+          (match parse_malts mt [] r2 with
+           | PErr e -> PErr e
+           | POk bs r4 ->
+             POk (SdMacro ({ mp_name = name; mp_pre = pre; mp_branches = bs;
+                             mp_body = []; mp_builtin = false })) r4)
+        | _ -> PErr ("expected '{' or 'alt' after the slots of macro " ^ name)))
+  | TkWord name :: _ ->
+    PErr ("expected '(' after 'macro " ^ name ^ "'; a macro taking nothing \
+          writes '( )'")
+  | _ -> PErr "expected a name after 'macro'"
+
+(* ------------------------------------------------------------------------ *)
+(* Declarations                                                             *)
+(* ------------------------------------------------------------------------ *)
+
 /// One declaration. A leading `define` starts a definition, a leading `locate`
 /// an inspection; anything else is an expression run to the end of input.
 ///
-/// Neither word is reserved — both are recognised by POSITION, at the start of
-/// a declaration, so `define locate { … }` remains legal and a `locate` inside
-/// a body is an ordinary word. This is the same rule that keeps `then`, `else`
-/// and `endif` free (D-32, D-34).
-let parse_decl (ts:list token) : Tot (presult sdecl) =
+/// None of these words is reserved — each is recognised by POSITION, at the
+/// start of a declaration, so `define locate { … }` remains legal and a
+/// `locate` inside a body is an ordinary word. This is the same rule that keeps
+/// `then`, `else` and `endif` free (D-32, D-34).
+let parse_decl (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
   match ts with
-  | TkWord "define" :: rest -> parse_define rest
+  | TkWord "define" :: rest -> parse_define mt rest
   | TkWord "effect" :: rest -> parse_effect rest
+  | TkWord "macro"  :: rest -> parse_macro_decl mt rest
   | TkWord "locate" :: TkWord name :: rest -> POk (SdLocate name) rest
   | TkWord "locate" :: _ -> PErr "expected a word after 'locate'"
-  | _ ->(match parse_terms false [] ts with
+  | _ ->(match parse_terms mt false [] ts with
           | PErr e -> PErr e
           | POk body tail -> POk (SdExpr body) tail)
 
-let rec parse_decls (acc:list sdecl) (ts:list token)
-  : Tot (either string (list sdecl)) (decreases (length ts)) =
-  match ts with
-  | [] -> Inr (rev acc)
-  | _ ->
-    (match parse_decl ts with
-     | PErr e -> Inl e
-     | POk d rest ->
-       if length rest < length ts
-       then parse_decls (d :: acc) rest
-       else Inr (rev (d :: acc)))
-
-/// Lex and parse a whole source string.
-let parse (src:string) : Tot (either string (list sdecl)) =
-  match lex src with
-  | Inl e   -> Inl e
-  | Inr tks -> parse_decls [] tks
+/// Lex a whole source string. Parsing is NOT done here any more: a `macro`
+/// declaration changes the grammar the rest of the input is read with, so the
+/// session parses one declaration at a time, evaluating as it goes (D-54).
+let lex_line (src:string) : Tot (either string (list token)) = lex src

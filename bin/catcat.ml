@@ -1,8 +1,11 @@
 (* The catcat REPL.
 
    Each line goes through the whole pipeline: lex (E01) -> parse (E03) ->
-   elaborate (E04) -> typecheck (M06) -> evaluate (R02/R05). A parse or type
-   error leaves the session untouched, so a bad line costs nothing.
+   elaborate (E04) -> typecheck (M06) -> evaluate (R02/R05). The line is lexed
+   whole and then parsed ONE DECLARATION AT A TIME, evaluating as it goes,
+   because a `macro` declaration changes the grammar the rest of the line is
+   read with (D-54). A lexing error therefore costs nothing, while a parse or
+   type error costs whatever ran before it on that line.
 
    THIS FILE IS THE OUTERMOST HANDLER. `E06_Repl.eval_line` returns `LEffect`
    when an operation escapes every handler in the program, and for the built-in
