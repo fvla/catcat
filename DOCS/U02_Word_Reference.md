@@ -3,7 +3,7 @@
 Every word the language provides today. That is a short list: eleven primitives,
 two constants, two IO operations, and three stack shuffles.
 
-> **Current as of commit `da9b722`.**
+> **Current as of commit `5333d56`.**
 > Source of truth:
 > [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
@@ -153,12 +153,13 @@ define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
 
 Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`.
 `define` itself is not a reserved word either; it is recognised by position at
-the start of a declaration, and so are `effect` and `locate`. `then`, `else`,
-`endif`, `over`, `init` and `declare` are likewise free — each is a keyword only
-inside the construct that introduces it. Three names are effectively taken —
-`if`, `handle` and `with` — because they are dispatched on wherever a term may
-start: a definition of one is accepted but can never be called
-([U01](U01_Grammar.md) §1).
+the start of a declaration, and so are `effect`, `macro` and `locate`. `then`,
+`else`, `endif`, `over`, `init`, `declare`, `alt` and `end` are likewise free —
+each is a keyword only inside the construct that introduces it. Three names are
+effectively taken — `if`, `handle` and `with` — because they are dispatched on
+wherever a term may start: a definition of one is accepted but can never be
+called ([U01](U01_Grammar.md) §1). **Declaring a macro adds a name to that
+list**, silently.
 
 Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).
 
@@ -199,9 +200,10 @@ return yet.
 locate <word>
 ```
 
-Forth's `LOCATE`/`SEE`. Prints a primitive's description, a macro's production,
-or a definition's body — the last **decompiled from the core term**, so it shows
-what the word is after elaboration rather than what was typed.
+Forth's `LOCATE`/`SEE`. Prints a primitive's description, a macro's production
+and templates, or a definition's body — the last **decompiled from the core
+term**, so it shows what the word is after elaboration rather than what was
+typed.
 
 ```
 catcat> locate <=
@@ -230,9 +232,28 @@ the regression tests run:
 ```
 
 The stack persists between lines and is shown bottom-to-top after each, or
-`(empty)`. **A parse or type error leaves the session untouched**, so a mistyped
-line cannot corrupt the stack.
+`(empty)`.
 
-Every line goes through the full pipeline — lex, parse, elaborate, typecheck
-with the specification's `infer`, then evaluate on the reference machine. The
-typechecker is the one from `P01_Specification`, not a re-implementation.
+Every line is lexed whole and then parsed **one declaration at a time**,
+evaluating as it goes, because a `macro` declaration changes the grammar the
+rest of the line is read with ([U01](U01_Grammar.md) §5). Each declaration goes
+through the full pipeline — parse, elaborate, typecheck with the
+specification's `infer`, then evaluate on the reference machine. The typechecker
+is the one from `P01_Specification`, not a re-implementation.
+
+**A lexing error leaves the session untouched.** A parse or type error leaves it
+as of the last declaration that succeeded — so on a line holding several
+declarations, the ones before the error have run. A type error still costs
+nothing on its own declaration, which is what keeps a mistyped expression from
+corrupting the stack:
+
+```
+catcat> 1 2 +
+ok  3
+catcat> pop pop
+error: pop: the stack is empty
+catcat> 2 3 +
+ok  3 5
+```
+
+The failed line left the `3` exactly where it was.

@@ -32,9 +32,17 @@ module E05_Locate
 ///   in practice, so the printed text really does elaborate back to the term it
 ///   came from.
 ///
+/// TWO RENDERERS, DELIBERATELY
+///   `show_term` renders CORE terms and `show_sterm` renders SURFACE ones. A
+///   macro's template has not been elaborated — it still holds names, `$x` slot
+///   references and unresolved effects — so it cannot go through the first.
+///   Both reconstruct `if` from a two-branch case, for the same reason: the
+///   output has to re-parse.
+///
 /// SOURCE OF TRUTH
-///   `M05_Terms.term` for what can appear, `E03_Parser.macro_table` for the
-///   macro renderings, `E04_Elaborate.nenv` for names.
+///   `M05_Terms.term` for what can appear, `E02_Ast.mprod` for what a macro is,
+///   the session's own macro table for which macros exist, `E04_Elaborate.nenv`
+///   for names.
 
 open FStar.List.Tot
 open M01_Kinds

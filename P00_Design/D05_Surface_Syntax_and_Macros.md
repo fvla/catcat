@@ -380,6 +380,45 @@ may reinterpret it under different rules. This is the "consumed by a macro" half
 of D01 §3.2 — and note that a block is never a runtime value, so a macro
 consuming one is an elaboration-time operation with no runtime residue.
 
+### 5.1 What is implemented, and how far it is from the above
+
+`macro` is a declaration and macros are user-definable today, but in a **strictly
+weaker form than this section describes**, and the difference is worth being
+exact about because the weaker form turned out to need nothing at all.
+
+```
+macro name ( slots ) { template }
+
+macro name ( slots )
+  alt key ( slots ) { template }
+  alt key ( slots ) { template }
+end
+```
+
+Slots are `{ $x }` for a block, `$x` for a word, and a bare word for a consumed
+keyword. `DOCS/U01` §5 is the reference for the running form.
+
+Three differences from the design above:
+
+1. **The expansion is a TEMPLATE, not a program.** There is no `Parse` effect, no
+   elaboration-time interpreter, and nothing a macro can compute — it substitutes
+   captures into surface terms. `macro define ( -- ) !Parse[consume 2] { … }`
+   remains the target and remains unbuilt.
+2. **How much a macro consumes is in its PRODUCTION, not in an effect
+   annotation.** The instinct the design records — declare consumption rather
+   than scan to a terminator — survives intact and is what keeps the grammar
+   LL(1); only its spelling differs. `ll1_extend` decides the property before
+   accepting a production, so a session's grammar is LL(1) at every point.
+3. **Nothing is hygienic.** A `$x` in a template naming no slot is an ordinary
+   local read in whatever encloses the expansion.
+
+The target shape the language is aiming at is different again, and neither this
+section nor the implementation reaches it: a macro should be **an ordinary word
+with an effect that lets it consume and transform code**, distinguished from a
+normal word only in that resolution of its signature is deferred until after it
+runs — Forth's `IMMEDIATE`, given a type. That is what the `Parse` family exists
+for, and it is the reason the template form is deliberately not being extended.
+
 ---
 
 ## 6. Reserved and undecided

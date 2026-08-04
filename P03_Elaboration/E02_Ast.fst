@@ -13,12 +13,15 @@ module E02_Ast
 ///   * `$x` locals become `SPick`/`SRoll` stack access.
 ///
 /// SCOPE OF THIS PASS
-///   The subset implemented is literals, words, blocks, signatures with named
-///   parameters, and `define`. Deliberately absent, each already specified in
-///   D05 and each needing its own pass: macros, modules and `::`, generics
-///   `[]`, effect rows and handler syntax, sums and classes, strings, `let`
-///   destructuring, and `.` member access. The AST carries `sty_generic` and
-///   an effect list so those extensions do not have to reshape it.
+///   Literals, words, blocks, signatures with named parameters, `define`,
+///   effects and handlers, `with`, and macro productions. Deliberately absent,
+///   each already specified in D05 and each needing its own pass: modules and
+///   `::`, generics `[]`, sums and classes, strings, `let` destructuring, and
+///   `.` member access.
+///
+///   Macros are here rather than in the parser because `macro` is a
+///   DECLARATION now: a production is something a program writes, so `mprod`
+///   is part of the syntax tree.
 
 open FStar.List.Tot
 

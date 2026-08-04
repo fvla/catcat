@@ -5,7 +5,7 @@ describes the implemented language, not the designed one: where the two differ,
 that is called out rather than glossed. For the designed language see
 [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md).
 
-> **Current as of commit `da9b722`.**
+> **Current as of commit `5333d56`.**
 > Source of truth: [E01_Lexer.fst](../P03_Elaboration/E01_Lexer.fst) (lexing),
 > [E03_Parser.fst](../P03_Elaboration/E03_Parser.fst) (grammar),
 > [E02_Ast.fst](../P03_Elaboration/E02_Ast.fst) (the tree it produces),
@@ -20,13 +20,18 @@ that is called out rather than glossed. For the designed language see
 ```ebnf
 program    = decl* ;
 
-decl       = define | effect | locate | expression ;
+decl       = define | effect | macro | locate | expression ;
 
 define     = "define" word "(" signature ")" "{" term* "}"
            | "define" word                   "{" term* "}" ;   (* inferred *)
 
 effect     = "effect" word "{" declare* "}" ;                  (* see §6 *)
 declare    = "declare" word "(" signature ")" ;
+
+macro      = "macro" word "(" mslot* ")" "{" term* "}"          (* see §5 *)
+           | "macro" word "(" mslot* ")" malt+ "end" ;
+malt       = "alt" word "(" mslot* ")" "{" term* "}" ;
+mslot      = "{" "$" name "}" | "$" name | word ;
 
 locate     = "locate" word ;                                   (* see §5 *)
 
@@ -63,24 +68,36 @@ block       = "{" term* "}" ;
 
 The `conditional` production is written out here for readability, but it is not
 built into the parser: it is one entry in a **macro table** (§5), and the parser
-that reads it is generic over the table.
+that reads it is generic over the table. The table grows: `macro` adds to it.
 
-**`define`, `effect` and `locate` are not reserved words.** All three are
+**`define`, `effect`, `macro` and `locate` are not reserved words.** All four are
 recognised by *position* — first token of a declaration — so `define locate
 { 42 }` is legal and `locate` inside a body is an ordinary word. The same rule
-leaves `then`, `else`, `endif`, `over`, `init` and `declare` free everywhere
-outside the construct that introduces them.
+leaves `then`, `else`, `endif`, `over`, `init`, `declare`, `alt` and `end` free
+everywhere outside the construct that introduces them. What position-recognition
+does cost is the first slot of a declaration:
+
+```
+catcat> define macro { 7 }
+defined macro ( -- i64 )
+catcat> macro
+error: expected a name after 'macro'
+```
+
+The word exists and is callable inside a body; it is only unreachable as the
+first token of a declaration.
 
 **Three words are effectively taken**, not by the grammar but by being dispatched
 on wherever a term may start: `if` (the macro table), `handle` and `with`. Each
 is still *definable* — `define if { 9 }` is accepted — but every later use is
 read as the construct, so the definition can never be called. Nothing warns
-about this yet.
+about this yet. **Every macro declared adds a word to this list**, which is the
+real cost of the macro system and is not diagnosed.
 
 `{ … }` parses as a term anywhere, but the only constructs that **consume** one
-are `define`, the conditional of §4, and the handler and rebinding forms of §6
-and §7. A block appearing anywhere else is rejected by the elaborator, since
-general block consumers need user-defined macros, which do not exist yet.
+are `define`, the conditional of §4, the handler and rebinding forms of §6 and
+§7, and any block slot a macro declares. A block appearing anywhere else is
+rejected by the elaborator.
 
 **An expression runs to the end of the input.** A `define` may be followed by
 more declarations on the same line; an expression may not, because every
@@ -239,35 +256,88 @@ flow.
 
 ## 5. Macros, and `locate`
 
-### The macro table
+### Declaring one
 
-`if` is not a parser built-in. It is one entry in `E03_Parser.macro_table`, and
-a macro there is **a grammar production plus a term transformer**: a fixed run
-of slots, then an alternation keyed on a word that is always consumed.
+```
+macro name ( slots ) { template }
 
-| Slot | Matches |
-|---|---|
-| `MsBlock` | `{ … }`, captured as its term list |
-| `MsWord` | one identifier, captured as a string |
-| `MsKeyword s` | the literal word `s`; consumed, captures nothing |
+macro name ( slots )
+  alt key ( slots ) { template }
+  alt key ( slots ) { template }
+end
+```
 
-The whole table is checked to be LL(1) by `ll1_ok`, which requires that no two
-macros share a leading word and no two alternatives of one macro share a key.
-That check is run over the shipped table with `assert_norm`, not asserted in
-prose — it is the seed of the verified CFG-to-recursive-descent generator that
-§8 explains.
+A macro is **a grammar production plus a template**: a fixed run of slots, then
+optionally an alternation keyed on a word that is always consumed. It has no
+signature and no word id, because it does not exist at run time.
 
-Two properties are deliberate and worth relying on:
+| Slot | Matches | Substituted as |
+|---|---|---|
+| `{ $x }` | `{ … }` | the block's terms, **spliced** |
+| `$x` | one identifier | that word |
+| `w` | the literal word `w` | nothing; consumed |
 
-- **A macro has no stack access.** Its input is syntax and its output is
-  syntax, so nothing it does is visible at runtime.
-- **A macro cannot consume the enclosing `}`.** Slots are parsed by the same
-  functions the block parser uses, so a macro that runs out of tokens inside
-  its production reports an error rather than reaching past the brace.
+```
+catcat> macro sqm ( ) { dup * }
+macro sqm
+catcat> macro pipe ( { $a } { $b } ) { $a $b }
+macro pipe { $a } { $b }
+catcat> 3 pipe { 1 + } { 2 * }
+ok  8
+```
 
-**User-defined macros do not exist yet.** The table is built in and `if` is its
-only entry; registering a macro from catcat source is what the framework is for
-and needs the elaboration-time interpreter.
+Splicing rather than nesting is why `{ $a $b }` composes two blocks instead of
+leaving two blocks on the stack. And an alternation:
+
+```
+macro unless ( { $c } then { $t } )
+  alt endif ( )              { $c not if { } then { $t } endif }
+  alt else  ( { $e } endif ) { $c not if { } then { $t } else { $e } endif }
+end
+```
+
+`alt` and `end` are keywords only inside this production; both are ordinary
+words everywhere else.
+
+### What is guaranteed, and what is not
+
+**The grammar stays LL(1) as it grows.** `ll1_ok` requires that no two macros
+share a leading word and no two alternatives of one macro share a key, and
+`ll1_extend` *decides* it before accepting a production — so the property holds
+at every point in a session, not only for the shipped table.
+
+```
+catcat> macro sqm ( ) { 1 }
+error: a macro named 'sqm' already exists; two productions on the same leading
+word would need a second token to tell apart
+catcat> macro bad ( ) alt k ( ) { 1 } alt k ( ) { 2 } end
+error: two alternatives of 'bad' share a key, so the token that selects between
+them does not
+```
+
+**Expansion cannot loop**, and not because anything checks. A template is parsed
+against the table *as it stands*, so a macro may use macros declared before it —
+already expanded by the time it is registered — and cannot use itself.
+
+**A macro has no stack access.** Its input is syntax and its output is syntax,
+so nothing it does is visible at runtime.
+
+**A macro cannot consume the enclosing `}`.** Slots are parsed by the same
+functions the block parser uses, so a macro that runs out of tokens inside its
+production reports an error rather than reaching past the brace.
+
+**Nothing is hygienic.** A `$x` in a template naming no slot is an ordinary
+local read, resolved in whatever encloses the expansion. This is a real gap, not
+a subtlety — see §9.
+
+**A macro takes effect where it is written.** The parser and the evaluator
+interleave, one declaration at a time, so `macro sqm ( ) { dup * } 7 sqm` works
+on a single line. The price: a parse error part-way through a line no longer
+leaves the session untouched, because what came before it has already run. Only
+a *lexing* error is free.
+
+**`if` is the one built-in macro**, and cannot be written as a declaration: it
+expands to a `case`, which has no surface spelling. `locate if` says so.
 
 ### `locate`
 
@@ -285,8 +355,14 @@ catcat> locate +
 
 catcat> locate if
 macro if
-  if { } then { } endif
-  if { } then { } else { } endif
+  if { $c } then { $t } endif
+  if { $c } then { $t } else { $e } endif
+  \ built in: expands to a case, which has no surface spelling
+
+catcat> locate sqm
+macro sqm
+  sqm
+    -> { dup * }
 
 catcat> define abs { dup 0 < if { } then { 0 swap - } endif }
 defined abs ( i64 -- i64 )
@@ -543,15 +619,22 @@ is otherwise invisible.
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
 | strings `"…"`, quotation `'…'`, backtick | not lexed |
-| user-defined macros | the framework exists (§5); the table is built in and only the compiler can add to it |
+| macro hygiene | absent (§5): a `$x` naming no slot is captured by whatever encloses the expansion |
+| macros as words | a macro is a template, not a program; the eventual design is an ordinary word with an effect that consumes code, which needs the elaboration-time interpreter |
 | `Box`/`Rc` construction | types exist; no surface word builds one |
 | source positions in errors | absent — errors are messages without spans |
 
-Two entries left this table recently and are worth naming, because a reader of
+Three entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and
 silently dropped** — the misleading gap — and is now resolved and checked (§6).
-Effects and handlers used to be absent entirely.
+Effects and handlers used to be absent entirely. And user-defined macros used to
+be listed here as needing the elaboration-time interpreter; the template form
+(§5) turned out to need nothing.
 
 **Handler state aliasing is checked at runtime**, not statically (§6). That is a
 gap in a different sense: the language is safe, but the check is dynamic where
 everything else about linearity is static.
+
+**A macro shadows a word silently.** Declaring `macro foo …` makes every later
+`foo` a macro invocation, whatever `foo` was bound to. `locate` reports the macro
+first, for exactly that reason, but nothing warns at the point of declaration.
