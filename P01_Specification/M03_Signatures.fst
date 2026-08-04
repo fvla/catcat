@@ -86,6 +86,26 @@ let rec lemma_unify_refl (b:seg)
   | []     -> ()
   | _ :: r -> lemma_unify_refl r
 
+/// Unification only ever inspects a common prefix, so a prefix shared by both
+/// arguments is invisible to it. This is the workhorse of associativity below:
+/// every branch of that case analysis learns, from `lemma_unify_common`, that
+/// one segment IS another extended by a residual, and then cancels it here.
+let rec lemma_unify_pfx (x a b:seg)
+  : Lemma (ensures unify (x @ a) (x @ b) == unify a b) (decreases x) =
+  match x with
+  | []     -> ()
+  | _ :: r -> lemma_unify_pfx r a b
+
+/// The two one-sided corollaries: an extension unifies with what it extends,
+/// leaving exactly the extension over on that side.
+let lemma_unify_left (x y:seg)
+  : Lemma (unify x (x @ y) == Some ([], y)) =
+  lemma_unify_pfx x [] y; append_l_nil x
+
+let lemma_unify_right (x y:seg)
+  : Lemma (unify (x @ y) x == Some (y, [])) =
+  lemma_unify_pfx x y []; append_l_nil x
+
 /// What unification is FOR: the two residuals name the one shape both segments
 /// extend to. Extending each side by the other's leftover gives the same
 /// segment, which is the common instantiation of the two implicit rows.
@@ -129,19 +149,69 @@ let lemma_compose_right_unit (f:srow)
 /// morphisms of a category, which is the precise form of the draft's claim
 /// that a program is nothing but a composition of functions.
 ///
-/// ADMITTED. This is a genuine theorem, not a definitional identity, and the
-/// proof is a four-way case analysis on which operand's segment runs out
-/// first, each branch closing by associativity of `@` and by
-/// `lemma_unify_disjoint` to rule out the two-residual cases. It is the first
-/// thing to discharge when this specification is next worked on; nothing else
-/// in M04-M11 depends on the proof, only on the statement.
+/// The proof is a four-way case analysis on which operand's segment runs out
+/// first. `lemma_unify_disjoint` collapses each pair of residuals to one, so
+/// the cases are named by `c1` and `e1`; `lemma_unify_common` then turns each
+/// surviving residual into an equation saying one segment extends another, and
+/// `lemma_unify_pfx` cancels the shared part. What is left is associativity of
+/// `@`. Note that no case needs to know anything about the segments' contents
+/// -- which is the formal reason composition is a category and not merely a
+/// partial operation that usually works.
 let lemma_compose_assoc (f g h:srow)
   : Lemma (match compose f g with
            | Some fg -> (match compose g h with
                          | Some gh -> compose fg h == compose f gh
                          | None    -> True)
            | None    -> True) =
-  admit ()
+  match unify f.post g.pre with
+  | None -> ()
+  | Some (b1, c1) ->
+    match unify g.post h.pre with
+    | None -> ()
+    | Some (d1, e1) ->
+      lemma_unify_disjoint f.post g.pre;
+      lemma_unify_common   f.post g.pre;
+      lemma_unify_disjoint g.post h.pre;
+      lemma_unify_common   g.post h.pre;
+      (match c1, e1 with
+       (* f.post == g.pre @ b1  and  g.post == h.pre @ d1: both consumers run
+          short, so both residuals pile up on the producer side. *)
+       | [], [] ->
+         append_l_nil f.post; append_l_nil g.post;
+         append_assoc h.pre  d1 b1;
+         lemma_unify_right h.pre (d1 @ b1);
+         lemma_unify_pfx g.pre b1 [];
+         append_l_nil f.pre;
+         append_assoc h.post d1 b1
+
+       (* f.post == g.pre @ b1  and  h.pre == g.post @ e1: `g`'s surplus and
+          `h`'s shortfall meet, so the outer unification is `unify b1 e1` on
+          both sides of the equation. *)
+       | [], _ ->
+         append_l_nil f.post; append_l_nil g.post;
+         lemma_unify_pfx g.post b1 e1;
+         lemma_unify_pfx g.pre  b1 e1;
+         append_l_nil f.pre;
+         append_l_nil h.post
+
+       (* g.pre == f.post @ c1  and  g.post == h.pre @ d1: `g` is the wide one,
+          short on both ends, and each residual passes straight through. *)
+       | _, [] ->
+         append_l_nil g.pre; append_l_nil g.post;
+         lemma_unify_right h.pre d1;
+         append_l_nil (f.pre @ c1);
+         append_l_nil (h.post @ d1)
+
+       (* g.pre == f.post @ c1  and  h.pre == g.post @ e1: `g` consumes more
+          than `f` produces and produces less than `h` consumes, so both
+          shortfalls are drawn from below and concatenate. *)
+       | _, _ ->
+         append_l_nil g.post;
+         lemma_unify_left g.post e1;
+         append_assoc f.post c1 e1;
+         lemma_unify_left f.post (c1 @ e1);
+         append_assoc f.pre  c1 e1;
+         append_l_nil h.post)
 
 (* ------------------------------------------------------------------------ *)
 (* Joining: agreement between alternative branches                          *)
