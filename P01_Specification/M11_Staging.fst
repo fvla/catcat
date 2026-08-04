@@ -99,9 +99,38 @@ type stage_req =
   | ReqCodegen   : stage_req   // specializer plus backend: true JIT
   | ReqFull      : stage_req   // parser through backend: eval, metacompiler
 
-/// Compute the requirement from a term. Uses `M05.needs_compiler` for the
-/// coarse question and the effect row for the fine one.
-assume val stage_required (env:wenv) (t:term { well_typed env t }) : Tot stage_req
+/// Compute the requirement from a term.
+///
+/// TWO OF THE FOUR ANSWERS ARE CURRENTLY UNREACHABLE, and saying so is more
+/// useful than an `assume val` that pretends otherwise. `ReqNone` and
+/// `ReqSpecial` are decided by `M05.needs_compiler`: a `TSpecialize` surviving
+/// into the term is by definition one the elaborator did not discharge, so the
+/// specializer must be present at runtime, and a term without one needs no
+/// compiler stage at all. That is the whole of E5, and it is the answer the
+/// linker actually consumes.
+///
+/// `ReqCodegen` and `ReqFull` cannot be distinguished yet because nothing in
+/// `M05.term` can demand them. `ReqCodegen` means the residual must be EMITTED
+/// as machine code rather than interpreted, and the core has no way to say
+/// that -- `TSpecialize` produces a term, and whether that term is then run by
+/// an interpreter or by a backend is a property of the host, not of the
+/// program. `ReqFull` additionally needs a term that consumes source text, and
+/// there is no `eval`. Both become reachable when D04's staging annotations
+/// reach the core; until then, returning them would be a guess.
+///
+/// `env` is unused and kept deliberately: the fine-grained version reads the
+/// effect row, which needs it, and changing the signature later would ripple
+/// through E5.
+let stage_required (env:wenv) (t:term { well_typed env t }) : Tot stage_req =
+  if needs_compiler t then ReqSpecial else ReqNone
+
+/// The half of E5 that is available today: a term mentioning no `TSpecialize`
+/// requires no compiler stage. Immediate from the definition, and recorded as a
+/// lemma rather than left implicit because it is the property a linker would
+/// rely on to omit the specializer entirely.
+let lemma_no_specialize_needs_nothing (env:wenv) (t:term { well_typed env t })
+  : Lemma (requires not (needs_compiler t))
+          (ensures  stage_required env t == ReqNone) = ()
 
 (* ------------------------------------------------------------------------ *)
 (* Obligations                                                              *)
@@ -146,6 +175,14 @@ assume val stage_required (env:wenv) (t:term { well_typed env t }) : Tot stage_r
 ///     reachable from `t`, so a linker may omit all of them. The theorem that
 ///     makes the reflective tower's binary cost genuinely opt-in rather than
 ///     merely usually-small.
+///
+///     The SYNTACTIC half is `lemma_no_specialize_needs_nothing` above and is
+///     trivial. The content is the other direction of the implication -- that
+///     `needs_compiler t = false` really does mean no reachable code path
+///     enters the specializer -- which is a statement about `denote` and the
+///     word environment, not about `t` alone: a word `t` calls could itself
+///     specialize. Discharging it needs the reachability closure over
+///     `env.w_defs`, which the specification does not yet have.
 ///
 /// E7  REBINDING PRESERVES SIGNATURES.
 ///     If every pair `(w, w')` in `su` satisfies `w_sig env w == w_sig env w'`,

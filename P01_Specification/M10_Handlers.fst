@@ -14,17 +14,11 @@ module M10_Handlers
 /// installed-frame property -- `R02.step` runs an implementation with the
 /// handler frame still in the continuation -- not deep-handler semantics.
 ///
-/// The `op_impl` below is still the DEEP shape, taking the continuation. It is
-/// the one place in the project that has not caught up with D-36 yet, because
-/// it is only reachable from `handle`, which is `assume val`. Narrowing it to
-/// `vstack o.op_pre -> free env a` and adding the state segment to `handler`
-/// is what the definition of `handle` will require; M06's `THandle` rule and
-/// R02's machine already work the corrected way, so this is a gap in the
-/// denotational side alone.
-///
-/// STATUS: skeleton. Types are real; `handle` is declared, not defined.
+/// STATUS: `handle` is now defined, in the D-36 shape, and agrees with the
+/// machine R02 already implements. The obligations H1-H5 remain prose.
 
 open FStar.List.Tot
+open FStar.FunctionalExtensionality
 open M01_Kinds
 open M02_Stacks
 open M03_Signatures
@@ -36,16 +30,22 @@ open M06_Typing
 (* Handlers                                                                 *)
 (* ------------------------------------------------------------------------ *)
 
-/// An implementation of a single operation. It receives the operation's
-/// arguments AND the continuation expecting the operation's results, which is
-/// what makes the handler deep.
-type op_impl (env:sig_env) (o:op_sig) (a:seg) =
-    vstack o.op_pre
-  -> (vstack o.op_post -> free env a)
-  -> free env a
+/// An implementation of a single operation, under D-36: it receives the
+/// handler's state on top of the operation's arguments, and returns the updated
+/// state on top of the operation's results. No continuation appears, and there
+/// is nowhere one could be smuggled in -- the type is a plain stack transformer
+/// in the free monad, so an implementation can perform effects of its own but
+/// cannot see, duplicate or discard the rest of the program.
+///
+/// STATE ON TOP, not underneath (D-46). This is forced rather than chosen: the
+/// runtime dictionary records which effect an operation belongs to and not its
+/// arity, so the machine cannot splice state in beneath the arguments. It reads
+/// correctly anyway, the receiver being pushed last.
+type op_impl (env:sig_env) (st:seg) (o:op_sig) =
+  vstack (st @ o.op_pre) -> free env (st @ o.op_post)
 
-/// A handler for one effect: an implementation per operation, plus a return
-/// clause. This record is simultaneously
+/// A handler for one effect: a state segment and an implementation per
+/// operation. This record is simultaneously
 ///   * an effect handler,
 ///   * a typeclass dictionary,
 ///   * a class method table,
@@ -53,21 +53,56 @@ type op_impl (env:sig_env) (o:op_sig) (a:seg) =
 ///   * a Dictionary frame overriding word meanings.
 /// Not by analogy -- there is literally one type, and D03 explains why that
 /// collapse is the design's best property rather than an overloading of terms.
-noeq type handler (env:sig_env) (eff:eff_id) (a:seg) = {
-  h_ops : op:op_id -> op_impl env (op_of env op) a;
-  h_ret : vstack a -> free env a;
+///
+/// The state segment is what makes a handler a CLASS rather than merely a
+/// dispatch table: `st` is the instance's representation, each implementation
+/// is a method over it, and D03 §3's `class ... over ( ... )` spelling is this
+/// type written in surface syntax. A stateless handler is `st = []`, so
+/// nothing needs a separate rule.
+///
+/// `h_ops` is a function field, which every extractable module in this project
+/// is forbidden (D-20). M10 is not extracted and nothing constructs a `handler`
+/// outside the specification, so the closure is confined to the denotational
+/// side; the table is dependently typed per operation, so de-closuring it the
+/// way D-45 de-closured `sig_env` would need an existential rather than a list.
+noeq type handler (env:sig_env) (eff:eff_id) (st:seg) = {
+  h_ops : op:op_id -> op_impl env st (op_of env op);
 }
 
 /// Interpret away one effect.
 ///
-/// NOT DEFINED. The definition is a fold over `M04.free`: `Pure` goes to
-/// `h_ret`, an `Op` belonging to `eff` goes to the matching `h_ops` entry with
-/// the recursively handled continuation, and any other `Op` is forwarded
-/// unchanged. The recursion is on the free structure and terminates for the
-/// same reason `fbind` does.
-assume val handle (#env:sig_env) (#eff:eff_id) (#a:seg)
-                  (h:handler env eff a) (m:free env a)
-  : Tot (free env a)
+/// A fold over `M04.free` carrying the handler state. `Pure` returns the state
+/// on top of the body's results -- which is why M06's `THandle` rule gives the
+/// composite the signature `( s.pre -- st @ s.post )`, and why `handle Counter
+/// over ( i64 ) init { 0 } { ... } { tick tick + }` leaves `1 2` and not `1`.
+/// An operation of `eff` runs its implementation, whose result is split back
+/// into the new state and the operation's results; anything else is forwarded
+/// with the handler still wrapped around the tail.
+///
+/// That forwarding clause is where reentrancy lives. The handler is still
+/// installed around `k res`, so an operation performed by the continuation --
+/// including one performed by an implementation, since an implementation's own
+/// effects are part of the tree it returns -- reaches this same handler. No
+/// continuation was captured to achieve it.
+let rec handle (#env:sig_env) (#eff:eff_id) (#st:seg) (#a:seg)
+               (h:handler env eff st) (state:vstack st) (m:free env a)
+  : Tot (free env (st @ a)) (decreases m) =
+  match m with
+  | Pure v      -> Pure (vappend state v)
+  | Op op arg k ->
+    if eff_of env op = eff
+    then fbind (h.h_ops op (vappend state arg))
+               (fun r -> let (state', res) = vsplit st r in
+                      handle h state' (k res))
+    else Op op arg (on _ (fun res -> handle h state (k res)))
+
+/// The handler that changes nothing: no state, every implementation
+/// re-performing its own operation. H3 below is the statement that handling
+/// with it is the identity, which is the sanity check that the fold loses
+/// nothing -- and note it typechecks only because the state segment is `[]`,
+/// so `handle`'s result shape `[] @ a` is `a` on the nose.
+let id_handler (env:sig_env) (eff:eff_id) : handler env eff [] =
+  { h_ops = (fun op -> fun args -> Op op args (on _ Pure)) }
 
 (* ------------------------------------------------------------------------ *)
 (* The Dictionary                                                           *)
@@ -98,22 +133,41 @@ let resolvable (#env:sig_env) (d:dict env) (row:erow) : bool =
 
 /// H1  HANDLING DISCHARGES.
 ///     If `within row m` and `eff` is in `row`, then
-///     `within (row_remove eff row) (handle h m)` provided the handler's own
-///     implementations stay inside `row_remove eff row`. This is the semantic
-///     counterpart of M06's `THandle` rule, and the reason a handled program
-///     can be genuinely pure.
+///     `within (row_remove eff row) (handle h state m)` provided every
+///     implementation's own result satisfies `within (row_remove eff row)`.
+///     This is the semantic counterpart of M06's `THandle` rule, and the reason
+///     a handled program can be genuinely pure. Note the proviso is a real
+///     restriction and not bookkeeping: an implementation that performs its own
+///     effect reaches the enclosing handler chain, so a handler for `eff` whose
+///     implementation performs `eff` does NOT discharge it -- which is exactly
+///     the reentrancy the design wants, and exactly why the row cannot be
+///     narrowed unconditionally.
 ///
 /// H2  HANDLING IS A MONAD MORPHISM.
-///     `handle h (fbind m f) == fbind (handle h m) (fun v -> handle h (f v))`
-///     when `f` introduces no operations of `eff`. This is what lets the
-///     optimiser move code across a handler boundary, and it is the property
-///     most likely to be quietly violated by an efficient implementation --
-///     worth proving early for that reason.
+///     `handle h state (fbind m f)` relates to `handle h state m` followed by
+///     `handle h` at the resulting state, when `f` introduces no operations of
+///     `eff`. Stating it precisely needs the state to be threaded through the
+///     equation -- `handle` returns `st @ a`, so the composite splits the state
+///     back off before continuing -- which is the one place the D-36 shape makes
+///     a law wordier than the deep-handler version would have been. It is what
+///     lets the optimiser move code across a handler boundary, and it is the
+///     property most likely to be quietly violated by an efficient
+///     implementation.
 ///
 /// H3  IDENTITY HANDLER.
-///     The handler whose implementations re-perform their operation and whose
-///     return clause is `Pure` satisfies `handle h m == m`. A sanity check
-///     that the fold is not lossy.
+///     `handle (id_handler env eff) VNil m == m`, where `id_handler` is the
+///     stateless handler whose implementations re-perform their operation. A
+///     sanity check that the fold is not lossy.
+///
+///     Both `Op` cases need `M04`'s continuation congruence, and neither can
+///     use the trick that made the monad laws provable: that trick works by
+///     applying a helper to a literal `Op` node so F* reduces by conversion,
+///     and `handle`'s `Op` case is guarded by `eff_of env op = eff`, which
+///     conversion cannot decide. Discharging H3 therefore wants an `Op`
+///     congruence stated over PROJECTED continuations, whose dependent type
+///     mentions `Op?.op` of the term being projected -- so it needs the
+///     projection to typecheck against a propositional equation rather than a
+///     definitional one. That is the missing piece, and it is shared with H2.
 ///
 /// H4  SEALING IS FREE.
 ///     `M02.vseal` and `M02.vunseal` are mutually inverse

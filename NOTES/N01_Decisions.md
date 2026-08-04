@@ -534,6 +534,41 @@ to build one. Handler typechecking reads exactly that table (`M06.infer_impls`),
 so the fake would have accepted every handler implementation without complaint.
 This is why it is a prerequisite for the effect system and not a cleanup.
 
+**D-51. `M04.free`'s continuation is a restricted function (`^->`), and the
+monad laws are proved via helpers applied to a literal `Op` node.**
+*Why the type changed:* right identity and associativity are true pointwise,
+but the two sides build syntactically different continuations, so `==` on a
+plain arrow is unprovable. `FStar.FunctionalExtensionality`'s `^->` is the
+library's device for exactly this, and it costs one `on` at the single site
+that constructs an `Op`.
+*Why that is not sufficient on its own, which is the part worth remembering:*
+**two alpha-equivalent lambdas written at two different places are different
+closures to the SMT solver.** An induction that spells out `fbind`'s
+continuation at its own site can therefore never connect it to the one `fbind`
+actually built, and no amount of `extensionality` will bridge the two. The fix
+is to hand the `Op` step to a helper taking the constructor APPLIED — F* then
+reduces `fbind` by conversion, and the continuation is obtained by PROJECTION
+rather than written down, so a second closure never exists. Associativity's
+composite is passed as a parameter for the same reason.
+*Where this bites next:* M10's H2 and H3 need the same manoeuvre, and cannot
+use it as-is, because `handle`'s `Op` case is guarded by `eff_of env op = eff`
+and conversion cannot decide that test. They want an `Op` congruence over
+projected continuations, which needs a projection to typecheck against a
+propositional equation rather than a definitional one. Recorded so the next
+attempt does not rediscover the closure problem from scratch.
+
+**D-52. `stage_required` answers only `ReqNone` / `ReqSpecial`, and says so.**
+The other two constructors describe stages nothing in `M05.term` can yet
+demand: `ReqCodegen` means the residual must be emitted as machine code rather
+than interpreted, which is a property of the host and not of the program, and
+`ReqFull` needs a term that consumes source text, of which there is none.
+*Why define it at all rather than leave it assumed:* the two answers it does
+give are the ones a linker consumes, and they are decided outright by
+`M05.needs_compiler`. An `assume val` here was claiming a distinction the core
+cannot make; a definition plus a paragraph naming what it cannot decide is the
+honest form of the same content. Same principle as the `DOCS/` hygiene rule —
+a cache that says what it does not know beats one that quietly guesses.
+
 ---
 
 **D-26. Wrapping unsafe primitives into the linear system is a recurring
