@@ -232,11 +232,11 @@ let elab_var (cs:counts) (sh:shape) (x:string)
     then
       /// Sole read: move it. Nothing is left behind to clean up.
       Inr (({ sl_name = None; sl_ty = d } :: remove_at i sh),
-           TStack (SRoll above d))
+           TPrimOp (PStack (SRoll above d)))
     else if copyable d
     then
       /// Repeated read: copy, and leave the slot for the end-of-body drop.
-      Inr (({ sl_name = None; sl_ty = d } :: sh), TStack (SPick above d))
+      Inr (({ sl_name = None; sl_ty = d } :: sh), TPrimOp (PStack (SPick above d)))
     else
       Inl ("$" ^ x ^ " has a non-copyable type and is read more than once; \
             a linear local must be read exactly once")
@@ -268,7 +268,7 @@ let rec resolve_rebinds (env:nenv) (su:list (string & string))
 
 let elab_lit (n:int) : Tot (either string term) =
   if -(pow2 63) <= n && n < pow2 63
-  then Inr (TLit (LPrim PI64 n))
+  then Inr (TPrimOp (PLit (LPrim PI64 n)))
   else Inl ("integer literal out of range for i64: " ^ string_of_int n)
 
 /// Measures: every edge below decreases the size component strictly, including
@@ -308,7 +308,7 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
           if not (copyable s.sl_ty)
           then Inl "dup: this value's type is not Copy"
           else elab_terms env cs ({ sl_name = None; sl_ty = s.sl_ty } :: sh)
-                 (TStack (SDup s.sl_ty) :: acc) rest)
+                 (TPrimOp (PStack (SDup s.sl_ty)) :: acc) rest)
 
      | StWord "pop" ->
        (match sh with
@@ -316,13 +316,13 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
         | s :: sr ->
           if not (droppable s.sl_ty)
           then Inl "pop: this value's type is not Drop; consume it explicitly"
-          else elab_terms env cs sr (TStack (SPop s.sl_ty) :: acc) rest)
+          else elab_terms env cs sr (TPrimOp (PStack (SPop s.sl_ty)) :: acc) rest)
 
      | StWord "swap" ->
        (match sh with
         | a :: b :: sr ->
           elab_terms env cs (b :: a :: sr)
-            (TStack (SSwap a.sl_ty b.sl_ty) :: acc) rest
+            (TPrimOp (PStack (SSwap a.sl_ty b.sl_ty)) :: acc) rest
         | _ -> Inl "swap: needs two values on the stack")
 
      | StWord w ->
@@ -342,8 +342,8 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
 
      /// Case analysis. The scrutinee is a `bool` and nothing else, because
      /// `bool` is currently the only sum-shaped thing the surface language can
-     /// put on the stack — `TInj` has no surface form yet. Branches are in TAG
-     /// order (D-33), so the FALSE branch comes first, and `TBoolSum` is
+     /// put on the stack — `PInj` has no surface form yet. Branches are in TAG
+     /// order (D-33), so the FALSE branch comes first, and `TPrimOp PBoolSum` is
      /// emitted here rather than spelled by the user.
      ///
      /// When sum syntax lands this case grows a `TSum variants` arm; the shape
@@ -360,7 +360,7 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
                 | Inl e -> Inl e
                 | Inr (sh', bts) ->
                   elab_terms env cs sh'
-                    (TCase bool_variants bts :: TBoolSum :: acc) rest))
+                    (TCase bool_variants bts :: TPrimOp PBoolSum :: acc) rest))
 
      /// The handler's own parts are elaborated against stacks that are fully
      /// known before the body is looked at — the state comes from `over ( … )`
@@ -511,7 +511,7 @@ let rec drop_named (fuel:nat) (sh:shape) (acc:list term)
          if not (droppable d)
          then Inl "a local of non-droppable type is left unconsumed at end of body"
          else drop_named (fuel - 1) (remove_at i sh)
-                (TStack (SPop d) :: TStack (SRoll above d) :: acc)
+                (TPrimOp (PStack (SPop d)) :: TPrimOp (PStack (SRoll above d)) :: acc)
 
 (* ------------------------------------------------------------------------ *)
 (* Signature inference                                                      *)

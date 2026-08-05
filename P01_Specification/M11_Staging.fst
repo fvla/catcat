@@ -45,7 +45,7 @@ open M10_Handlers
 ///
 /// NOT DEFINED. The definition is a partial evaluator over `M05.term`:
 /// inline statically resolved words, fold `TCase` on known tags, erase
-/// `TPack`/`TUnpack` (sound by M10's H4), and leave dynamic operations alone.
+/// `PPack`/`PUnpack` (sound by M10's H4), and leave dynamic operations alone.
 /// It is the single largest piece of unwritten work in the specification and
 /// should not be attempted before M07's `denote` exists, since E2 is stated
 /// against it.

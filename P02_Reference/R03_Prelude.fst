@@ -52,8 +52,8 @@ let prelude : rdict = [
   /// Spelled out rather than via `bool_lit`, which the interface orders after
   /// `prelude` — implementation order must match interface order in an
   /// `.fst`/`.fsti` pair.
-  (w_true,  WDef (TLit (LPrim PBool true)));
-  (w_false, WDef (TLit (LPrim PBool false)));
+  (w_true,  WDef (TPrimOp (PLit (LPrim PBool true))));
+  (w_false, WDef (TPrimOp (PLit (LPrim PBool false))));
   (w_print, WOp eff_io);
   (w_read,  WOp eff_io);
 ]
@@ -63,10 +63,10 @@ let prelude : rdict = [
 /// tests, and M06 is what rejects bad literals in real programs.
 let int_lit (n:int) : Tot term =
   if -(pow2 63) <= n && n < pow2 63
-  then TLit (LPrim PI64 n)
-  else TLit (LPrim PI64 0)
+  then TPrimOp (PLit (LPrim PI64 n))
+  else TPrimOp (PLit (LPrim PI64 0))
 
-let bool_lit (b:bool) : Tot term = TLit (LPrim PBool b)
+let bool_lit (b:bool) : Tot term = TPrimOp (PLit (LPrim PBool b))
 
 let rec cat (ts:list term) : Tot term (decreases ts) =
   match ts with

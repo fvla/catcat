@@ -282,13 +282,13 @@ write `= not`.
 ## Control flow
 
 **D-33. Booleans branch through a sum coercion, not a new eliminator.** One
-core term, `M05.TBoolSum : ( bool -- TSum [[]; []] )`, with `false = tag 0` and
+core term, `M05.PBoolSum : ( bool -- TSum [[]; []] )`, with `false = tag 0` and
 `true = tag 1`. Surface `if` is that coercion followed by the existing `TCase`.
 *Why:* `bool` is a primitive, so `TCase` cannot see it, and a separate `TIf`
 would need its own copy of the branch-agreement rule that `infer_branches`
 already implements. The coercion reuses that rule, so the core grew by one
 constructor and gained no new typing logic. The tag order is stated in four
-places (`M01.bool_variants`, `M05.TBoolSum`, `R02.step`, `E02.StCase`) because
+places (`M01.bool_variants`, `M05.PBoolSum`, `R02.step`, `E02.StCase`) because
 a silent reversal would typecheck.
 
 **D-34. `if { c } then { t } endif`, with the terminator mandatory.** `else` is
@@ -617,3 +617,109 @@ no-op discard.
 *This is a strong confirmation of D-08*: capabilities-plus-`Clone`-as-interface
 is exactly the shape `Box`/`Rc` need, and it was chosen before they existed.
 When adding any future resource type, start from this pattern.
+
+---
+
+**D-55. The core has seven term constructors; every intrinsic is a table row.**
+`M05.term` was nineteen constructors, twelve of which were the same thing: a
+primitive whose signature is a function of its own arguments and whose meaning
+is a pure stack transformer. Those twelve become one constructor `TPrimOp` over
+a flat `prim_op` table. What remains is the language's *structure* — `TNil`,
+`TSeq`, `TPrimOp`, `TWord`, `TCase`, `THandle`, `TSpecialize` — and nothing else.
+
+*Why:* each intrinsic needs a signature (`M06.prim_sig`), a denotation (M07) and
+a machine action (`R02.apply_primop`). As constructors, adding one meant
+amending three functions and growing every induction over `term` in M07 and M09
+by a case. As a table, adding one is a row and each induction has a single
+uniform primitive case discharged once. `TRcDrop` is a refcount protocol, not a
+feature of a stack calculus, and it had no business sitting beside `TSeq`.
+
+*The invariant that pays for the grouping:* **every primitive is pure.**
+`prim_sig` returns no effect row, and `apply_primop : prim_op -> rstack ->
+either string rstack` is given neither the dictionary nor the continuation, so a
+primitive cannot perform an operation, call a word, or alter control flow —
+because it is handed nothing with which to do so. M07's T4 therefore covers the
+whole class at once. Anything that could perform an effect is a `TWord`
+resolving to an operation instead, which is why `print` is not in the table.
+
+*Timing:* done before `denote` and `step` were written, deliberately. Either
+would otherwise have been twelve clauses that were then deleted.
+
+*Cost:* `R01`'s `prim_op` — the reference interpreter's built-in words `+`, `-`,
+`not` — was renamed `prim_word`, which it more accurately was: those are
+dictionary entries, not core terms. The two lived in the same scope in R02.
+
+---
+
+**D-56. Native types come from F* libraries, not from the core.** `Box` and `Rc`
+are in `dtype` and `prim_op` today because they were needed before there was a
+facility to add them from outside. The facility, when built, lets a library
+written in F* contribute a type together with its operations, their signatures,
+their denotations and the **invariants it proves about them** — so `Rc`'s
+refcount discipline becomes a library theorem rather than a core axiom.
+
+*Why this is the same construct as everything else (D-01 again):* such a library
+contributes exactly what a `prim_op` row contributes — signature, denotation,
+machine action — plus a proof. So `prim_op` becomes the *built-in* half of a
+two-level table and `Box`/`Rc` move out of it into the first client library.
+That is a change of lookup, not a change of language, which is why `prim_op` is
+shaped as a flat table now rather than as ad-hoc constructors (D-55).
+
+*What has to be decided before building it:* the boundary. A native entry can be
+trusted (its denotation is axiomatic, like a syscall) or proved (its denotation
+is an F* function and the invariants are theorems). Both are wanted, and they
+are not the same obligation — a trusted entry enlarges the TCB and must say so.
+`IO` is probably the motivating trusted case, and it would then stop being an
+interpreter special case (`R05_Driver`'s host handler) and become a library.
+
+*Not implemented. Recorded so that D-55's shape is not mistaken for an accident.*
+
+---
+
+**D-57. `unsafe` is an effect with no operations, discharged by `with unsafe`.**
+An effect need not declare any operations. `M06.infer`'s `TWord` rule takes the
+row straight from the declaration, so a word can carry `!Unsafe` without there
+being an operation of that effect to perform; `THandle` with an empty
+implementation list discharges it. **An effect with zero operations is a
+permission, and the row machinery already supports it** — nothing new is needed,
+not even a placeholder no-op operation.
+
+*Why this beats a keyword:* Rust needs both `unsafe fn` and `unsafe { }` and a
+lint to connect them. Here a word that leaves `!Unsafe` in its row *is* an
+unsafe function, by the same rule that makes a word that leaves `!IO` in its row
+an IO function — the propagation is the effect system doing its ordinary job,
+and a word cannot hide its unsafety by forgetting to annotate. `with unsafe { …
+}` is then an ordinary handler, every use is greppable, and there is no
+questionable behaviour to compare against Rust because there is no special case.
+
+*Vocabulary note, since it was asked:* the members of an effect are
+**operations** (`M04.op_id` / `op_decl`, surface `declare`). Not slots, not
+methods. `Unsafe` has none.
+
+*Open:* whether the elaborator should refuse `with unsafe` around a body whose
+row does not contain `!Unsafe`. Warning, not error, most likely — the same
+question Rust answers with `unused_unsafe`.
+
+---
+
+**D-58. Macro determinism and termination get stated in F*, not argued in
+prose.** Both follow from the shapes already in `E03_Parser` — `expand` is a
+total function, and a template is parsed against the macro table *as it stood*,
+so a macro cannot reference itself. Neither is hard. But "it follows obviously
+from the code" is exactly the kind of claim that stops being true after a
+refactor nobody re-read the argument for, and the whole point of a mechanized
+core is that load-bearing properties are checked rather than believed.
+
+*What this is NOT:* soundness. A macro's output is surface syntax, which
+elaboration re-checks with `M06.infer`, so a buggy macro produces a type error
+and never an ill-typed program. Macros stay out of P01 entirely for that reason
+— the sense in which they need to be correct is weaker than soundness and lives
+in P03, where the parser is.
+
+*The three properties, and where each stands:*
+1. **Deterministic parsing.** `ll1_ok` decides it and `ll1_extend` maintains it
+   (`lemma_ll1_extend`). What is still missing is that `ll1_ok mt` implies the
+   parser never needs to backtrack — that is the theorem the planned verified
+   CFG-to-recursive-descent generator (D-30) owes.
+2. **Terminating expansion.** Structural, by declaration order.
+3. **Hygiene.** Absent, and the one genuinely unresolved item (D-53).

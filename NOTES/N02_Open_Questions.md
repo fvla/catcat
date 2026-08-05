@@ -35,7 +35,7 @@ needs the state passed along rather than re-borrowed.
 silently, which is the acceptable direction.
 
 **Q-03. Borrowing.**
-Reading through an `Rc` currently requires a `Copy` payload (`TRcRead`). Reading
+Reading through an `Rc` currently requires a `Copy` payload (`PRcRead`). Reading
 a non-`Copy` payload without consuming needs borrows, which is a whole feature.
 *Closes when:* someone needs a non-`Copy` payload behind a shared pointer.
 Deferring is fine; `Copy` payloads cover the common cases.

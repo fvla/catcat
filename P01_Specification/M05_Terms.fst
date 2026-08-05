@@ -63,41 +63,104 @@ type sop =
 type word_id = nat
 
 (* ------------------------------------------------------------------------ *)
-(* Terms                                                                    *)
+(* Primitives                                                               *)
 (* ------------------------------------------------------------------------ *)
 
-noeq type term =
-  /// The empty program. Identity of composition.
-  | TNil     : term
-  /// Juxtaposition. The ONLY sequencing construct: `a b` and nothing else.
-  | TSeq     : term -> term -> term
-  | TLit     : lit -> term
-  | TStack   : sop -> term
-  /// A named word, or an interface operation. The typing rules do not
-  /// distinguish them -- that is the unification of D03 made concrete.
-  | TWord    : word_id -> term
+/// The intrinsics: every core operation whose signature is a function of its
+/// own arguments and whose meaning is a PURE stack transformer. Literals,
+/// shuffles, sealing, sum injection, the boolean coercion and the pointer
+/// operations are all instances of that one shape, so they are one term
+/// constructor over a table rather than twelve constructors over none (D-55).
+///
+/// WHY THIS IS A TABLE AND NOT TWELVE CONSTRUCTORS. Each of these needs a
+/// signature (`M06.prim_sig`), a denotation (`M07`) and a machine action
+/// (`R02.step`). Spelled as constructors, adding one means amending three
+/// functions and every induction over `term` in M07 and M09 grows a case.
+/// Spelled as a table, adding one is a row, and each induction has a single
+/// uniform primitive case discharged once. The core drops from nineteen
+/// constructors to seven, and the seven that remain are exactly the
+/// language's structure: identity, composition, naming, elimination,
+/// handling, staging.
+///
+/// The invariant that pays for the grouping: EVERY PRIMITIVE IS PURE. There
+/// is no `erow` in `prim_sig`'s result because none of these can perform an
+/// operation, so `M07`'s T4 covers the whole class at once. Anything that
+/// could perform an effect is a `TWord` resolving to an operation instead —
+/// which is why `print` is not here.
+///
+/// Named `prim_op` and `TPrimOp` because `M01.TPrim` is already the primitive
+/// *type* constructor; these are primitive *operations* and the two are in
+/// scope together everywhere downstream.
+///
+/// FUTURE (D-55): a native library defined in F* contributes entries with
+/// their own invariants, at which point this closed inductive becomes the
+/// built-in half of a two-level table and `TBox`/`TRc` move out of it. The
+/// shape here is chosen to make that move a change of lookup and not a change
+/// of language.
+noeq type prim_op =
+  /// A constant. The only primitive whose meaning depends on a value rather
+  /// than only on types.
+  | PLit     : lit -> prim_op
+  /// A stack shuffle.
+  | PStack   : sop -> prim_op
   /// Bundle a representation segment into a nominal type, and its inverse.
-  /// Named `TPack`/`TUnpack` rather than `TSeal`/`TUnseal` to stay clear of
+  /// Named `PPack`/`PUnpack` rather than `PSeal`/`PUnseal` to stay clear of
   /// the `dtype` constructor `M01_Kinds.TSeal`.
-  /// `TUnpack` is well typed only inside the class body (D03).
-  | TPack    : nom_id -> list cap -> seg -> term
-  | TUnpack  : nom_id -> list cap -> seg -> term
+  /// `PUnpack` is well typed only inside the class body (D03).
+  | PPack    : nom_id -> list cap -> seg -> prim_op
+  | PUnpack  : nom_id -> list cap -> seg -> prim_op
   /// Sum introduction: build variant `tag` of `variants`.
-  | TInj     : variants:list seg -> tag:nat -> term
+  | PInj     : variants:list seg -> tag:nat -> prim_op
   /// `( bool -- TSum [[]; []] )`, false to tag 0 and true to tag 1.
   ///
   /// This is the ONLY way to branch on a boolean, and it is deliberately a
-  /// coercion rather than an eliminator (D-33). `bool` is a primitive, so
+  /// coercion rather than an eliminator (D-33). `bool` is a primitive type, so
   /// `TCase` -- which eliminates a sum -- cannot see it; giving the core a
   /// separate `TIf` would mean a second copy of the branch-agreement rule that
   /// `infer_branches` already implements. One coercion plus the existing rule
-  /// costs one constructor and no new typing logic.
+  /// costs one table row and no new typing logic.
   ///
   /// The tag order is `false = 0`, `true = 1`, matching the usual reading of a
   /// bool as a two-element enumeration. Surface `if` therefore lists its ELSE
   /// branch first; `E04` is where that is arranged, and it is stated in both
   /// places because a silent reversal here would be a plausible-looking bug.
-  | TBoolSum : term
+  | PBoolSum : prim_op
+  /// Pointer operations. `PBoxOpen` consumes the box and yields the payload;
+  /// there is no discard, because `TBox` lacks `CDrop` and the payload must be
+  /// dealt with explicitly.
+  | PBoxNew  : dtype -> prim_op
+  | PBoxOpen : dtype -> prim_op
+  /// `PRcClone` is the `Clone` interface word and `PRcDrop` is `release` --
+  /// neither is `dup` or `pop`, which is exactly why `TRc` carries no
+  /// capabilities. `PRcRead` needs a copyable payload; the alternative is
+  /// borrowing, deliberately deferred.
+  | PRcNew   : dtype -> prim_op
+  | PRcClone : dtype -> prim_op
+  | PRcDrop  : dtype -> prim_op
+  | PRcRead  : dtype -> prim_op
+  /// Roll and unroll an incomplete type. Runtime no-ops; they exist so that
+  /// the type system can cross a `TName` boundary explicitly rather than by
+  /// silent coercion.
+  | PRoll    : nom_id -> dtype -> prim_op
+  | PUnroll  : nom_id -> dtype -> prim_op
+
+(* ------------------------------------------------------------------------ *)
+(* Terms                                                                    *)
+(* ------------------------------------------------------------------------ *)
+
+/// Seven constructors. Everything else the language can do is either a table
+/// row (`prim_op`) or a word (`TWord`), and that is the whole claim of D-55:
+/// the core is the structure, not the vocabulary.
+noeq type term =
+  /// The empty program. Identity of composition.
+  | TNil     : term
+  /// Juxtaposition. The ONLY sequencing construct: `a b` and nothing else.
+  | TSeq     : term -> term -> term
+  /// A primitive operation. One constructor over the `prim_op` table above.
+  | TPrimOp  : prim_op -> term
+  /// A named word, or an interface operation. The typing rules do not
+  /// distinguish them -- that is the unification of D03 made concrete.
+  | TWord    : word_id -> term
   /// Sum elimination: one `{}` block per variant, all with the same result.
   | TCase    : variants:list seg -> branches:list term -> term
   /// Install a handler for `eff` and run `body` under it.
@@ -130,24 +193,6 @@ noeq type term =
   /// specialization; invoked at runtime it is the JIT. One construct, one
   /// theorem (M11).
   | TSpecialize : body:term -> term
-  /// Pointer operations. `TBoxOpen` consumes the box and yields the payload;
-  /// there is no discard, because `TBox` lacks `CDrop` and the payload must be
-  /// dealt with explicitly.
-  | TBoxNew   : dtype -> term
-  | TBoxOpen  : dtype -> term
-  /// `TRcClone` is the `Clone` interface word and `TRcDrop` is `release` --
-  /// neither is `dup` or `pop`, which is exactly why `TRc` carries no
-  /// capabilities. `TRcRead` needs a copyable payload; the alternative is
-  /// borrowing, deliberately deferred.
-  | TRcNew    : dtype -> term
-  | TRcClone  : dtype -> term
-  | TRcDrop   : dtype -> term
-  | TRcRead   : dtype -> term
-  /// Roll and unroll an incomplete type. Runtime no-ops; they exist so that
-  /// the type system can cross a `TName` boundary explicitly rather than by
-  /// silent coercion.
-  | TRoll     : nom_id -> dtype -> term
-  | TUnroll   : nom_id -> dtype -> term
 
 (* ------------------------------------------------------------------------ *)
 (* Structural measures                                                      *)
@@ -157,24 +202,11 @@ let rec term_size (t:term) : Tot pos =
   match t with
   | TNil                -> 1
   | TSeq a b            -> 1 + term_size a + term_size b
-  | TLit _              -> 1
-  | TStack _            -> 1
+  | TPrimOp _           -> 1
   | TWord _             -> 1
-  | TPack _ _ _         -> 1
-  | TUnpack _ _ _       -> 1
-  | TInj _ _            -> 1
-  | TBoolSum            -> 1
   | TCase _ bs          -> 1 + terms_size bs
   | THandle _ _ i impls b -> 1 + term_size i + impls_size impls + term_size b
   | TSpecialize b       -> 1 + term_size b
-  | TBoxNew _           -> 1
-  | TBoxOpen _          -> 1
-  | TRcNew _            -> 1
-  | TRcClone _          -> 1
-  | TRcDrop _           -> 1
-  | TRcRead _           -> 1
-  | TRoll _ _           -> 1
-  | TUnroll _ _         -> 1
 
 and terms_size (ts:list term) : Tot nat =
   match ts with

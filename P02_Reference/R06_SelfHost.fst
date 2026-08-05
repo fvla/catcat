@@ -40,10 +40,10 @@ module R06_SelfHost
 ///     top-level function             a defined word (`TWord` + dictionary)
 ///     function parameters            input segment of the signature
 ///     structural recursion           self-reference by `word_id`
-///     inductive constructor          `TInj` at the right tag
+///     inductive constructor          `PInj` at the right tag
 ///     `match` on an inductive        `TCase` with one block per variant
-///     tuple / record                 stack segment, sealed by `TPack`
-///     field projection               `TUnpack` then shuffle
+///     tuple / record                 stack segment, sealed by `PPack`
+///     field projection               `PUnpack` then shuffle
 ///     `let x = e in ...`             elaborated to shuffles (D05 3)
 ///     `if`                           `TCase` on the `bool` encoding
 ///
@@ -116,13 +116,13 @@ module R06_SelfHost
 ///   discarded by `pop` (that would leak, since freeing is an operation); an
 ///   `Rc` likewise, since cloning increments a count and releasing decrements
 ///   one. Both are consumed through interface words instead
-///   (`TBoxNew`/`TBoxOpen`, `TRcNew`/`TRcClone`/`TRcDrop`/`TRcRead` in
+///   (`PBoxNew`/`PBoxOpen`, `PRcNew`/`PRcClone`/`PRcDrop`/`PRcRead` in
 ///   M05/M06) -- a strong confirmation of D-08 (capabilities-plus-`Clone`-as-
 ///   an-interface-word is exactly the shape `Box`/`Rc` need, chosen before
 ///   they existed), and the first instance of the recurring pattern in D-26.
 ///
-///   WHAT REMAINS: `M06_Typing`'s `TRoll`/`TUnroll` rules currently accept
-///   `TRoll n d` and `TUnroll n d` for ANY well-formed `d` -- `d` is not
+///   WHAT REMAINS: `M06_Typing`'s `PRoll`/`PUnroll` rules currently accept
+///   `PRoll n d` and `PUnroll n d` for ANY well-formed `d` -- `d` is not
 ///   checked against what `n` actually names, because the typing environment
 ///   carries no declaration table yet. Closing this needs a
 ///   `w_decl : nom_id -> dtype` field and a check that `d = w_decl n`. By
@@ -178,8 +178,8 @@ let enc_cap : dtype = encode_enum 2
 /// `M04_Effects.stage` as a catcat type.
 let enc_stage : dtype = encode_enum 2
 
-/// `R01_Runtime.prim_op` as a catcat type: eleven nullary variants.
-let enc_prim_op : dtype = encode_enum 11
+/// `R01_Runtime.prim_word` as a catcat type: eleven nullary variants.
+let enc_prim_word : dtype = encode_enum 11
 
 /// `bool` is already primitive, but the encoding is worth naming because
 /// `if` compiles to `TCase` over it and the branch order matters: variant 0 is

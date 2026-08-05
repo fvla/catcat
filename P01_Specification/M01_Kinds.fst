@@ -101,7 +101,7 @@ type nom_id = nat
 ///     NOT DEPEND ON ITS POINTEE. `has_cap` never looks through `TBox`/`TRc`,
 ///     so it never reaches a `TName`, so it never needs to resolve one. An
 ///     environment is required only to unfold a name, which typechecking a
-///     `TUnroll` needs and the runtime does not.
+///     `PUnroll` needs and the runtime does not.
 ///
 /// Nullability needs no new machinery: `TSum [[]; [TBox t]]` is `Option[Box[t]]`,
 /// the nullable pointer.
@@ -116,7 +116,7 @@ type dtype =
 /// A stack segment. Also the specification's notion of "tuple".
 type seg = list dtype
 
-/// The sum a `bool` coerces to (`M05.TBoolSum`, D-33): two variants, neither
+/// The sum a `bool` coerces to (`M05.PBoolSum`, D-33): two variants, neither
 /// carrying a payload. Variant 0 is `false` and variant 1 is `true`.
 ///
 /// Named here rather than written out at each use because the tag order is a

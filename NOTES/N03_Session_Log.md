@@ -137,7 +137,7 @@ In order. Steps 1–2 are small and unblock the rest.
 
 1. **`M03.lemma_compose_assoc`.** See above.
 2. **Add a declaration environment to `wenv`** — a `w_decl : nom_id -> dtype`
-   field, so M06 can check `TRoll n d` against what `n` actually declares.
+   field, so M06 can check `PRoll n d` against what `n` actually declares.
    Currently unchecked, and it is the one remaining hole in the recursive-type
    work. Small, and it is the last place a type environment is needed.
 3. **Write the catcat encodings** in R06 (`enc_rvalue`, `enc_term`, `enc_kont`).

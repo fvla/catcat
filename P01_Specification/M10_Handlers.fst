@@ -179,6 +179,6 @@ let resolvable (#env:sig_env) (d:dict env) (row:erow) : bool =
 ///
 /// H5  CAPABILITY NARROWING IS SOUND.
 ///     A sealed type exposing fewer capabilities than its representation
-///     cannot have the missing ones recovered by any client, since `TUnpack`
+///     cannot have the missing ones recovered by any client, since `PUnpack`
 ///     is well typed only inside the class body. This is what makes a linear
 ///     `Counter` over a copyable `int` an actual guarantee.

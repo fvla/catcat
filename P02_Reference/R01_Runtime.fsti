@@ -81,7 +81,7 @@ type rstack = list rvalue
 (* Primitive operations                                                     *)
 (* ------------------------------------------------------------------------ *)
 
-type prim_op =
+type prim_word =
   | OAddI | OSubI | OMulI | ODivI | OModI
   | OLtI  | OLeI  | OEqI
   | ONot  | OAnd  | OOr
@@ -99,7 +99,7 @@ type prim_op =
 noeq type rword =
   | WDef  : term -> rword
   | WOp   : eff_id -> rword
-  | WPrim : prim_op -> rword
+  | WPrim : prim_word -> rword
 
 /// An association list, not a map and not a function. A function-typed field
 /// would be unextractable to catcat; a balanced map would be premature.

@@ -197,11 +197,11 @@ needing any of their own. Both have **neither `Copy` nor `Drop`** (M01
 - `Box[t]` cannot be duplicated — that would alias a unique pointer — and
   cannot be discarded by `pop`, because freeing it is an operation, not a
   no-op. Its two legal operations, allocate and open, are ordinary words
-  (`TBoxNew`/`TBoxOpen`).
+  (`PBoxNew`/`PBoxOpen`).
 - `Rc[t]` cannot be a bitwise `dup` either, because cloning a shared pointer
   means incrementing a refcount, and cannot be a silent `pop`, because
   dropping one means decrementing it. `clone` and `release` are interface
-  words (`TRcClone`/`TRcDrop`), exactly the `Clone`-as-interface-word shape
+  words (`PRcClone`/`PRcDrop`), exactly the `Clone`-as-interface-word shape
   above, not compiler-recognized capabilities.
 
 This is not a new mechanism bolted on for pointers — it is capabilities-plus-

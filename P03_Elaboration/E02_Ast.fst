@@ -82,7 +82,7 @@ type sterm =
   /// This is the surface form macros target, not a form anyone writes directly
   /// yet — surface `if` expands to it (D-33). Branches are listed in TAG
   /// order, so for a `bool` the FALSE branch comes first. Stated here as well
-  /// as in `M05.TBoolSum` because a silent reversal would typecheck.
+  /// as in `M05.PBoolSum` because a silent reversal would typecheck.
   | StCase  : list (list sterm) -> sterm
   /// `handle E over ( … ) init { … } { op { … } … } { body }`.
   ///

@@ -55,7 +55,7 @@ let rec roll_at (n:nat) (s:rstack) : Tot (option (rvalue & rstack)) (decreases s
 /// shape-failure branches here are unreachable for well-typed input; they
 /// return `SStuck` rather than being omitted so that a violation is reported
 /// instead of silently mis-executing.
-let apply_prim (p:prim_op) (k:kont) (s:rstack) : Tot sresult =
+let apply_prim (p:prim_word) (k:kont) (s:rstack) : Tot sresult =
   match p, s with
   | OAddI, RInt a :: RInt b :: r -> SNext ({ code = k; stk = RInt (b + a) :: r })
   | OSubI, RInt a :: RInt b :: r -> SNext ({ code = k; stk = RInt (b - a) :: r })
@@ -84,6 +84,114 @@ let lit_value (l:lit) : Tot rvalue =
   | LPrim PF32 _  -> RBits 0
   | LPrim PF64 _  -> RBits 0
   | LPrim _ v     -> RInt v
+
+/// Every core intrinsic, in one table (D-55), mirroring `M06.prim_sig` row for
+/// row. `Inl` is a stuck message and `Inr` the new stack.
+///
+/// It takes the stack and returns a stack, and takes neither the dictionary nor
+/// the continuation. That signature is the runtime witness for `M05.prim_op`'s
+/// purity invariant: a primitive cannot perform an operation, cannot call a
+/// word, and cannot alter control flow, because it is not given anything with
+/// which to do so. `M07`'s `prim_den` will be this same table over typed
+/// stacks, and M09's agreement obligation for the whole primitive class is then
+/// one lemma relating the two.
+///
+/// The shape-failure branches are unreachable for well-typed input -- M06 has
+/// already settled arity and typing -- and return a message rather than being
+/// omitted so that a violation is reported instead of silently mis-executing.
+let apply_primop (p:prim_op) (s:rstack) : Tot (either string rstack) =
+  match p with
+  | PLit l -> Inr (lit_value l :: s)
+
+  | PStack (SDup _) ->
+    (match s with
+     | v :: r -> Inr (v :: v :: r)
+     | []     -> Inl "dup on empty stack")
+
+  | PStack (SPop _) ->
+    (match s with
+     | _ :: r -> Inr r
+     | []     -> Inl "pop on empty stack")
+
+  | PStack (SSwap _ _) ->
+    (match s with
+     | a :: b :: r -> Inr (b :: a :: r)
+     | _           -> Inl "swap needs two values")
+
+  (* Deep access. The depth is `length above`, recovered from the segment the
+     term carries, so neither case is variadic at runtime either. *)
+  | PStack (SPick above _) ->
+    (match pick_at (length above) s with
+     | None   -> Inl "pick: stack too short"
+     | Some v -> Inr (v :: s))
+
+  | PStack (SRoll above _) ->
+    (match roll_at (length above) s with
+     | None           -> Inl "roll: stack too short"
+     | Some (v, rest) -> Inr (v :: rest))
+
+  | PPack n _ repr ->
+    (match take (length repr) s with
+     | None            -> Inl "pack: stack too short"
+     | Some (vs, rest) -> Inr (RSeal n vs :: rest))
+
+  | PUnpack _ _ _ ->
+    (match s with
+     | RSeal _ vs :: r -> Inr (give vs r)
+     | _               -> Inl "unpack: not a sealed value")
+
+  | PInj variants tag ->
+    if tag >= length variants then Inl "inj: tag out of range"
+    else (match take (length (index variants tag)) s with
+          | None            -> Inl "inj: stack too short"
+          | Some (vs, rest) -> Inr (RSum tag vs :: rest))
+
+  (* D-33: `false` is tag 0 and `true` is tag 1, matching `M06.prim_sig` and
+     `M01.bool_variants`. Neither variant carries a payload, so the coerced
+     value is a bare tag. *)
+  | PBoolSum ->
+    (match s with
+     | RBool b :: r -> Inr (RSum (if b then 1 else 0) [] :: r)
+     | _            -> Inl "bool>sum: not a boolean")
+
+  | PBoxNew _ ->
+    (match s with
+     | v :: r -> Inr (RBox v :: r)
+     | []     -> Inl "box: stack empty")
+
+  | PBoxOpen _ ->
+    (match s with
+     | RBox v :: r -> Inr (v :: r)
+     | _           -> Inl "unbox: not a box")
+
+  | PRcNew _ ->
+    (match s with
+     | v :: r -> Inr (RRc v :: r)
+     | []     -> Inl "rc new: stack empty")
+
+  (* `PRcClone` models no refcount: R01_Runtime.fsti explains why nesting
+     already stands in for sharing here (the count only gates when a
+     destructor runs, and this interpreter has no observable deallocation).
+     So cloning just duplicates the nested value, same as `dup` would. *)
+  | PRcClone _ ->
+    (match s with
+     | RRc v :: r -> Inr (RRc v :: RRc v :: r)
+     | _          -> Inl "rc clone: not an rc")
+
+  | PRcDrop _ ->
+    (match s with
+     | RRc _ :: r -> Inr r
+     | _          -> Inl "rc drop: not an rc")
+
+  | PRcRead _ ->
+    (match s with
+     | RRc v :: r -> Inr (v :: RRc v :: r)
+     | _          -> Inl "rc read: not an rc")
+
+  (* Roll/unroll cross a `TName` boundary at the type level only; R01 has no
+     `RName`, so both are runtime no-ops (M01_Kinds header, R01_Runtime.fsti). *)
+  | PRoll _ _   -> Inr s
+  | PUnroll _ _ -> Inr s
 
 let step (d:rdict) (s:mstate) : Tot sresult =
   match s.code with
@@ -120,34 +228,14 @@ let step (d:rdict) (s:mstate) : Tot sresult =
        which is exactly why M08 made the continuation a list. *)
     | TSeq a b -> SNext ({ code = KTerm a :: KTerm b :: k; stk = s.stk })
 
-    | TLit l -> SNext ({ code = k; stk = lit_value l :: s.stk })
-
-    | TStack (SDup _) ->
-      (match s.stk with
-       | v :: r -> SNext ({ code = k; stk = v :: v :: r })
-       | []     -> SStuck "dup on empty stack")
-
-    | TStack (SPop _) ->
-      (match s.stk with
-       | _ :: r -> SNext ({ code = k; stk = r })
-       | []     -> SStuck "pop on empty stack")
-
-    | TStack (SSwap _ _) ->
-      (match s.stk with
-       | a :: b :: r -> SNext ({ code = k; stk = b :: a :: r })
-       | _           -> SStuck "swap needs two values")
-
-    (* Deep access. The depth is `length above`, recovered from the segment the
-       term carries, so neither case is variadic at runtime either. *)
-    | TStack (SPick above _) ->
-      (match pick_at (length above) s.stk with
-       | None   -> SStuck "pick: stack too short"
-       | Some v -> SNext ({ code = k; stk = v :: s.stk }))
-
-    | TStack (SRoll above _) ->
-      (match roll_at (length above) s.stk with
-       | None            -> SStuck "roll: stack too short"
-       | Some (v, rest)  -> SNext ({ code = k; stk = v :: rest }))
+    (* Every intrinsic, in one case. `apply_primop` is a pure function of the
+       stack alone -- it consults neither the dictionary nor the continuation,
+       which is the runtime shadow of `M05.prim_op`'s purity invariant, and the
+       reason this case can be lifted out of `step` at all. *)
+    | TPrimOp p ->
+      (match apply_primop p s.stk with
+       | Inl msg  -> SStuck msg
+       | Inr stk' -> SNext ({ code = k; stk = stk' }))
 
     | TWord w ->
       (match dict_lookup d w with
@@ -177,31 +265,6 @@ let step (d:rdict) (s:mstate) : Tot sresult =
                            :: set_handler_state k e w None;
                      stk = give hst s.stk })))
 
-    | TPack n _ repr ->
-      (match take (length repr) s.stk with
-       | None            -> SStuck "pack: stack too short"
-       | Some (vs, rest) -> SNext ({ code = k; stk = RSeal n vs :: rest }))
-
-    | TUnpack _ _ _ ->
-      (match s.stk with
-       | RSeal _ vs :: r -> SNext ({ code = k; stk = give vs r })
-       | _               -> SStuck "unpack: not a sealed value")
-
-    | TInj variants tag ->
-      if tag >= length variants then SStuck "inj: tag out of range"
-      else (match take (length (index variants tag)) s.stk with
-            | None            -> SStuck "inj: stack too short"
-            | Some (vs, rest) -> SNext ({ code = k; stk = RSum tag vs :: rest }))
-
-    (* D-33: `false` is tag 0 and `true` is tag 1, matching `M06`'s rule and
-       `M01.bool_variants`. Neither variant carries a payload, so the coerced
-       value is a bare tag. *)
-    | TBoolSum ->
-      (match s.stk with
-       | RBool b :: r ->
-         SNext ({ code = k; stk = RSum (if b then 1 else 0) [] :: r })
-       | _ -> SStuck "bool>sum: not a boolean")
-
     | TCase _ branches ->
       (match s.stk with
        | RSum tag vs :: r ->
@@ -221,43 +284,3 @@ let step (d:rdict) (s:mstate) : Tot sresult =
        statement gets its first empirical test -- comparing a run of
        `TSpecialize t` against a run of `specialize t` must agree. *)
     | TSpecialize body -> SNext ({ code = KTerm body :: k; stk = s.stk })
-
-    | TBoxNew _ ->
-      (match s.stk with
-       | v :: r -> SNext ({ code = k; stk = RBox v :: r })
-       | []     -> SStuck "box: stack empty")
-
-    | TBoxOpen _ ->
-      (match s.stk with
-       | RBox v :: r -> SNext ({ code = k; stk = v :: r })
-       | _           -> SStuck "unbox: not a box")
-
-    | TRcNew _ ->
-      (match s.stk with
-       | v :: r -> SNext ({ code = k; stk = RRc v :: r })
-       | []     -> SStuck "rc new: stack empty")
-
-    (* `TRcClone` models no refcount: R01_Runtime.fsti explains why nesting
-       already stands in for sharing here (the count only gates when a
-       destructor runs, and this interpreter has no observable deallocation).
-       So cloning just duplicates the nested value, same as `dup` would. *)
-    | TRcClone _ ->
-      (match s.stk with
-       | RRc v :: r -> SNext ({ code = k; stk = RRc v :: RRc v :: r })
-       | _          -> SStuck "rc clone: not an rc")
-
-    | TRcDrop _ ->
-      (match s.stk with
-       | RRc _ :: r -> SNext ({ code = k; stk = r })
-       | _          -> SStuck "rc drop: not an rc")
-
-    | TRcRead _ ->
-      (match s.stk with
-       | RRc v :: r -> SNext ({ code = k; stk = v :: RRc v :: r })
-       | _          -> SStuck "rc read: not an rc")
-
-    (* Roll/unroll cross a `TName` boundary at the type level only; R01 has no
-       `RName`, so both are runtime no-ops (M01_Kinds header, R01_Runtime.fsti). *)
-    | TRoll _ _ -> SNext ({ code = k; stk = s.stk })
-
-    | TUnroll _ _ -> SNext ({ code = k; stk = s.stk })

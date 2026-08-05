@@ -59,7 +59,7 @@ A well-formedness predicate `wf : dtype -> bool` (M01) rejects a bare `TName`
 not behind a pointer — the grammar above does not exclude `TName n` on its
 own, so `wf` is what keeps layout finite, exactly as C++ rejects
 `struct S { S field; }`. `wf` is checked at every place a type reaches a slot
-boundary (`TBoxNew`, `TRcNew`, `TRoll`/`TUnroll` in M06).
+boundary (`PBoxNew`, `PRcNew`, `PRoll`/`PUnroll` in M06).
 
 > **Resolved: recursive types via pointer indirection.** `dtype` used to be
 > entirely structural and finite, so `List[#T] = Nil | Cons #T List[#T]` was
@@ -75,7 +75,7 @@ boundary (`TBoxNew`, `TRcNew`, `TRoll`/`TUnroll` in M06).
 >    capabilities do not depend on its pointee: `has_cap` never looks through
 >    `TBox`/`TRc`, so it never reaches a `TName`, so it never has to resolve
 >    one. An environment is needed only to *unfold* a name, which typechecking
->    `TUnroll` needs and the runtime does not.
+>    `PUnroll` needs and the runtime does not.
 >
 > See R06 §3 for the fix as found and what remains, and D06 §5 for where it
 > sat in the schedule.
@@ -209,24 +209,49 @@ associativity stated. *(Associativity is currently admitted — see §8.)*
 
 ## 5. Terms
 
+**Seven constructors.**
+
 ```
 term ::= TNil                             -- identity
        | TSeq term term                   -- juxtaposition; the ONLY sequencing form
-       | TLit lit
-       | TStack sop                        -- dup / pop / swap / pick / roll
+       | TPrimOp prim_op                   -- an intrinsic; see below
        | TWord word_id                     -- named word OR interface operation
-       | TPack   nom_id [cap] seg          -- segment  -> nominal
-       | TUnpack nom_id [cap] seg          -- nominal  -> segment (class body only)
-       | TInj  [seg] nat                   -- sum introduction
-       | TBoolSum                          -- bool -> two-variant sum
        | TCase [seg] [term]                -- sum elimination, one block per variant
-       | THandle eff_id [(op_id, term)] term
+       | THandle eff_id seg term [(op_id, term)] term
        | TSpecialize term                  -- staging; see D04
 ```
 
+That is the whole of the core's *structure*: identity, composition, naming,
+elimination, handling, staging. Its *vocabulary* is a separate, flat table
+(D-55), every entry of which is pure and monomorphic:
+
+```
+prim_op ::= PLit lit
+          | PStack sop                     -- dup / pop / swap / pick / roll
+          | PPack   nom_id [cap] seg       -- segment  -> nominal
+          | PUnpack nom_id [cap] seg       -- nominal  -> segment (class body only)
+          | PInj  [seg] nat                -- sum introduction
+          | PBoolSum                       -- bool -> two-variant sum
+          | PBoxNew | PBoxOpen             -- dtype each
+          | PRcNew | PRcClone | PRcDrop | PRcRead
+          | PRoll nom_id dtype | PUnroll nom_id dtype
+```
+
+Each entry has a signature (`M06.prim_sig`), a denotation (M07) and a machine
+action (`R02.apply_primop`), and nothing else. The split matters because every
+induction over `term` in M07 and M09 gets **one** primitive case rather than
+twelve, and because a native library (D-56) extends the table without touching
+the language.
+
+The invariant that makes the grouping honest: **every primitive is pure.**
+`prim_sig` returns no effect row, and `apply_primop` is given neither the
+dictionary nor the continuation, so a primitive cannot perform an operation,
+call a word, or alter control flow. Anything that could is a `TWord` resolving
+to an operation — which is why `print` is not in the table.
+
 Note what is **absent**: no lambda, no application, no let, no local binding, no
 closure. Locals (`$x`) elaborate to stack shuffles and the core never learns they
-existed. **There is also no conditional** — `TBoolSum` coerces a `bool` to a
+existed. **There is also no conditional** — `PBoolSum` coerces a `bool` to a
 two-variant sum and `TCase` does the rest, so branching on a boolean and
 branching on a user sum are the same construct (D-33). A dedicated `TIf` would
 have needed a second copy of the branch-agreement rule.

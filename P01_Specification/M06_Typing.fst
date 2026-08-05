@@ -77,6 +77,104 @@ let row_dynamic (row:erow) : erow =
   filter (fun (_, s) -> s = SDynamic) row
 
 (* ------------------------------------------------------------------------ *)
+(* The primitive table                                                      *)
+(* ------------------------------------------------------------------------ *)
+
+/// The typing rule for every intrinsic, as a table (D-55).
+///
+/// `None` is "this primitive is not well typed at these arguments", and it is
+/// where the capability checks live: rejecting `SDup` at a non-copyable type
+/// is the whole enforcement mechanism for linearity, and there is no separate
+/// linear sublanguage anywhere else in the system.
+///
+/// There is no `erow` in the result, and that absence is load-bearing rather
+/// than an omission — see `M05.prim_op`. Every primitive is pure, so `infer`
+/// pairs this with `pure_row` unconditionally and M07's T4 gets one case for
+/// the whole class.
+///
+/// This function is total and does not recurse, which is what makes the
+/// primitive case of every induction over `term` in M07 and M09 a single
+/// appeal to a lemma about `prim_sig` rather than twelve separate arguments.
+let prim_sig (p:prim_op) : Tot (option srow) =
+  match p with
+  | PLit l -> Some ({ pre = []; post = [lit_type l] })
+
+  /// The two capability-gated shuffles. `SSwap` needs no capability because
+  /// moving a value is always permitted.
+  | PStack (SDup d) ->
+    if copyable d then Some ({ pre = [d]; post = [d; d] }) else None
+  | PStack (SPop d) ->
+    if droppable d then Some ({ pre = [d]; post = [] }) else None
+  | PStack (SSwap d1 d2) ->
+    Some ({ pre = [d1; d2]; post = [d2; d1] })
+
+  /// Deep access. `SPick` copies, so it is capability-gated exactly like
+  /// `SDup`; `SRoll` only moves, so it is not. The `above` segment is what
+  /// makes the depth explicit in the type rather than variadic.
+  | PStack (SPick above d) ->
+    if copyable d
+    then Some ({ pre = above @ [d]; post = d :: (above @ [d]) })
+    else None
+  | PStack (SRoll above d) ->
+    Some ({ pre = above @ [d]; post = d :: above })
+
+  /// Sealing is where a stack segment becomes one denotable value, and where
+  /// a type may narrow its capabilities (D03).
+  | PPack n caps repr ->
+    Some ({ pre = repr; post = [TSeal n caps repr] })
+  | PUnpack n caps repr ->
+    Some ({ pre = [TSeal n caps repr]; post = repr })
+
+  | PInj variants tag ->
+    if tag < length variants
+    then Some ({ pre = index variants tag; post = [TSum variants] })
+    else None
+
+  /// The boolean-to-sum coercion (D-33). Fixed tags: `false` is variant 0 and
+  /// `true` is variant 1.
+  | PBoolSum ->
+    Some ({ pre = [TPrim PBool]; post = [TSum bool_variants] })
+
+  /// Pointers. Well-formedness is checked at the boundary: a slot's type must
+  /// not be a bare incomplete type, which is what `wf` rules out.
+  | PBoxNew d ->
+    if wf d then Some ({ pre = [d]; post = [TBox d] }) else None
+  | PBoxOpen d ->
+    if wf d then Some ({ pre = [TBox d]; post = [d] }) else None
+
+  | PRcNew d ->
+    if wf d then Some ({ pre = [d]; post = [TRc d] }) else None
+  /// The `Clone` interface word. Note this is NOT `SDup`: it is available at
+  /// every payload type, because cloning an `Rc` bumps a count rather than
+  /// copying the pointee.
+  | PRcClone d ->
+    if wf d then Some ({ pre = [TRc d]; post = [TRc d; TRc d] }) else None
+  /// `release`, not `pop` -- `TRc` has no `CDrop`, so this word is the only
+  /// way to discard a shared handle.
+  | PRcDrop d ->
+    if wf d then Some ({ pre = [TRc d]; post = [] }) else None
+  /// Capability-gated, like `SDup`: reading a non-copyable payload out of a
+  /// shared pointer would need borrowing (N02 Q-03).
+  | PRcRead d ->
+    if wf d && copyable d
+    then Some ({ pre = [TRc d]; post = [d; TRc d] })
+    else None
+
+  /// Roll and unroll an incomplete type.
+  ///
+  /// LIMITATION, recorded rather than hidden: `d` is not checked against the
+  /// declaration `n` names, because `wenv` carries no type-declaration table
+  /// yet. So these rules accept `PRoll n d` for any well-formed `d`. Adding a
+  /// `w_decl : nom_id -> dtype` field and requiring `d = w_decl n` closes it;
+  /// the rest of the design is arranged so that this is the ONLY place an
+  /// environment is needed for types, which is also why `prim_sig` can take no
+  /// environment at all today.
+  | PRoll n d ->
+    if wf d then Some ({ pre = [d]; post = [TName n] }) else None
+  | PUnroll n d ->
+    if wf d then Some ({ pre = [TName n]; post = [d] }) else None
+
+(* ------------------------------------------------------------------------ *)
 (* Inference                                                                *)
 (* ------------------------------------------------------------------------ *)
 
@@ -98,47 +196,15 @@ let rec infer (env:wenv) (t:term)
         | None   -> None)
      | _ -> None)
 
-  | TLit l -> Some ({ pre = []; post = [lit_type l] }, pure_row)
-
-  /// The two capability-gated rules. Rejecting `SDup` at a non-copyable type
-  /// is the whole of linearity enforcement; there is no separate linear
-  /// sublanguage.
-  | TStack (SDup d) ->
-    if copyable d then Some ({ pre = [d]; post = [d; d] }, pure_row) else None
-  | TStack (SPop d) ->
-    if droppable d then Some ({ pre = [d]; post = [] }, pure_row) else None
-  | TStack (SSwap d1 d2) ->
-    Some ({ pre = [d1; d2]; post = [d2; d1] }, pure_row)
-
-  /// Deep access. `SPick` copies, so it is capability-gated exactly like
-  /// `SDup`; `SRoll` only moves, so it is not. The `above` segment is what
-  /// makes the depth explicit in the type rather than variadic.
-  | TStack (SPick above d) ->
-    if copyable d
-    then Some ({ pre = above @ [d]; post = d :: (above @ [d]) }, pure_row)
-    else None
-  | TStack (SRoll above d) ->
-    Some ({ pre = above @ [d]; post = d :: above }, pure_row)
+  /// Every intrinsic, in one rule. `pure_row` is unconditional because no
+  /// entry of the table can perform an operation (`M05.prim_op`).
+  | TPrimOp p ->
+    (match prim_sig p with
+     | Some s -> Some (s, pure_row)
+     | None   -> None)
 
   /// Words and interface operations share one rule.
   | TWord w -> Some (w_sig env w, w_eff env w)
-
-  /// Sealing is where a stack segment becomes one denotable value, and where
-  /// a type may narrow its capabilities (D03).
-  | TPack n caps repr ->
-    Some ({ pre = repr; post = [TSeal n caps repr] }, pure_row)
-  | TUnpack n caps repr ->
-    Some ({ pre = [TSeal n caps repr]; post = repr }, pure_row)
-
-  | TInj variants tag ->
-    if tag < length variants
-    then Some ({ pre = index variants tag; post = [TSum variants] }, pure_row)
-    else None
-
-  /// The boolean-to-sum coercion (D-33). Fixed tags: `false` is variant 0 and
-  /// `true` is variant 1.
-  | TBoolSum ->
-    Some ({ pre = [TPrim PBool]; post = [TSum bool_variants] }, pure_row)
 
   /// Every branch consumes its own variant's payload, and all branches must
   /// agree -- but agree in the row-polymorphic sense, not by having equal
@@ -180,45 +246,6 @@ let rec infer (env:wenv) (t:term)
     (match infer env body with
      | Some (s, row) -> Some (s, row_dynamic row)
      | None          -> None)
-
-  /// Pointers. Well-formedness is checked at the boundary: a slot's type must
-  /// not be a bare incomplete type, which is what `wf` rules out.
-  | TBoxNew d ->
-    if wf d then Some ({ pre = [d]; post = [TBox d] }, pure_row) else None
-  | TBoxOpen d ->
-    if wf d then Some ({ pre = [TBox d]; post = [d] }, pure_row) else None
-
-  | TRcNew d ->
-    if wf d then Some ({ pre = [d]; post = [TRc d] }, pure_row) else None
-  /// The `Clone` interface word. Note this is NOT `SDup`: it is available at
-  /// every payload type, because cloning an `Rc` bumps a count rather than
-  /// copying the pointee.
-  | TRcClone d ->
-    if wf d then Some ({ pre = [TRc d]; post = [TRc d; TRc d] }, pure_row)
-    else None
-  /// `release`, not `pop` -- `TRc` has no `CDrop`, so this word is the only
-  /// way to discard a shared handle.
-  | TRcDrop d ->
-    if wf d then Some ({ pre = [TRc d]; post = [] }, pure_row) else None
-  /// Capability-gated, like `SDup`: reading a non-copyable payload out of a
-  /// shared pointer would need borrowing (N02 Q-03).
-  | TRcRead d ->
-    if wf d && copyable d
-    then Some ({ pre = [TRc d]; post = [d; TRc d] }, pure_row)
-    else None
-
-  /// Roll and unroll an incomplete type.
-  ///
-  /// LIMITATION, recorded rather than hidden: `d` is not checked against the
-  /// declaration `n` names, because `wenv` carries no type-declaration table
-  /// yet. So these rules accept `TRoll n d` for any `d`. Adding a `w_decl :
-  /// nom_id -> dtype` field and requiring `d = w_decl n` closes it; the rest of
-  /// the design is arranged so that this is the ONLY place an environment is
-  /// needed for types.
-  | TRoll n d ->
-    if wf d then Some ({ pre = [d]; post = [TName n] }, pure_row) else None
-  | TUnroll n d ->
-    if wf d then Some ({ pre = [TName n]; post = [d] }, pure_row) else None
 
 /// The arm of one branch: push its variant's payload, then run the branch.
 /// Partial for the same reason `compose` is -- the branch may want a shape the

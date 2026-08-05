@@ -86,7 +86,7 @@ val render_result (r:rresult) : Tot string
 val ex_arith : term
 
 /// A sealed counter, following D03 3: pack an i64, increment through the
-/// boundary, unpack. Exercises `TPack`/`TUnpack` and demonstrates that the
+/// boundary, unpack. Exercises `PPack`/`PUnpack` and demonstrates that the
 /// class boundary has no runtime representation beyond the wrapper.
 val ex_counter : term
 
@@ -110,7 +110,7 @@ val ex_handled   : term
 val ex_stateful  : term
 val ex_unhandled : term
 
-/// `List[i64]` built as `[7, 9]`, from the inside out via `TRoll`/`TBoxNew`.
+/// `List[i64]` built as `[7, 9]`, from the inside out via `PRoll`/`PBoxNew`.
 /// The recursive type this needs -- a sum variant referring to itself -- was
 /// inexpressible before pointer types; it is well-formed now only because the
 /// self-reference passes through `TBox` (see M01's `wf_dtype`).

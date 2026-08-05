@@ -25,7 +25,7 @@ module E05_Locate
 ///   syntax (`pick.2`) rather than a plausible-looking lie.
 ///
 /// THE `if` RECONSTRUCTION
-///   `TBoolSum` immediately followed by a two-branch `TCase` is printed back as
+///   `PBoolSum` immediately followed by a two-branch `TCase` is printed back as
 ///   `if { } then { … } else { … } endif`. The empty condition block is not a
 ///   cheat: the condition's code has already been emitted to the left, and
 ///   `cond if { } then { … } endif` is exactly how the surface form is written
@@ -189,6 +189,26 @@ let show_sop (o:sop) : Tot string =
   | SPick a _   -> "pick." ^ string_of_int (length a)
   | SRoll a _   -> "roll." ^ string_of_int (length a)
 
+/// One intrinsic. Literals and shuffles have surface spellings; the rest do
+/// not yet, and print with a leading marker rather than a guess, so that
+/// `locate` never claims a word can be written in a way it cannot.
+let show_primop (p:prim_op) : Tot string =
+  match p with
+  | PLit l        -> show_lit l
+  | PStack o      -> show_sop o
+  | PPack n _ _   -> "pack@" ^ string_of_int n
+  | PUnpack n _ _ -> "unpack@" ^ string_of_int n
+  | PInj _ tag    -> "inj." ^ string_of_int tag
+  | PBoolSum      -> "bool>sum"
+  | PBoxNew _     -> "box.new"
+  | PBoxOpen _    -> "box.open"
+  | PRcNew _      -> "rc.new"
+  | PRcClone _    -> "rc.clone"
+  | PRcDrop _     -> "rc.drop"
+  | PRcRead _     -> "rc.read"
+  | PRoll n _     -> "roll@" ^ string_of_int n
+  | PUnroll n _   -> "unroll@" ^ string_of_int n
+
 (* ------------------------------------------------------------------------ *)
 (* Terms                                                                    *)
 (* ------------------------------------------------------------------------ *)
@@ -229,7 +249,7 @@ let rec show_items (e:nenv) (ts:list term)
 
   /// The `if` reconstruction. Branches are stored in TAG order — false first
   /// (D-33) — so the second one is `then` and the first is `else`.
-  | TBoolSum :: TCase vs [f; t] :: rest ->
+  | TPrimOp PBoolSum :: TCase vs [f; t] :: rest ->
     if vs = bool_variants
     then cons_sp ("if { } then " ^ braces (show_items e [t])
                   ^ " else " ^ braces (show_items e [f]) ^ " endif")
@@ -248,25 +268,8 @@ let rec show_items (e:nenv) (ts:list term)
   | TSpecialize body :: rest ->
     cons_sp ("specialize " ^ braces (show_items e [body])) (show_items e rest)
 
-  | TLit l :: rest    -> cons_sp (show_lit l) (show_items e rest)
-  | TStack o :: rest  -> cons_sp (show_sop o) (show_items e rest)
+  | TPrimOp p :: rest -> cons_sp (show_primop p) (show_items e rest)
   | TWord w :: rest   -> cons_sp (show_word e w) (show_items e rest)
-
-  /// The remaining forms have no surface spelling yet. They print with a
-  /// leading marker rather than a guess, so `locate` never claims a word can be
-  /// written in a way it cannot.
-  | TPack n _ _ :: rest    -> cons_sp ("pack@" ^ string_of_int n) (show_items e rest)
-  | TUnpack n _ _ :: rest  -> cons_sp ("unpack@" ^ string_of_int n) (show_items e rest)
-  | TInj _ tag :: rest     -> cons_sp ("inj." ^ string_of_int tag) (show_items e rest)
-  | TBoolSum :: rest       -> cons_sp "bool>sum" (show_items e rest)
-  | TBoxNew _ :: rest      -> cons_sp "box.new" (show_items e rest)
-  | TBoxOpen _ :: rest     -> cons_sp "box.open" (show_items e rest)
-  | TRcNew _ :: rest       -> cons_sp "rc.new" (show_items e rest)
-  | TRcClone _ :: rest     -> cons_sp "rc.clone" (show_items e rest)
-  | TRcDrop _ :: rest      -> cons_sp "rc.drop" (show_items e rest)
-  | TRcRead _ :: rest      -> cons_sp "rc.read" (show_items e rest)
-  | TRoll n _ :: rest      -> cons_sp ("roll@" ^ string_of_int n) (show_items e rest)
-  | TUnroll n _ :: rest    -> cons_sp ("unroll@" ^ string_of_int n) (show_items e rest)
 
 and show_branches (e:nenv) (bs:list term)
   : Tot string (decreases %[terms_size bs; 1]) =
@@ -290,7 +293,7 @@ let show_term (e:nenv) (t:term) : Tot string = show_items e [t]
 /// What the machine will do, named. A primitive has no body to show, and
 /// saying so is the honest answer — `locate +` should not print something that
 /// looks like a definition.
-let show_prim_op (o:prim_op) : Tot string =
+let show_prim_word (o:prim_word) : Tot string =
   match o with
   | OAddI -> "integer add"    | OSubI -> "integer subtract"
   | OMulI -> "integer multiply" | ODivI -> "integer divide (Euclidean)"
@@ -432,7 +435,7 @@ let locate (mt:list mprod) (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
       /// word's effects are M06's business.
       let hdr = x ^ " " ^ render_row_eff e n.n_sig (w_eff w n.n_id) in
       match dict_lookup d n.n_id with
-      | Some (WPrim o) -> hdr ^ "\n  \\ primitive: " ^ show_prim_op o
+      | Some (WPrim o) -> hdr ^ "\n  \\ primitive: " ^ show_prim_word o
       | Some (WOp eff) -> hdr ^ "\n  \\ operation of effect " ^ show_eff e eff
       | Some (WDef t)  -> "define " ^ hdr ^ " {\n  " ^ show_term e t ^ "\n}"
       /// Reachable only if the name environment and the dictionary disagree,

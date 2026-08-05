@@ -78,10 +78,10 @@ let counter_repr : seg = [TPrim PI64]
 let ex_counter : term =
   cat [
     int_lit 41;
-    TPack counter_nom [] counter_repr;          // seal: 41 becomes a Counter
-    TUnpack counter_nom [] counter_repr;        // enter the class body
+    TPrimOp (PPack counter_nom [] counter_repr);          // seal: 41 becomes a Counter
+    TPrimOp (PUnpack counter_nom [] counter_repr);        // enter the class body
     int_lit 1; TWord w_add;                     // increment
-    TPack counter_nom [] counter_repr           // re-seal
+    TPrimOp (PPack counter_nom [] counter_repr)           // re-seal
   ]
 
 /// `option i64`: variant 0 empty, variant 1 carrying an i64.
@@ -90,7 +90,7 @@ let opt_variants : list seg = [[]; [TPrim PI64]]
 let ex_sum : term =
   cat [
     int_lit 99;
-    TInj opt_variants 1;                        // Some 99
+    TPrimOp (PInj opt_variants 1);                        // Some 99
     TCase opt_variants [ int_lit 0              // None  -> 0
                        ; TNil ]                 // Some x -> x
   ]
@@ -121,7 +121,7 @@ let ex_handled : term =
 /// beneath it when the handler exits.
 let ex_stateful : term =
   THandle eff_ask [TPrim PI64] (int_lit 0)
-    [(op_ask, cat [TStack (SDup (TPrim PI64)); int_lit 1; TWord w_add])]
+    [(op_ask, cat [TPrimOp (PStack (SDup (TPrim PI64))); int_lit 1; TWord w_add])]
     (cat [TWord op_ask; TWord op_ask; TWord w_add])
 
 let ex_unhandled : term =
@@ -132,7 +132,7 @@ let ex_unhandled : term =
 /// not express at all -- `dtype` was a finite tree, so nothing could refer to
 /// itself. The recursion is legal only because it passes through `TBox`:
 /// `TName list_nom` is an incomplete-type leaf, boxing it is what keeps
-/// `dtype` values finite (M01's `wf_dtype`), and `TRoll`/`TUnroll` are the
+/// `dtype` values finite (M01's `wf_dtype`), and `PRoll`/`PUnroll` are the
 /// explicit crossings of that boundary.
 let list_nom : nom_id = 42
 let list_variants : list seg = [ []; [TPrim PI64; TBox (TName list_nom)] ]
@@ -142,15 +142,15 @@ let list_body : dtype = TSum list_variants
 /// tail of `Cons 9`, then box and roll THAT into the tail of `Cons 7`.
 let ex_list : term =
   cat [
-    TInj list_variants 0;                       // Nil
-    TRoll list_nom list_body;
-    TBoxNew (TName list_nom);
+    TPrimOp (PInj list_variants 0);                       // Nil
+    TPrimOp (PRoll list_nom list_body);
+    TPrimOp (PBoxNew (TName list_nom));
     int_lit 9;
-    TInj list_variants 1;                       // Cons 9 (box Nil)
-    TRoll list_nom list_body;
-    TBoxNew (TName list_nom);
+    TPrimOp (PInj list_variants 1);                       // Cons 9 (box Nil)
+    TPrimOp (PRoll list_nom list_body);
+    TPrimOp (PBoxNew (TName list_nom));
     int_lit 7;
-    TInj list_variants 1                        // Cons 7 (box (Cons 9 (box Nil)))
+    TPrimOp (PInj list_variants 1)                        // Cons 7 (box (Cons 9 (box Nil)))
   ]
 
 let examples : list (string & term) = [
