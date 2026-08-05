@@ -421,13 +421,12 @@ let rec eval_tokens (s:session) (ts:list token) (acc:string)
      | PErr e -> LDone s (join_msg acc ("error: " ^ e))
      | POk d rest ->
        (match eval_decl s d with
-        | DDone s' msg ->
-          if length rest < length ts
-          then eval_tokens s' rest (join_msg acc msg)
-          /// A declaration that consumed nothing would spin. The parser's
-          /// refinements make this unreachable, but the loop is total by
-          /// construction rather than by appeal to them.
-          else LDone s' (join_msg acc msg)
+        /// No progress check. `parse_decl` now PROVES it consumed at least one
+        /// token (D-58), which it has to, because a `macro` declaration changes
+        /// the grammar the rest of the line is read with and so there is no
+        /// fixed grammar to appeal to. This loop used to stop the line if the
+        /// parser stood still; that branch was unreachable and is gone.
+        | DDone s' msg -> eval_tokens s' rest (join_msg acc msg)
         | DEffect op stk k s0 post below ->
           LEffect op stk k ({ su_sess = s0; su_post = post; su_below = below;
                               su_rest = rest; su_acc = acc })))

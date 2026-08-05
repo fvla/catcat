@@ -243,6 +243,77 @@ let lemma_ll1_extend (mt:list mprod) (p:mprod)
            | Inr mt' -> ll1_ok mt'
            | Inl _   -> True) = ()
 
+(* --- what LL(1) buys: the parser's choice is forced ---------------------- *)
+
+/// The content of `ll1_ok` (D-58). `lookup_macro` and `lookup_branch` are
+/// functions, so they are trivially deterministic; what is NOT trivial, and is
+/// what the parser actually relies on, is that the production they return is
+/// the ONLY one that could have matched. Distinctness is precisely that: it is
+/// what rules out a second candidate further down the table, and hence what
+/// makes "dispatch on the token in hand" equivalent to "consider every
+/// production" without any lookahead.
+///
+/// Stated on membership rather than on position, since the parser never learns
+/// where in the table a production sits.
+///
+/// The two proofs need one fact each: a member's key was never in `seen`. That
+/// is what excludes the case where an earlier entry shares the key, which is
+/// exactly the case an ambiguous grammar would allow.
+let rec lemma_keys_unseen (seen:list string) (bs:list mbranch) (b:mbranch)
+  : Lemma (requires keys_distinct seen bs /\ mem b bs)
+          (ensures  not (mem b.mb_key seen))
+          (decreases bs) =
+  match bs with
+  | []     -> ()
+  | x :: r -> if b = x then () else lemma_keys_unseen (x.mb_key :: seen) r b
+
+let rec lemma_lookup_branch_forced (bs:list mbranch) (b:mbranch) (seen:list string)
+  : Lemma (requires keys_distinct seen bs /\ mem b bs)
+          (ensures  lookup_branch bs b.mb_key == Some b)
+          (decreases bs) =
+  match bs with
+  | []     -> ()
+  | x :: r ->
+    if b = x then ()
+    else (lemma_keys_unseen (x.mb_key :: seen) r b;
+          lemma_lookup_branch_forced r b (x.mb_key :: seen))
+
+let rec lemma_names_unseen (seen:list string) (ps:list mprod) (p:mprod)
+  : Lemma (requires names_distinct seen ps /\ mem p ps)
+          (ensures  not (mem p.mp_name seen))
+          (decreases ps) =
+  match ps with
+  | []     -> ()
+  | x :: r -> if p = x then () else lemma_names_unseen (x.mp_name :: seen) r p
+
+let rec lemma_lookup_macro_forced (ps:list mprod) (p:mprod) (seen:list string)
+  : Lemma (requires names_distinct seen ps /\ mem p ps)
+          (ensures  lookup_macro ps p.mp_name == Some p)
+          (decreases ps) =
+  match ps with
+  | []     -> ()
+  | x :: r ->
+    if p = x then ()
+    else (lemma_names_unseen (x.mp_name :: seen) r p;
+          lemma_lookup_macro_forced r p (x.mp_name :: seen))
+
+/// The form the parser uses: on an LL(1) table, a macro that is present is the
+/// one `parse_terms` will find.
+/// WHAT IS STILL OWED. The above says the CHOICE is forced once the parser has
+/// decided to look a name up. It does not say the parser never has to guess in
+/// the first place — that `ll1_ok mt` implies `parse_terms mt` never needs a
+/// second token — because there is no grammar OBJECT here to state it against:
+/// this is a hand-written recursive-descent parser, and the property would have
+/// to relate it to a `list mprod` read as a grammar. That relation is precisely
+/// what the planned verified CFG-to-recursive-descent generator (D-30) supplies,
+/// and it is the reason `ll1_ok` is written as a predicate over the table rather
+/// than folded into the parser: the tool that will discharge it needs the table
+/// as data. Recorded in prose rather than stubbed (D-58).
+let lemma_ll1_lookup_forced (ps:list mprod) (p:mprod)
+  : Lemma (requires ll1_ok ps /\ memP p ps)
+          (ensures  lookup_macro ps p.mp_name == Some p) =
+  lemma_lookup_macro_forced ps p []
+
 (* --- expansion ----------------------------------------------------------- *)
 
 /// `if` expands by hand, because `StCase` is not writable in surface syntax.
@@ -294,8 +365,14 @@ let expand (p:mprod) (caps:list mcap) : Tot (either string (list sterm)) =
 /// `parse_slots`. Every edge either shortens the token list or drops a rank,
 /// and the only same-length edge is a macro handing its own slot list to the
 /// slot parser.
+///
+/// The second conjunct of the refinement is what makes a whole line terminate:
+/// at the top level (`closing = false`) the only way to succeed is to reach the
+/// end of input, so an unclosed `}` is an error rather than a silent stop. It
+/// is what `parse_decl`'s strict progress rests on (D-58).
 let rec parse_terms (mt:list mprod) (closing:bool) (acc:list sterm) (ts:list token)
-  : Tot (r:presult (list sterm) { POk? r ==> length (POk?._1 r) <= length ts })
+  : Tot (r:presult (list sterm) { POk? r ==> length (POk?._1 r) <= length ts
+                                             /\ (not closing ==> Nil? (POk?._1 r)) })
         (decreases %[length ts; 2]) =
   match ts with
   | [] -> if closing
@@ -502,7 +579,8 @@ and parse_slots (mt:list mprod) (acc:list mcap) (ss:list mslot) (ts:list token)
 ///
 /// The choice between the two rests on the single token after the name, so
 /// this stays LL(1) — no backtracking, no second-token peek (D-30).
-let parse_define (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
+let parse_define (mt:list mprod) (ts:list token)
+  : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
   match ts with
   | TkWord name :: TkLParen :: rest ->
     (match parse_sig_body rest with
@@ -528,7 +606,9 @@ let parse_define (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
 /// to infer one from — this is where D-31's "mandatory inside an effect
 /// declaration" carve-out is actually enforced rather than merely stated.
 let rec parse_declares (acc:list (string & ssig)) (ts:list token)
-  : Tot (presult (list (string & ssig))) (decreases (length ts)) =
+  : Tot (r:presult (list (string & ssig))
+         { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
   match ts with
   | TkRBrace :: rest -> POk (rev acc) rest
   | TkWord "declare" :: TkWord op :: TkLParen :: r1 ->
@@ -546,7 +626,8 @@ let rec parse_declares (acc:list (string & ssig)) (ts:list token)
   | t :: _ ->
     PErr ("expected 'declare' or '}' here, found " ^ render_token t)
 
-let parse_effect (ts:list token) : Tot (presult sdecl) =
+let parse_effect (ts:list token)
+  : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
   match ts with
   | TkWord name :: TkLBrace :: rest ->
     (match parse_declares [] rest with
@@ -584,7 +665,9 @@ let rec parse_mslots (acc:list mslot) (ts:list token)
 
 /// `alt key ( slots ) { template } … end`.
 let rec parse_malts (mt:list mprod) (acc:list mbranch) (ts:list token)
-  : Tot (presult (list mbranch)) (decreases (length ts)) =
+  : Tot (r:presult (list mbranch)
+         { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
   match ts with
   | TkWord "end" :: rest -> POk (rev acc) rest
   | TkWord "alt" :: TkWord key :: TkLParen :: r1 ->
@@ -625,7 +708,8 @@ let rec parse_malts (mt:list mprod) (acc:list mbranch) (ts:list token)
 /// their expansions are already done by the time it is registered. And a macro
 /// cannot use itself, so expansion cannot loop — termination is a property of
 /// the declaration order, not a check (D-53).
-let parse_macro_decl (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
+let parse_macro_decl (mt:list mprod) (ts:list token)
+  : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
   match ts with
   | TkWord name :: TkLParen :: r1 ->
     (match parse_mslots [] r1 with
@@ -661,8 +745,25 @@ let parse_macro_decl (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
 /// start of a declaration, so `define locate { … }` remains legal and a
 /// `locate` inside a body is an ordinary word. This is the same rule that keeps
 /// `then`, `else` and `endif` free (D-32, D-34).
-let parse_decl (mt:list mprod) (ts:list token) : Tot (presult sdecl) =
+///
+/// STRICT PROGRESS (D-58). A successful parse returns STRICTLY fewer tokens
+/// than it was given. This is what makes evaluating a line terminate, and it
+/// has to be a theorem rather than an observation because a `macro` declaration
+/// changes the grammar the rest of the line is read with (D-54) — the session
+/// cannot appeal to one fixed grammar to argue that it advances.
+///
+/// The four keyword-led forms consume their keyword, so `<=` on what follows
+/// suffices. The expression form gets it from `parse_terms`'s second conjunct:
+/// at the top level the only way to succeed is to reach the end of input, so
+/// the remainder is `[]`. End of input is now an error rather than an empty
+/// expression, which is what makes the statement unconditional.
+///
+/// `E06.eval_tokens` used to check this at RUNTIME and stop the line if it
+/// failed. That check is gone; this refinement replaced it.
+let parse_decl (mt:list mprod) (ts:list token)
+  : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) < length ts }) =
   match ts with
+  | [] -> PErr "expected a declaration, found end of input"
   | TkWord "define" :: rest -> parse_define mt rest
   | TkWord "effect" :: rest -> parse_effect rest
   | TkWord "macro"  :: rest -> parse_macro_decl mt rest
