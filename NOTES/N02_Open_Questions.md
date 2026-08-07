@@ -93,3 +93,47 @@ P02's first-order discipline (D-20) is maintained by review. A single accidental
 closure silently blocks self-hosting and no OCaml test catches it.
 *Closes when:* someone writes a syntactic pass over the extracted AST.
 *Cost of leaving open:* grows with every P02 module added.
+
+**Q-13. `TName` roll/unroll is unsound, and closing it needs a value-level
+invariant.** Found by writing `M07.prim_den`: `M06.prim_sig` asks only for
+`wf d`, so `PRoll n d1` followed by `PUnroll n d2` typechecks for any well-formed
+`d2` and reinterprets a `d1` as a `d2`. `R02.apply_primop` makes both no-ops, so
+the reference machine runs it happily. `PUnroll`'s denotation is therefore
+`admit ()` — not because it is hard, but because as typed it does not exist.
+
+*Two halves, and the second is the question.* The typing half is routine and
+already flagged as a LIMITATION at `prim_sig`'s `PRoll` clause: `wenv` gains
+`w_types : list (nom_id & dtype)`, `prim_sig` starts taking an environment, and
+both rules require `d == lookup w_types n`. The value half is not routine.
+`M02.VName #n #t v` hides the payload's type as an implicit index, so no amount
+of typing discipline lets anyone project `t` back out. Either
+
+  * `VName` stores its body type as an explicit field and `vunroll` becomes
+    decidably partial — cheap, but reintroduces a runtime check for something the
+    type system was supposed to have settled; or
+  * `value` gains a well-formedness predicate tying every `VName` to `w_types`,
+    threaded as a precondition through M07 — honest, but it is precisely the
+    invariant-restoring obligation `M02`'s header claims to have abolished, and
+    it would be the first one back.
+
+*Why it is a question and not a task:* the second option costs M02 its central
+property, and the first quietly admits that incomplete types are dynamically
+checked. That is a design call.
+*Cost of leaving open:* one admit, and a soundness hole reachable from surface
+syntax as soon as anything elaborates to `PUnroll`. Nothing does today.
+*Closes when:* recursive types get a surface form.
+
+**Q-14. `!Dict` has to become a real row entry.** D-37 settled that a word's
+meaning depends on the dictionary it was elaborated against and that `!Dict` is
+the encoding of that fact — then left it implicit, on the stated grounds that
+`M04.within` never sees it. `M07.denote_static` makes `within` see it: `TWord w`
+denotes `Op w`, so a word with an empty row performs an operation its row does
+not mention, and M07's T5 is false as written.
+
+*The fix is known and small; what is open is when to pay for it.* Reserve an
+`eff_id` for `Dict`, have `M06.w_eff` return it for any word that is not a
+declared operation, and register defined words in `w_ops` under it — which is
+also what `M07.coherent` needs from P03, so one change closes both. It is
+deferred only because it changes what the REPL prints for every `define`, and
+`DOCS/U01`–`U02` claim otherwise.
+*Closes when:* T5 is discharged, or sooner if signature rendering is revisited.

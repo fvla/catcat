@@ -68,21 +68,32 @@ assume val state_typed (env:wenv) (st:mstate) (s:srow) : Tot bool
 ///     counterpart of M07's T5.
 ///
 /// S5  AGREEMENT (the bridge theorem).
-///     For well-typed `t` and every `r`, `stk`:
+///     For `t` in M07's static fragment -- `not (needs_compiler t)`, with
+///     `infer env t = Some (s, e)` and `coherent env` -- and every `r`, `stk`:
 ///
 ///         run env fuel { code = [t]; stk = DStack _ stk }
 ///
 ///     converges to `MDone (DStack _ v)` for some fuel
-///       IFF  `denote env t r stk` is `Pure v`;
+///       IFF  `denote_static env t s e () r stk` is `Pure v`;
 ///
 ///     and it suspends at `MEffect op arg k`
-///       IFF  `denote env t r stk` is `Op op arg k'` with `k` and `k'`
-///            denoting the same continuation.
+///       IFF  `denote_static env t s e () r stk` is `Op op arg k'` with `k` and
+///            `k'` denoting the same continuation.
 ///
 ///     This is the theorem that makes P02's interpreter a witness for M07,
 ///     and therefore the theorem every compiler-correctness result in P04 is
-///     ultimately stated relative to. Discharge order: T2 (M07) first, since
-///     agreement on `TSeq` is where the induction does its work.
+///     ultimately stated relative to.
+///
+///     TWO THINGS CHANGED WHEN `denote_static` LANDED. The first helps: T2 is now
+///     the definition of the `TSeq` clause rather than a pending theorem, so the
+///     case where this induction does its work has nothing left to establish on
+///     the denotational side. The second is a real obligation: `denote_static`
+///     gives `TWord w` the denotation `Op w` (D-60), so a plain word SUSPENDS
+///     here while `R02.step` looks it up in `rdict` and runs its body. The two
+///     sides therefore do not agree on the nose -- they agree after the
+///     Dictionary handler is applied, and stating S5 without that handler would
+///     make it false. `M04.handle` against the frame `R03.prelude` represents is
+///     the missing ingredient, which is the same object M11's E2 needs.
 ///
 /// S6  TOTALITY OF TYPE CHECKING.
 ///     `M06.infer` is a total function, so type checking always terminates.

@@ -135,10 +135,14 @@ must cost nothing at runtime. It is a theorem, not an aspiration.
 resolving every static effect of `row`:
 
 ```
-denote (specialize t d)  ==  handle_d (denote t)
+denote_static (specialize t d)  ==  handle_d (denote_static t)
 ```
 
-Specializing is the same as running with the dictionary installed.
+Specializing is the same as running with the dictionary installed. `handle_d` is
+not a new construct and must not become one: it is a fold of `M04.handle` over
+`d`'s frames, which is what the ambient Dictionary means. And since a word call is
+already an `Op` node (D-60), this one equation covers word resolution and effect
+handling together rather than needing two.
 
 **E3 — static effects are erased.** If every entry of `row` is `SStatic` and `d`
 resolves it, then `specialize t d` is **pure**: the residual program contains no
@@ -153,7 +157,10 @@ D03 is too clever to be fast.
 **The type-level half is already proved.**
 `M06.lemma_static_specializes_to_pure` shows that a fully static row specializes
 to an empty row, and `M06.lemma_specialize_row_shrinks` shows specialization
-never introduces effects. The semantic half (E2, E3) awaits `M07.denote`.
+never introduces effects. The semantic half (E2, E3) is now attemptable rather
+than blocked: `M07.denote_static` exists, so E2 has something to be stated
+against, and D-60 collapses most of what `specialize` has to do into
+`M04.handle`, which is already defined and verified.
 
 ---
 

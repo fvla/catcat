@@ -173,6 +173,56 @@ let vswap (#t1 #t2:dtype) (#r:seg) (s:vstack (t1 :: t2 :: r))
   : vstack (t2 :: t1 :: r) =
   let VCons v1 (VCons v2 rest) = s in VCons v2 (VCons v1 rest)
 
+/// `pick` and `roll`, the deep counterparts of `dup` and `swap` (`M05.sop`).
+/// `above` is the segment sitting above the target slot, so the stack is
+/// `above @ (t :: r)` with head = top -- which is what makes an n-deep access
+/// expressible without a variadic rule.
+///
+/// These were absent until M07 needed them, and their absence was a real hole
+/// rather than an oversight: `vpick` COPIES, so it must carry the same
+/// `copyable` refinement `vdup` does, and hand-writing it at the denotation site
+/// in M07 would have put a duplication outside the one file where the capability
+/// premises live. `vroll_up` only moves, so it carries none. M07's T6 quantifies
+/// over this section, and that is only meaningful if nothing bypasses it.
+let vpick (above:seg) (#t:dtype { copyable t }) (#r:seg)
+          (s:vstack (above @ (t :: r)))
+  : vstack (t :: (above @ (t :: r))) =
+  let (_, y) = vsplit above s in
+  let VCons v _ = y in
+  VCons v s
+
+let vroll_up (above:seg) (#t:dtype) (#r:seg) (s:vstack (above @ (t :: r)))
+  : vstack (t :: (above @ r)) =
+  let (x, y) = vsplit above s in
+  let VCons v rest = y in
+  VCons v (vappend x rest)
+
+(* ------------------------------------------------------------------------ *)
+(* Booleans                                                                 *)
+(* ------------------------------------------------------------------------ *)
+
+/// The boolean-to-sum coercion (`M05.PBoolSum`, D-33): `false` becomes variant 0
+/// of `M01.bool_variants` and `true` becomes variant 1. This is the only way to
+/// branch on a `bool`, since `TCase` eliminates a sum and `bool` is primitive.
+///
+/// It belongs here rather than inline at its denotation for a mundane reason as
+/// well as a tidy one: the argument's index has to be `TPrim PBool`
+/// DEFINITIONALLY for the payload to be usable at `bool`, and at the denotation
+/// site that equation is only propositional.
+///
+/// The payload comes out through `vprim`, and it has to. Destructing `VPrim`
+/// in place leaves `p` unsolved -- F* resolves a constructor's implicit index
+/// from the EXPECTED TYPE of the match, so `let VPrim b = v in b` at result type
+/// `prim_rep p` works while the same pattern used inside a larger expression does
+/// not. Naming the projection is what supplies that expected type.
+let vprim (#p:prim) (v:value (TPrim p)) : prim_rep p = let VPrim x = v in x
+
+let vbool_sum (#r:seg) (s:vstack (TPrim PBool :: r))
+  : vstack (TSum bool_variants :: r) =
+  let VCons v rest = s in
+  if vprim v then VCons (VSum #bool_variants 1 VNil) rest
+             else VCons (VSum #bool_variants 0 VNil) rest
+
 (* ------------------------------------------------------------------------ *)
 (* Sealing                                                                  *)
 (* ------------------------------------------------------------------------ *)

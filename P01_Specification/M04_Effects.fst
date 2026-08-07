@@ -213,6 +213,105 @@ let rec lemma_fbind_assoc (#env:sig_env) (#a #b #c:seg)
     lemma_assoc_op op arg k f g (fun v -> fbind (f v) g)
 
 (* ------------------------------------------------------------------------ *)
+(* Handling: the eliminator of `free`                                       *)
+(* ------------------------------------------------------------------------ *)
+
+/// WHY THIS IS HERE AND NOT IN M10 (D-59). `handle` is the fold over `free`,
+/// and an inductive type's eliminator belongs with the type. It was in M10
+/// until M07 needed it: `denote_static`'s `THandle` clause IS a call to
+/// `handle`, so leaving the fold downstream of the denotation would have made
+/// M07 depend on M10 and broken the rule that numbering and dependency order
+/// agree.
+///
+/// The split is at the right seam rather than merely a convenient one. What
+/// lives here is the MECHANISM, which needs nothing but the monad. What stays in
+/// M10 is the IDENTIFICATION -- that this one fold serves effect handlers,
+/// typeclass dictionaries, class method tables, module implementations and
+/// Dictionary frames alike -- together with the laws H1-H5, which are about the
+/// typing judgment and so genuinely need M06.
+
+/// An implementation of a single operation, under D-36: it receives the
+/// handler's state on top of the operation's arguments, and returns the updated
+/// state on top of the operation's results. No continuation appears, and there
+/// is nowhere one could be smuggled in -- the type is a plain stack transformer
+/// in the free monad, so an implementation can perform effects of its own but
+/// cannot see, duplicate or discard the rest of the program.
+///
+/// STATE ON TOP, not underneath (D-46). This is forced rather than chosen: the
+/// runtime dictionary records which effect an operation belongs to and not its
+/// arity, so the machine cannot splice state in beneath the arguments. It reads
+/// correctly anyway, the receiver being pushed last.
+type op_impl (env:sig_env) (st:seg) (o:op_sig) =
+  vstack (st @ o.op_pre) -> free env (st @ o.op_post)
+
+/// A handler for one effect: a state segment and an implementation per
+/// operation. M10 is where this record is shown to be simultaneously an effect
+/// handler, a typeclass dictionary, a class method table, a module
+/// implementation and a Dictionary frame -- not by analogy, but because there is
+/// literally one type.
+///
+/// The state segment is what makes a handler a CLASS rather than merely a
+/// dispatch table: `st` is the instance's representation and each implementation
+/// is a method over it. A stateless handler is `st = []`, so nothing needs a
+/// separate rule.
+///
+/// `h_ops` is a function field, which every extractable module in this project
+/// is forbidden (D-20). Nothing constructs a `handler` outside the
+/// specification, so the closure is confined to the denotational side; the table
+/// is dependently typed per operation, so de-closuring it the way D-45
+/// de-closured `sig_env` would need an existential rather than a list.
+noeq type handler (env:sig_env) (eff:eff_id) (st:seg) = {
+  h_ops : op:op_id -> op_impl env st (op_of env op);
+}
+
+/// Interpret away one effect.
+///
+/// A fold over `free` carrying the handler state. `Pure` returns the state on
+/// top of the body's results -- which is why M06's `THandle` rule gives the
+/// composite the signature `( s.pre -- st @ s.post )`, and why `handle Counter
+/// over ( i64 ) init { 0 } { ... } { tick tick + }` leaves `1 2` and not `1`.
+/// An operation of `eff` runs its implementation, whose result is split back
+/// into the new state and the operation's results; anything else is forwarded
+/// with the handler still wrapped around the tail.
+///
+/// That forwarding clause is where reentrancy lives. The handler is still
+/// installed around `k res`, so an operation performed by the continuation --
+/// including one performed by an implementation, since an implementation's own
+/// effects are part of the tree it returns -- reaches this same handler. No
+/// continuation was captured to achieve it.
+let rec handle (#env:sig_env) (#eff:eff_id) (#st:seg) (#a:seg)
+               (h:handler env eff st) (state:vstack st) (m:free env a)
+  : Tot (free env (st @ a)) (decreases m) =
+  match m with
+  | Pure v      -> Pure (vappend state v)
+  | Op op arg k ->
+    if eff_of env op = eff
+    then fbind (h.h_ops op (vappend state arg))
+               (fun r -> let (state', res) = vsplit st r in
+                      handle h state' (k res))
+    else Op op arg (on _ (fun res -> handle h state (k res)))
+
+/// The handler that changes nothing: no state, every implementation
+/// re-performing its own operation. M10's H3 is the statement that handling with
+/// it is the identity, which is the sanity check that the fold loses nothing --
+/// and note it typechecks only because the state segment is `[]`, so `handle`'s
+/// result shape `[] @ a` is `a` on the nose.
+let id_handler (env:sig_env) (eff:eff_id) : handler env eff [] =
+  { h_ops = (fun op -> fun args -> Op op args (on _ Pure)) }
+
+/// The implementation an UNIMPLEMENTED operation gets: strip the state, perform
+/// the operation, put the state back. This is what makes partial overriding of a
+/// Dictionary work, and it is the semantic content of M06's `infer_impls`
+/// accepting a handler that does not mention every operation of its effect --
+/// such an operation forwards outward, which is also what `R02.find_handler`
+/// does by walking to the next frame.
+let fwd_impl (env:sig_env) (st:seg) (op:op_id)
+  : op_impl env st (op_of env op) =
+  fun args ->
+    let (state, oarg) = vsplit st args in
+    Op op oarg (on _ (fun res -> Pure (vappend state res)))
+
+(* ------------------------------------------------------------------------ *)
 (* Effect rows and containment                                              *)
 (* ------------------------------------------------------------------------ *)
 

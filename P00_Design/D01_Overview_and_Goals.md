@@ -212,5 +212,7 @@ docs and the mechanization.
 
 The mechanization in [P01_Specification/](../P01_Specification/) mirrors D02–D04
 module by module. `make verify` typechecks all of it; `make admits` lists every
-gap. As of this pass, all eleven modules verify, M01–M06 are complete, and
-M07–M11 are skeletons with their obligations recorded in place.
+gap. As of this pass, all eleven modules verify; M01–M06 are complete; M07's
+`denote_static` is defined for the whole core except `TSpecialize`, with T2
+discharged by construction and T3–T6 recorded as obligations; and M08–M11 are
+skeletons, except that M10's handler fold is real and lives in M04 (D-59).

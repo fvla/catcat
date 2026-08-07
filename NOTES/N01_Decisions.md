@@ -723,3 +723,93 @@ in P03, where the parser is.
    CFG-to-recursive-descent generator (D-30) owes.
 2. **Terminating expansion.** Structural, by declaration order.
 3. **Hygiene.** Absent, and the one genuinely unresolved item (D-53).
+
+---
+
+**D-59. The handler fold lives with the free monad, not with the handler
+narrative.** `op_impl`, `handler`, `handle`, `id_handler` and the new `fwd_impl`
+moved from `M10_Handlers` to `M04_Effects`. M10 keeps `dict`, `resolvable`, the
+five obligations H1–H5, and the argument that one record is simultaneously an
+effect handler, a typeclass dictionary, a class method table, a module
+implementation and a Dictionary frame.
+
+*Forced by:* `M07.denote_static`'s `THandle` clause is a call to `handle`.
+Leaving the fold in M10 would have made M07 depend on M10 and broken the rule
+that numbering and dependency order coincide — a rule the skeleton was already
+quietly bending, since M07's T5 and M09's `state_typed` both said "depends on
+M10".
+
+*Why the seam is right and not merely convenient:* `handle` is the eliminator of
+`M04.free` and needs nothing but the monad — no `srow`, no `wenv`, no typing
+judgment. What genuinely needs M06 is H1, which relates `handle` to
+`row_remove`, and that stayed. Mechanism with its type; meaning where the
+judgment is. M10's header now lists what moved, so its shortness is not read as
+emptiness.
+
+---
+
+**D-60. A word call and an operation call are the same node of the free monad.**
+`M07.denote_static` gives `TWord w` the denotation `Op w arg k`. There is no
+alternative: `M06.wenv` records a word's signature and effect row, never its
+body, because which body it has is exactly what the ambient Dictionary decides
+(D-37). So a word is an operation, and `M04.handle` against the Dictionary frame
+is what supplies its meaning — at elaboration time in `M11.specialize`, at
+runtime in `R02.find_handler`.
+
+*This is D-01 arriving somewhere it can be checked.* It also collapses a large
+part of `specialize`: inlining a statically resolved word is not a special case
+of partial evaluation, it is `handle` run early.
+
+*Two consequences, both real, both recorded rather than hidden:*
+1. **`wenv`'s two tables must agree.** `M04.Op` demands arguments of shape
+   `(op_of w).op_pre` while the signature supplies `(w_sig w).pre`. Nothing in
+   M06 related the two tables and nothing had to until now. `M07.coherent` is
+   that condition. It holds vacuously for words in neither table, so it
+   constrains exactly what it should — but **P03 does not currently satisfy it**:
+   `E06_Repl` registers an `effect`'s operations in both tables and a plain
+   `define` in only one. See N02 Q-14.
+2. **M07's T5 was false as stated.** A word with an empty row performs an
+   operation, so `within row (denote t)` fails on the simplest possible program.
+   `!Dict` has to stop being an elided convention. Also N02 Q-14; the fix closes
+   both at once, which is why they are one question.
+
+---
+
+**D-61. `denote_static` is the denotation of `not (needs_compiler t)`, and T2 is
+a combinator rather than a theorem.**
+
+*The fragment.* Six of the seven core constructors; `TSpecialize` is excluded.
+That predicate is not invented for this purpose — `M11.stage_required` already
+uses it to decide whether a binary needs a compiler linked in at all, and
+`TSpecialize`'s meaning is M11's E2, which is stated against `denote_static`. So
+defining it here would be circular, and the fragment boundary is the same one the
+linker draws.
+
+*The signature.* `denote_static` TAKES the signature and effect row plus a
+`squash` of the `infer` equation, rather than computing
+`fst (Some?.v (infer env t))` in its own result type. This is the change that
+made the definition possible at all, and it was the sticking point for several
+sessions: with the index computed, every recursive call's type mentions an
+unreduced `infer env a`, and the `TSeq` clause has no way to say the composite's
+shape is built from the operands'. Taking them turns each clause's obligation
+into ordinary equations between segments, which `append_assoc` and
+`M03.lemma_unify_common` can discharge.
+
+*T2 is discharged by construction.* `dcompose` — composition of denotations along
+`M03.compose`, residuals and all — is the statement that juxtaposition denotes
+Kleisli composition, and the `TSeq` clause is a call to it. There is no theorem
+left. The same trick does not work for T3–T6, which are properties of the
+definition rather than its shape.
+
+*Non-vacuity is checked, not assumed.* A `cdenote` is a function, so a definition
+full of transport can be well typed and still not reduce to an answer. M07 ends
+with two worked examples discharged by conversion: `2 3`, which exercises `TSeq`
+with a non-empty residual, and `7 true if { } then { pop 9 } endif`, which
+exercises `PBoolSum`, `srow_join` between branches of unequal depth, and the
+skipping path of `denote_case`. This is `make interp`'s job for the denotational
+side and should grow the same way.
+
+*What writing it found, none of which was visible from the typing rules:* D-60
+above, T5's falsity, N02 Q-13's soundness hole in roll/unroll, and two missing
+`M02` operations (`vpick`, `vroll_up`) whose absence would have put a duplication
+outside the one file T6 quantifies over.

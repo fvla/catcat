@@ -366,11 +366,27 @@ definitional instead of an obligation.
 
 Sequencing denotes **Kleisli composition** in the free monad. So the draft's
 claim that a program is "a complete composition of functions, without reference
-to data" is not a slogan here; it is theorem T2 in
-[M07](../P01_Specification/M07_Denotation.fst). That theorem is what licenses
-treating any word as a black box given only its signature and effect row — which
-is in turn what makes the optimizer's DAG view sound and incremental re-checking
+to data" is not a slogan here, and it is no longer even a theorem: `M07.dcompose`
+is composition of denotations along `M03.compose`, residuals and all, and the
+`TSeq` clause of the denotation *is a call to it*. That is what licenses treating
+any word as a black box given only its signature and effect row — which is in
+turn what makes the optimizer's DAG view sound and incremental re-checking
 correct.
+
+`M07.denote_static` is the denotation, defined for six of the seven
+constructors. `TSpecialize` is excluded, because its meaning is
+[D04](D04_Staging_JIT_and_Dictionary.md)'s E2 and E2 is stated against this
+function. The excluded fragment is exactly `M05.needs_compiler`, the same
+predicate the linker uses to decide whether a compiler stage is needed at all.
+
+**A word denotes an operation.** `M06.wenv` records a word's signature and effect
+row, never its body, because which body it has is what the ambient Dictionary
+decides (D-37). So `TWord w` denotes `Op w`, a word call and an operation call
+are the same node of the free monad, and resolving a word statically is
+`M04.handle` run at elaboration time — which is `specialize`. D-60 records the
+two consequences: `wenv`'s two tables have to agree (`M07.coherent`), and `!Dict`
+has to stop being an elided convention, because a word with an empty effect row
+demonstrably performs an operation.
 
 ### Current gaps
 
@@ -379,8 +395,7 @@ All eleven modules verify. The gaps are explicit and inventoried by
 
 | Location | Gap | Notes |
 |---|---|---|
-| `M03.lemma_compose_assoc` | admitted | Four-way case analysis on which segment runs out; closes by `append_assoc` and `lemma_unify_disjoint`. **Discharge first** — M07's `denote` needs the same transport. |
-| `M04.lemma_fbind_right_id`, `lemma_fbind_assoc` | admitted | True, but need functional extensionality in the `Op` case. Requires restating `free`'s continuation over `FStar.FunctionalExtensionality.(^->)`. |
-| `M07.denote` | `assume val` | Definition is mechanical except the `TSeq` transport. |
-| `M07` T2–T6 | recorded as obligations | Stated precisely in prose rather than as `Lemma True` stubs, which would prove nothing while looking like content. |
-| `M08`–`M11` | skeletons | Types real, theorem statements real, bodies absent. |
+| `M07.prim_den` at `PUnroll` | `admit` | **Not merely unproved: as typed it has no denotation.** `prim_sig` asks only for `wf d`, so roll-then-unroll can reinterpret one type as another. A soundness hole, found by writing the denotation. N02 Q-13. |
+| `M07` T3–T6 | recorded as obligations | Stated in prose rather than as `Lemma True` stubs. T2 is discharged by construction; **T5 was false as stated** and is restated — see `!Dict` above. |
+| `M08`–`M09` | skeletons | Types real, theorem statements real, bodies absent. |
+| `M11.specialize` | `assume val` | Now attemptable: `denote_static` exists, so E2 has something to be stated against. |

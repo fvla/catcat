@@ -96,8 +96,10 @@ Each tier ships value alone. The project is never blocked on completing the next
 Syntax, types, semantics, soundness. Delivers: a design that is precise enough to
 disagree with, and a soundness argument for the type system.
 
-Done: M01–M06 verified. Remaining: `M03.lemma_compose_assoc`, then `M07.denote`,
-then M07's T2–T6, then M08–M11.
+Done: M01–M06 verified, and `M07.denote_static` defined for the whole core except
+`TSpecialize`, with T2 discharged by construction. Remaining: M07's T3–T6 (T5
+needs `!Dict` materialised first, N02 Q-14), the roll/unroll soundness hole
+(N02 Q-13), then M08–M09 and `M11.specialize`.
 
 ### T2 — Reference interpreter
 
@@ -227,20 +229,26 @@ went in first.
 
 ### Track B — closing the proof gaps
 
-4. **Discharge `M03.lemma_compose_assoc`.** Four-way case analysis on which
-   segment runs out; closes by `append_assoc` and `lemma_unify_disjoint`.
-   Needed before `denote` because it is the same transport reasoning.
-5. **Restate `M04.free` over `FStar.FunctionalExtensionality.(^->)`** and
-   discharge `lemma_fbind_right_id` and `lemma_fbind_assoc`. Mechanical but
-   invasive; doing it early avoids redoing the M07 inductions.
-6. **Define `M07.denote`** and prove **T2** (sequencing = Kleisli composition),
-   the central theorem.
-7. **Prove S5** (agreement between M07 and M08), retroactively justifying the
-   interpreter built in step 2.
+4. ~~Discharge `M03.lemma_compose_assoc`.~~ **Done.** The transport it needed is
+   the transport `M07.dcompose` needed, which is why it went first.
+5. ~~Restate `M04.free` over `FStar.FunctionalExtensionality.(^->)`.~~ **Done**,
+   with `lemma_fbind_right_id` and `lemma_fbind_assoc` discharged.
+6. ~~Define the denotation and prove **T2**.~~ **Done**, as `M07.denote_static` —
+   and T2 is a combinator (`dcompose`) that the `TSeq` clause calls, so there is
+   no theorem left to prove about it (D-61).
+7. **Materialise `!Dict`** (N02 Q-14), then discharge **T4** and **T5**. T5 is
+   false without it, so this is not bookkeeping. The same change closes
+   `M07.coherent`'s unmet obligation on P03.
+8. **Settle roll/unroll** (N02 Q-13). One admit and one reachable soundness hole,
+   waiting on a design call about where the value-level invariant lives.
+9. **Prove S5** (agreement between M07 and M08), retroactively justifying the
+   interpreter built in step 2. Note what D-60 did to its shape: a plain word
+   suspends in M07 and is looked up in `rdict` by `R02.step`, so the two sides
+   agree only once the Dictionary handler is applied — the same object E2 needs.
 
 ### Crossing between tracks
 
-8. **Build the erasure harness** (D04 §7) as soon as P02 exists. The zero-cost
+10. **Build the erasure harness** (D04 §7) as soon as P02 exists. The zero-cost
     claim needs an empirical check alongside E3; discovering late that residuals
     are bloated would be expensive, and the harness is what turns "the optimizer
     must be competent" into a measurable bar.

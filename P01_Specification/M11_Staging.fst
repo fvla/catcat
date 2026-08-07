@@ -46,9 +46,15 @@ open M10_Handlers
 /// NOT DEFINED. The definition is a partial evaluator over `M05.term`:
 /// inline statically resolved words, fold `TCase` on known tags, erase
 /// `PPack`/`PUnpack` (sound by M10's H4), and leave dynamic operations alone.
-/// It is the single largest piece of unwritten work in the specification and
-/// should not be attempted before M07's `denote` exists, since E2 is stated
-/// against it.
+/// It is the single largest piece of unwritten work in the specification.
+///
+/// The precondition for attempting it is now met: `M07.denote_static` exists, so
+/// E2 has something to be stated against. It also has a sharper shape than it did
+/// when `denote` was assumed. `denote_static` gives `TWord w` the denotation
+/// `Op w` (D-60), so inlining a statically resolved word is not a special case of
+/// partial evaluation at all -- it IS `M04.handle` applied to the Dictionary
+/// frame, run at elaboration time. That collapses most of the first clause above
+/// into machinery that already exists and is already verified.
 assume val specialize (env:wenv) (d:dict env.w_ops) (t:term { well_typed env t })
   : Tot term
 
@@ -145,11 +151,25 @@ let lemma_no_specialize_needs_nothing (env:wenv) (t:term { well_typed env t })
 ///     For `t` well typed with row `row`, and `d` resolving every static
 ///     effect of `row`:
 ///
-///         denote env (specialize env d t)  ==  handle_d (denote env t)
+///         denote_static env (specialize env d t)  ==  handle_d (denote_static env t)
 ///
-///     where `handle_d` applies the handlers `d` supplies for the static
-///     effects. In words: specializing is the same as running with the
+///     where `handle_d` is `M04.handle` at the handlers `d` supplies for the
+///     static effects. In words: specializing is the same as running with the
 ///     dictionary installed. Everything else in this module is a corollary.
+///
+///     `handle_d` is not a new construct and must not become one. It is a fold of
+///     `M04.handle` over `d.frames`, which is exactly what the ambient Dictionary
+///     means (M10) -- and since a word call is already an `Op` node (D-60), the
+///     statement covers word resolution and effect handling with one equation
+///     instead of two.
+///
+///     Note the domain: `specialize` must land in `denote_static`'s fragment for
+///     the left side to typecheck, i.e. it must discharge every `TSpecialize` it
+///     is given. That is a genuine constraint on the definition rather than an
+///     artefact of the statement -- a specializer that emitted a residual
+///     `TSpecialize` would be deferring work it was asked to do, and D04's
+///     two-tier design says a `SDynamic` effect defers by staying an OPERATION,
+///     not by leaving a staging node behind.
 ///
 /// E3  STATIC EFFECTS ARE ERASED.
 ///     If `all_static row` and `d` resolves it, then `is_pure env (specialize
