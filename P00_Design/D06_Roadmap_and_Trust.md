@@ -96,10 +96,10 @@ Each tier ships value alone. The project is never blocked on completing the next
 Syntax, types, semantics, soundness. Delivers: a design that is precise enough to
 disagree with, and a soundness argument for the type system.
 
-Done: M01–M06 verified, and `M07.denote_static` defined for the whole core except
-`TSpecialize`, with T2 discharged by construction. Remaining: M07's T3–T6 (T5
-needs `!Dict` materialised first, N02 Q-14), the roll/unroll soundness hole
-(N02 Q-13), then M08–M09 and `M11.specialize`.
+Done: M01–M06 verified; `M07.denote_static` defined for the whole core except
+`TSpecialize` and `PUnroll`, with T2 discharged by construction and T5 repaired
+by D-63; no `admit` anywhere. Remaining: M07's T3, T4 and T6, the roll/unroll
+soundness hole (N02 Q-13), then M08–M09 and `M11.specialize`.
 
 ### T2 — Reference interpreter
 
@@ -236,11 +236,16 @@ went in first.
 6. ~~Define the denotation and prove **T2**.~~ **Done**, as `M07.denote_static` —
    and T2 is a combinator (`dcompose`) that the `TSeq` clause calls, so there is
    no theorem left to prove about it (D-61).
-7. **Materialise `!Dict`** (N02 Q-14), then discharge **T4** and **T5**. T5 is
-   false without it, so this is not bookkeeping. The same change closes
-   `M07.coherent`'s unmet obligation on P03.
-8. **Settle roll/unroll** (N02 Q-13). One admit and one reachable soundness hole,
-   waiting on a design call about where the value-level invariant lives.
+7. ~~Materialise `!Dict`.~~ **Done** (D-63). `M04.eff_dict` is reserved,
+   `M06.w_eff` derives the entry, and `M06.wenv` lost its second signature table
+   so `M07.coherent` — which P03 did not satisfy, making the denotation vacuous
+   for every program the REPL could elaborate — is gone rather than satisfied.
+   **T5** is true as originally written; discharging it, and **T4**, is the work
+   that remains, and both are inductions whose `THandle` case is M10's H1.
+8. **Settle roll/unroll** (N02 Q-13). A reachable soundness hole, waiting on a
+   design call about where the value-level invariant lives. It is fenced by
+   `M05.uses_unroll` (D-62), so it no longer conditionalises T3, T4 or T6 —
+   which lowers its urgency without lowering its importance.
 9. **Prove S5** (agreement between M07 and M08), retroactively justifying the
    interpreter built in step 2. Note what D-60 did to its shape: a plain word
    suspends in M07 and is looked up in `rdict` by `R02.step`, so the two sides

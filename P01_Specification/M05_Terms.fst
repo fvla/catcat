@@ -305,3 +305,47 @@ and needs_compiler_impls (is:list (op_id & term))
   match is with
   | []          -> false
   | (_, t) :: r -> needs_compiler t || needs_compiler_impls r
+
+/// Whether a term mentions `PUnroll` anywhere.
+///
+/// This exists for one reason: `PUnroll` AS TYPED HAS NO MEANING, so a term
+/// containing one is outside the fragment M07's `denote_static` can interpret.
+/// `M06.prim_sig` asks only for `wf d`, so `PRoll n d1` followed by
+/// `PUnroll n d2` typechecks for any well-formed `d2` and reinterprets one type
+/// as another; `M02.VName` compounds it by hiding the payload's type as an
+/// implicit index, so nothing can recover what the value actually is. See M07's
+/// `prim_den` for the full statement and N02 Q-13 for the two candidate fixes.
+///
+/// The predicate is a HOLDING PATTERN, and naming it as one is the point. Its
+/// job is to keep the soundness hole out of the domain of every theorem stated
+/// about `denote_static`, so that T3, T4 and T6 are unconditionally true of a
+/// well-defined fragment rather than conditional on a fix that has not been
+/// made. When roll/unroll is settled, this predicate is DELETED rather than
+/// discharged, and the fragment grows to the whole core.
+///
+/// Deliberately not folded into `needs_compiler`: that one is a real and
+/// permanent property of a program -- the linker consumes it (D04, M11's E5) --
+/// whereas this one is a defect marker. Merging them would hide the defect
+/// inside a predicate that has every reason to survive.
+let rec uses_unroll (t:term)
+  : Tot bool (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TPrimOp (PUnroll _ _) -> true
+  | TSeq a b              -> uses_unroll a || uses_unroll b
+  | TCase _ bs            -> uses_unroll_list bs
+  | THandle _ _ i impls b -> uses_unroll i || uses_unroll_impls impls
+                           || uses_unroll b
+  | TSpecialize b         -> uses_unroll b
+  | _                     -> false
+
+and uses_unroll_list (ts:list term)
+  : Tot bool (decreases %[terms_size ts; 1]) =
+  match ts with
+  | []     -> false
+  | t :: r -> uses_unroll t || uses_unroll_list r
+
+and uses_unroll_impls (is:list (op_id & term))
+  : Tot bool (decreases %[impls_size is; 1]) =
+  match is with
+  | []          -> false
+  | (_, t) :: r -> uses_unroll t || uses_unroll_impls r

@@ -47,8 +47,38 @@ type erow = list (eff_id & stage)
 
 let pure_row : erow = []
 
-/// One operation's declaration: which effect it belongs to, and its signature.
-type op_decl = { od_eff : eff_id; od_sig : op_sig }
+/// EFFECT 0 IS THE DICTIONARY, AND IT IS RESERVED (D-37, D-63).
+///
+/// D-37 said `!Dict` is to effect rows what the implicit row variable is to
+/// stack signatures: pervasive, never written, static by default. It also said
+/// rows stay clean because a statically resolved word is `TWord w` and not a
+/// `Dict` operation, so `within` never sees it. THAT LAST CLAUSE WAS WRONG, and
+/// M07 is where it was found: `denote_static` gives `TWord w` the denotation
+/// `Op w` (D-60), because a word has a signature and no body and the ambient
+/// Dictionary is what supplies one. A word call IS an operation call, so the
+/// Dictionary needs an id like any other effect.
+///
+/// Reserving 0 rather than allocating one has two consequences worth naming.
+/// `op_unknown` below now defaults to `Dict` rather than to whatever effect
+/// happened to be numbered 0 -- an undeclared word is a Dictionary word with
+/// signature `( -- )`, which is what it should always have been. And the host's
+/// `IO` moves to 1 (`R03.eff_io`), so the two reserved ids sit next to each
+/// other and user effects allocate from 2.
+///
+/// It stays INVISIBLE at the surface: `E05.row_effs` drops a static `Dict`
+/// entry when rendering a row, which is the elision D-37 asked for, now
+/// implemented in one place instead of assumed.
+let eff_dict : eff_id = 0
+
+/// One operation's declaration: which effect it belongs to, at which stage, and
+/// its signature.
+///
+/// `od_stage` is here rather than left to the caller's row because the stage of
+/// an operation is a property of its DECLARATION -- `Dict` words are static,
+/// a declared effect's operations are dynamic until D04's annotations reach the
+/// surface -- and because it lets `M06.w_eff` derive the row entry for a word
+/// instead of trusting a table to have stored a consistent one.
+type op_decl = { od_eff : eff_id; od_stage : stage; od_sig : op_sig }
 
 /// The ambient declaration table. Keeping operations in a table rather than
 /// inside the `free` type is what lets a handler replace an operation's
@@ -68,10 +98,16 @@ let empty_sig_env : sig_env = { se_ops = [] }
 ///
 /// A total function is not a convenience here, it is a requirement: `op_of`
 /// appears inside the TYPE of `free`, so it cannot return an option and it
-/// cannot fail. An undeclared id gets the nullary operation of effect 0, and
+/// cannot fail. An undeclared id gets the nullary operation of `Dict`, and
 /// nothing is thereby made well typed that should not be — M06 checks that an
 /// operation is declared before it will accept a program using it.
-let op_unknown : op_decl = { od_eff = 0; od_sig = { op_pre = []; op_post = [] } }
+///
+/// `Dict` is the right default and not merely an available one: an unknown word
+/// is a Dictionary word nobody has bound, so `( -- )` at `!Dict` describes it
+/// exactly. Before `eff_dict` existed this read `od_eff = 0`, which under P03's
+/// numbering silently claimed the unknown word performed `IO`.
+let op_unknown : op_decl = { od_eff = eff_dict; od_stage = SStatic;
+                             od_sig = { op_pre = []; op_post = [] } }
 
 let rec lookup_op (ops:list (op_id & op_decl)) (o:op_id)
   : Tot op_decl (decreases ops) =
@@ -82,6 +118,8 @@ let rec lookup_op (ops:list (op_id & op_decl)) (o:op_id)
 let op_of (env:sig_env) (o:op_id) : Tot op_sig = (lookup_op env.se_ops o).od_sig
 
 let eff_of (env:sig_env) (o:op_id) : Tot eff_id = (lookup_op env.se_ops o).od_eff
+
+let stage_of (env:sig_env) (o:op_id) : Tot stage = (lookup_op env.se_ops o).od_stage
 
 let declared (env:sig_env) (o:op_id) : Tot bool =
   existsb (fun (o', _) -> o' = o) env.se_ops

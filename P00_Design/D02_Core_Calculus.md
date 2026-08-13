@@ -384,18 +384,26 @@ row, never its body, because which body it has is what the ambient Dictionary
 decides (D-37). So `TWord w` denotes `Op w`, a word call and an operation call
 are the same node of the free monad, and resolving a word statically is
 `M04.handle` run at elaboration time — which is `specialize`. D-60 records the
-two consequences: `wenv`'s two tables have to agree (`M07.coherent`), and `!Dict`
-has to stop being an elided convention, because a word with an empty effect row
-demonstrably performs an operation.
+two consequences, and D-63 discharged both at once: `wenv` no longer HAS two
+signature tables — `M06.w_sig` reads from `w_ops`, so the agreement is
+definitional and `M07.coherent` is gone — and `!Dict` is now a reserved effect id
+(`M04.eff_dict`) that `M06.w_eff` derives, because a word with an empty effect
+row demonstrably performs an operation. It stays invisible at the surface:
+`M06.row_visible` elides a static `Dict` entry, which is one place rather than a
+convention.
 
 ### Current gaps
 
-All eleven modules verify. The gaps are explicit and inventoried by
-`make admits`:
+All eleven modules verify, and **there is no `admit` anywhere** — every remaining
+gap is an `assume val`, which `make admits` inventories. The distinction is the
+point: an `assume val` is a declaration with no body, whereas an `admit` is a
+body that lies. Where a case is unimplementable rather than merely unproved it is
+excluded from the domain by a precondition and discharged with `false_elim`
+(D-62), so no theorem below is silently conditional on a fix nobody has made.
 
 | Location | Gap | Notes |
 |---|---|---|
-| `M07.prim_den` at `PUnroll` | `admit` | **Not merely unproved: as typed it has no denotation.** `prim_sig` asks only for `wf d`, so roll-then-unroll can reinterpret one type as another. A soundness hole, found by writing the denotation. N02 Q-13. |
-| `M07` T3–T6 | recorded as obligations | Stated in prose rather than as `Lemma True` stubs. T2 is discharged by construction; **T5 was false as stated** and is restated — see `!Dict` above. |
+| `M07.prim_den` at `PUnroll` | excluded by precondition | **Not merely unproved: as typed it has no denotation.** `prim_sig` asks only for `wf d`, so roll-then-unroll can reinterpret one type as another. A soundness hole, found by writing the denotation. `M05.uses_unroll` fences it so it does not conditionalise T3–T6 (D-62); N02 Q-13 is the design call. |
+| `M07` T3, T4, T6 | recorded as obligations | Stated in prose rather than as `Lemma True` stubs. T2 is discharged by construction; **T5 was false as stated and is now true again** (D-63). T3 is not uniform — its `THandle` case needs `M04.handle` to commute with framing, which is M10 H2's difficulty. |
 | `M08`–`M09` | skeletons | Types real, theorem statements real, bodies absent. |
 | `M11.specialize` | `assume val` | Now attemptable: `denote_static` exists, so E2 has something to be stated against. |

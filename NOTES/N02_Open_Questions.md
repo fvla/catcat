@@ -98,8 +98,14 @@ closure silently blocks self-hosting and no OCaml test catches it.
 invariant.** Found by writing `M07.prim_den`: `M06.prim_sig` asks only for
 `wf d`, so `PRoll n d1` followed by `PUnroll n d2` typechecks for any well-formed
 `d2` and reinterprets a `d1` as a `d2`. `R02.apply_primop` makes both no-ops, so
-the reference machine runs it happily. `PUnroll`'s denotation is therefore
-`admit ()` — not because it is hard, but because as typed it does not exist.
+the reference machine runs it happily. `PUnroll` therefore has no denotation —
+not because writing one is hard, but because as typed it does not exist.
+
+*It is now FENCED rather than admitted (D-62).* `M05.uses_unroll` keeps such
+terms out of `denote_static`'s domain and the clause is `false_elim ()`, so the
+hole no longer conditionalises T3, T4 and T6. That changes nothing about the
+question below; it only stops the question from contaminating unrelated
+theorems. When this is answered, `uses_unroll` is deleted.
 
 *Two halves, and the second is the question.* The typing half is routine and
 already flagged as a LIMITATION at `prim_sig`'s `PRoll` clause: `wenv` gains
@@ -119,21 +125,15 @@ of typing discipline lets anyone project `t` back out. Either
 *Why it is a question and not a task:* the second option costs M02 its central
 property, and the first quietly admits that incomplete types are dynamically
 checked. That is a design call.
-*Cost of leaving open:* one admit, and a soundness hole reachable from surface
-syntax as soon as anything elaborates to `PUnroll`. Nothing does today.
+*Cost of leaving open:* a fragment of the core that `denote_static` cannot
+interpret, and a soundness hole reachable from surface syntax as soon as anything
+elaborates to `PUnroll`. Nothing does today.
 *Closes when:* recursive types get a surface form.
 
-**Q-14. `!Dict` has to become a real row entry.** D-37 settled that a word's
-meaning depends on the dictionary it was elaborated against and that `!Dict` is
-the encoding of that fact — then left it implicit, on the stated grounds that
-`M04.within` never sees it. `M07.denote_static` makes `within` see it: `TWord w`
-denotes `Op w`, so a word with an empty row performs an operation its row does
-not mention, and M07's T5 is false as written.
-
-*The fix is known and small; what is open is when to pay for it.* Reserve an
-`eff_id` for `Dict`, have `M06.w_eff` return it for any word that is not a
-declared operation, and register defined words in `w_ops` under it — which is
-also what `M07.coherent` needs from P03, so one change closes both. It is
-deferred only because it changes what the REPL prints for every `define`, and
-`DOCS/U01`–`U02` claim otherwise.
-*Closes when:* T5 is discharged, or sooner if signature rendering is revisited.
+**Q-14. `!Dict` has to become a real row entry.** — **CLOSED by D-63.**
+Reserved as `M04.eff_dict = 0`; `M06.w_eff` derives the entry rather than
+trusting a stored one; `M06.row_visible` elides it from rendered rows so nothing
+the REPL prints changed. The same edit removed `M07.coherent` outright by giving
+`wenv` one signature table instead of two, so T5 is true as originally written.
+The worry that it would change what the REPL prints for every `define` did not
+materialise — the elision rule D-37 already specified is what prevented it.

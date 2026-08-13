@@ -202,7 +202,7 @@ let lemma_no_specialize_needs_nothing (env:wenv) (t:term { well_typed env t })
 ///     enters the specializer -- which is a statement about `denote` and the
 ///     word environment, not about `t` alone: a word `t` calls could itself
 ///     specialize. Discharging it needs the reachability closure over
-///     `env.w_defs`, which the specification does not yet have.
+///     `env.w_effs`, which the specification does not yet have.
 ///
 /// E7  REBINDING PRESERVES SIGNATURES.
 ///     If every pair `(w, w')` in `su` satisfies `w_sig env w == w_sig env w'`,

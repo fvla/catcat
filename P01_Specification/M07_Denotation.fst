@@ -6,27 +6,53 @@ module M07_Denotation
 /// transformer. Sequencing denotes Kleisli composition in the free monad, so
 /// the draft's claim that "a program is a complete composition of functions,
 /// without reference to data" stops being a slogan and becomes the *definition*
-/// of the `TSeq` clause below -- T2 is now true by construction rather than by
-/// proof.
+/// of the `TSeq` clause below.
+///
+/// THE DESIGN DECISION THIS MODULE RESTS ON is in `cdenote`: the row is an index
+/// of the TYPE, rather than a property of a single function refined by a
+/// statement about `r`. That makes framing definitional instead of a proof
+/// obligation discharged at every word, which is what lets `dcompose` exist as a
+/// combinator at all, which is in turn what makes T2 hold by construction.
+///
+/// WHAT "BY CONSTRUCTION" DOES AND DOES NOT MEAN, since T2 is the claim a reader
+/// will check first. The content did not vanish; it MOVED, and it moved into
+/// M03. `dcompose` does not prove that `M03.compose` computes the right
+/// signature -- it ASSUMES it, via a `squash` of the `unify` equation, and
+/// discharges the resulting segment arithmetic using `M03.lemma_unify_common`
+/// and `lemma_unify_disjoint`. Those are proved, so the composite claim stands;
+/// but the theorem that sequencing is Kleisli composition is now
+/// `M03.lemma_compose_assoc` plus the `unify` lemmas plus a definition, rather
+/// than an induction over `term` in this file. What is genuinely gained is that
+/// no case of `denote_static` can get composition wrong, because there is only
+/// one place composition is written.
 ///
 /// STATUS: `denote_static` is DEFINED, for the whole core except `TSpecialize`
-/// (D-61). One clause is admitted, `PUnroll`, and it is admitted because it is
-/// not definable: writing the denotation is what exposed a genuine soundness
-/// hole in M06's roll/unroll rules (see `prim_den` and N02 Q-11).
+/// (D-61) and `PUnroll` (D-62). NO ADMITS. Both exclusions are preconditions
+/// discharged by `false_elim`, but they are not the same kind of thing:
+/// `TSpecialize`'s meaning is M11's E2, which is stated against this function,
+/// so defining it here would be circular -- a permanent boundary. `PUnroll` has
+/// no meaning as `M06.prim_sig` types it, because writing the denotation is what
+/// exposed a genuine soundness hole in the roll/unroll rules (see `prim_den` and
+/// N02 Q-13) -- a temporary defect marker that gets deleted, not discharged.
 ///
 /// THREE THINGS FELL OUT OF WRITING THIS, none of which was visible from the
 /// typing rules alone. They are the reason a denotation is worth having even
 /// before any theorem is proved about it:
 ///
 ///   1. `TWord w` denotes `Op w` -- a word call and an operation call are the
-///      SAME node of the free monad. That is D-37 and D-01 made semantic, and it
-///      forces `coherent` below.
-///   2. `wenv`'s two tables must agree. Nothing in M06 required it, and the
-///      denotation cannot be written without it (D-60).
-///   3. T5 is FALSE as it was stated, because a plain word's denotation performs
-///      an operation its row does not mention. `!Dict` has to be a real row
-///      entry, not an elided convention. See the restatement at the foot of this
-///      file.
+///      SAME node of the free monad. That is D-37 and D-01 made semantic (D-60).
+///   2. `wenv`'s two signature tables had to agree, and nothing made them. Stating
+///      the agreement as a side condition here was the wrong repair, because P03
+///      did not satisfy it; M06 now has ONE table and the agreement is
+///      definitional (D-63). See the note where `coherent` used to be.
+///   3. T5 was FALSE as stated, because a plain word's denotation performs an
+///      operation its row does not mention. `!Dict` is now a reserved effect id
+///      (`M04.eff_dict`) that `M06.w_eff` derives, so T5 is true again as
+///      originally written. See the restatement at the foot of this file.
+///
+/// Points 2 and 3 turned out to be one change, which is the useful part: the
+/// same edit that makes the semantics non-vacuous for real environments also
+/// repairs the soundness statement.
 
 open FStar.List.Tot
 open FStar.FunctionalExtensionality
@@ -139,7 +165,13 @@ let dcompose (env:sig_env) (sa sb s:srow) (b_rest c_rest:seg)
 /// each of which carries the `copyable` refinement that `prim_sig` established.
 /// T6 is a statement about `M02`, so a hand-written duplication here would
 /// silently put it out of reach.
-let prim_den (p:prim_op) (s:srow) (_:squash (prim_sig p == Some s))
+///
+/// `PUnroll` IS EXCLUDED BY THE REFINEMENT, not admitted. See the clause at the
+/// foot of the table for why it has no denotation; excluding it is what keeps
+/// T3, T4 and T6 unconditional statements about a well-defined fragment rather
+/// than statements quantified over a case whose semantics does not exist.
+let prim_den (p:prim_op { not (PUnroll? p) }) (s:srow)
+             (_:squash (prim_sig p == Some s))
   : Tot (xform s.pre s.post) =
   match p with
   | PLit (LPrim pr v) -> (fun _ -> VCons (VPrim #pr v) VNil)
@@ -170,9 +202,9 @@ let prim_den (p:prim_op) (s:srow) (_:squash (prim_sig p == Some s))
 
   | PRoll n d   -> (fun stk -> vroll n #d #[] stk)
 
-  /// ADMITTED, AND NOT MERELY UNPROVED: as `M06.prim_sig` types it, this clause
-  /// HAS no denotation, and discovering that is the most useful thing writing
-  /// this table did.
+  /// EXCLUDED BY PRECONDITION, NOT ADMITTED: as `M06.prim_sig` types it, this
+  /// clause HAS no denotation, and discovering that is the most useful thing
+  /// writing this table did.
   ///
   /// `M02.VName #n #t v` hides the payload's type `t` as an implicit index, so
   /// nothing can recover it from a value of type `TName n`. `prim_sig` asks only
@@ -194,44 +226,44 @@ let prim_den (p:prim_op) (s:srow) (_:squash (prim_sig p == Some s))
   ///     predicate relating `VName`s to `w_types` -- which is exactly the sort of
   ///     invariant-restoring obligation M02's header claims to have abolished.
   ///
-  /// N02 Q-11 records the choice, because it is a design decision and not a
-  /// proof step.
-  | PUnroll _ _ -> admit ()
+  /// N02 Q-13 records the choice, because it is a design decision and not a
+  /// proof step. Until it is made, `M05.uses_unroll` keeps such terms out of
+  /// `denote_static`'s domain, so this clause is unreachable in the same sense
+  /// `TSpecialize`'s is -- a genuine impossibility, and `make admits` correctly
+  /// does not list it.
+  | PUnroll _ _ -> false_elim ()
 
 (* ------------------------------------------------------------------------ *)
-(* Coherence of the word environment                                        *)
+(* A note where `coherent` used to be                                       *)
 (* ------------------------------------------------------------------------ *)
 
-/// A WORD CALL AND AN OPERATION CALL ARE THE SAME THING (D-60), and this is the
-/// condition that makes that sayable.
+/// A WORD CALL AND AN OPERATION CALL ARE THE SAME THING (D-60), and this module
+/// is where that stopped being a slogan.
 ///
-/// `M06.wenv` carries two tables: `w_defs`, giving each word a signature and an
-/// effect row, and `w_ops`, giving each operation an effect and a signature.
-/// Nothing in M06 relates them, and nothing had to -- until the denotation of
-/// `TWord w` had to be written. A word has a signature but no body anywhere in
-/// `wenv`, because a word's meaning is whatever the ambient Dictionary says it
-/// is (D-37). So `TWord w` denotes performing operation `w`, and `M04.Op` insists
-/// the arguments have shape `(op_of w).op_pre` while the signature says
-/// `(w_sig w).pre`. The two must be the same segment.
+/// A word has a signature but no body anywhere in `wenv`, because a word's
+/// meaning is whatever the ambient Dictionary says it is (D-37). So `TWord w`
+/// denotes performing operation `w` -- and `M04.Op` insists the arguments have
+/// shape `(op_of w).op_pre` while the signature says `(w_sig w).pre`. The two
+/// must be the same segment.
 ///
-/// This is not a technicality imposed by the encoding; it is D-01 turning up
-/// where it can be checked. The Dictionary is a handler (M10), a word call is an
-/// operation of it, and resolving a word statically is `M04.handle` run at
-/// elaboration time -- which is `M11.specialize`.
+/// This file used to state that as a predicate `coherent env` and refine
+/// `denote_static` by it. THAT WAS THE WRONG FIX, and the reason is worth
+/// keeping: `M06.wenv` carried two signature tables, P03 populated one of them
+/// for a plain `define`, and so the refinement was unsatisfied for every program
+/// the REPL could actually elaborate. A denotation nothing real satisfies is not
+/// a semantics with a caveat, it is a semantics for nothing -- the spec and the
+/// implementation drifting apart at precisely the point where the spec is
+/// supposed to mean something.
 ///
-/// Note that it holds VACUOUSLY for words in neither table: `wd_unknown.wd_sig`
-/// is `sid` and `op_unknown.od_sig` is `( -- )`, and `sig_of_op` of the latter is
-/// `sid`. So the condition constrains exactly the words some table mentions,
-/// which is what it should do.
+/// D-63 removed the second table instead. `M06.w_sig` now reads from `w_ops`, so
+/// the agreement is definitional, `coherent` is `True` and has been deleted, and
+/// P03 cannot regress: a word absent from `w_ops` has no signature at all rather
+/// than a stale one that disagrees.
 ///
-/// P03 DOES NOT CURRENTLY SATISFY THIS. `E06_Repl` registers an `effect`'s
-/// operations in both tables (coherent), but a plain `define` goes into `w_defs`
-/// only, leaving `op_of` at `( -- )`. Fixing it means giving defined words an
-/// entry in `w_ops` under a reserved `Dict` effect id -- which is the same change
-/// T5 below needs, and is recorded as such rather than done here, because it
-/// changes what the REPL prints.
-let coherent (env:wenv) : Type0 =
-  forall (w:word_id). w_sig env w == sig_of_op (op_of env.w_ops w)
+/// The observation the predicate was trying to express survives, and it is D-01
+/// turning up where it can be checked: the Dictionary is a handler (M10), a word
+/// call is an operation of it, and resolving a word statically is `M04.handle`
+/// run at elaboration time -- which is `M11.specialize`.
 
 (* ------------------------------------------------------------------------ *)
 (* Branches                                                                 *)
@@ -268,7 +300,9 @@ let dcase_arm (env:sig_env) (v:seg) (sb:srow) (arm:srow) (b_rest c_rest:seg)
 let rec impl_lookup (impls:list (op_id & term)) (op:op_id)
   : Tot (option (b:term { term_size b <= impls_size impls /\
                           (not (needs_compiler_impls impls) ==>
-                           not (needs_compiler b)) }))
+                           not (needs_compiler b)) /\
+                          (not (uses_unroll_impls impls) ==>
+                           not (uses_unroll b)) }))
         (decreases impls) =
   match impls with
   | []             -> None
@@ -311,6 +345,16 @@ let rec lemma_impl_typed (env:wenv) (eff:eff_id) (st:seg)
 /// into it at all. `TSpecialize`'s denotation is M11's E2, which is stated
 /// against this function, so defining it here would be circular.
 ///
+/// THE SECOND CONJUNCT IS A DEFECT MARKER, NOT A DESIGN BOUNDARY (D-62).
+/// `not (uses_unroll t)` excludes `PUnroll`, which as `M06.prim_sig` types it has
+/// no denotation at all -- see `prim_den`. It is in the precondition rather than
+/// admitted in the table because the difference is not cosmetic: a function that
+/// is total by fiat on a case whose semantics does not exist makes T3, T4 and T6
+/// conditional on a fix nobody has made, since each is quantified over terms
+/// containing that case. Excluded, the same theorems are unconditional statements
+/// about a well-defined fragment, and the fragment grows when roll/unroll is
+/// settled. It also means this module has no `admit`.
+///
 /// The signature and effect row are TAKEN as arguments with a `squash` of the
 /// `infer` equation, rather than computed as `fst (Some?.v (infer env t))`. This
 /// is the change that makes the definition possible at all: with the index
@@ -318,8 +362,8 @@ let rec lemma_impl_typed (env:wenv) (eff:eff_id) (st:seg)
 /// the `TSeq` clause has no way to say that the composite's shape is built from
 /// the operands' shapes. Taking them lets each clause turn the `infer` equation
 /// into ordinary equations between segments, which is what the transport needs.
-let rec denote_static (env:wenv { coherent env }) (t:term) (s:srow) (e:erow)
-                      (_:squash (not (needs_compiler t) /\
+let rec denote_static (env:wenv) (t:term) (s:srow) (e:erow)
+                      (_:squash (not (needs_compiler t) /\ not (uses_unroll t) /\
                                  infer env t == Some (s, e)))
   : Tot (cdenote env.w_ops s) (decreases %[(term_size t <: nat); 0]) =
   match t with
@@ -345,8 +389,11 @@ let rec denote_static (env:wenv { coherent env }) (t:term) (s:srow) (e:erow)
   /// `M04.handle` -- at elaboration time in `M11.specialize`, at runtime in
   /// `R02.find_handler` -- that supplies the meaning.
   ///
-  /// `coherent env` is what lets the argument segment `(w_sig env w).pre` be
-  /// passed where `M04.Op` demands `(op_of env.w_ops w).op_pre`.
+  /// The argument segment `(w_sig env w).pre` is passed where `M04.Op` demands
+  /// `(op_of env.w_ops w).op_pre`, and that typechecks with no side condition
+  /// because `M06.w_sig` IS `sig_of_op (op_of ...)` (D-63). Before that, the two
+  /// were separate tables and this line needed a `coherent env` refinement that
+  /// P03 did not satisfy.
   | TWord w ->
     (fun r stk ->
       let (arg, rest) = vsplit (w_sig env w).pre #r stk in
@@ -404,10 +451,11 @@ let rec denote_static (env:wenv { coherent env }) (t:term) (s:srow) (e:erow)
 /// framings land on the same segment -- so taking branch 0 means instantiating
 /// its arm at `r2 @ r`, and skipping it means recursing at `r1 @ r`. That is the
 /// whole reason a `case` may have branches of different depths.
-and denote_case (env:wenv { coherent env })
+and denote_case (env:wenv)
                 (variants:list seg) (branches:list term)
                 (j:srow) (row:erow)
                 (_:squash (not (needs_compiler_list branches) /\
+                           not (uses_unroll_list branches) /\
                            length branches == length variants /\
                            infer_branches env variants branches == Some (j, row)))
                 (r:seg) (tag:nat { tag < length variants })
@@ -452,7 +500,7 @@ and denote_case (env:wenv { coherent env })
 
 /// Proved, not admitted. `infer env TNil` reduces to `Some (sid, pure_row)` and
 /// the `TNil` clause is `dnil`, so this is now definitional.
-let thm_denote_nil (env:wenv { coherent env }) (r:seg) (stk:vstack r)
+let thm_denote_nil (env:wenv) (r:seg) (stk:vstack r)
   : Lemma (denote_static env TNil sid pure_row () r stk == Pure stk) = ()
 
 (* ------------------------------------------------------------------------ *)
@@ -465,11 +513,9 @@ let thm_denote_nil (env:wenv { coherent env }) (r:seg) (stk:vstack r)
 /// well typed and still not reduce to an answer. These lemmas are discharged by
 /// conversion, which is the evidence that it does.
 ///
-/// The empty environment is coherent: `wd_unknown.wd_sig` is `sid`, `op_unknown`
-/// is `( -- )`, and `sig_of_op` of the latter is `sid` too.
-let empty_wenv : wenv = { w_defs = []; w_ops = empty_sig_env }
-
-let lemma_empty_coherent () : Lemma (coherent empty_wenv) = ()
+/// The empty environment. Every word in it is undeclared, hence `( -- )` at
+/// `!Dict` — which is why the examples below use no words at all.
+let empty_wenv : wenv = { w_effs = []; w_ops = empty_sig_env }
 
 /// `2 3`: two literals in sequence. Small, but it exercises the case that
 /// mattered -- `TSeq` with a non-empty residual. The producer leaves an `i64` the
@@ -524,9 +570,9 @@ let lemma_ex_if_typed ()
 /// Named rather than passed as `()`, because `denote_static`'s precondition
 /// appears in the STATEMENT below and so has to be discharged while that
 /// statement is being typechecked, where a lemma call in the body is too late.
-let ex_if_pf : squash (not (needs_compiler ex_if) /\
+let ex_if_pf : squash (not (needs_compiler ex_if) /\ not (uses_unroll ex_if) /\
                        infer empty_wenv ex_if == Some (ex_if_sig, pure_row)) =
-  assert_norm (not (needs_compiler ex_if) /\
+  assert_norm (not (needs_compiler ex_if) /\ not (uses_unroll ex_if) /\
                infer empty_wenv ex_if == Some (ex_if_sig, pure_row))
 
 let lemma_ex_if_denote ()
@@ -539,19 +585,50 @@ let lemma_ex_if_denote ()
 (* Remaining obligations                                                    *)
 (* ------------------------------------------------------------------------ *)
 
+/// All of these are quantified over `denote_static`'s domain, which is the
+/// well-typed fragment minus `TSpecialize` and minus `PUnroll`. That is a real
+/// restriction and it is stated once here rather than repeated: because both
+/// exclusions are preconditions rather than admitted clauses, each obligation
+/// below is an UNCONDITIONAL claim about that fragment, and none of them is
+/// silently contingent on the roll/unroll hole being fixed first (D-62).
+
 /// T2  SEQUENCING IS KLEISLI COMPOSITION.  *** DISCHARGED, BY CONSTRUCTION. ***
 ///     `dcompose` above is the statement, and the `TSeq` clause is a call to it.
 ///     What licenses treating any word as a black box given only its signature
 ///     and row -- and therefore the optimiser's DAG view and incremental
 ///     re-checking -- is now the definition rather than a pending theorem.
 ///
+///     PRECISELY WHAT WAS DISCHARGED, because "by construction" overclaims if
+///     left unqualified. `dcompose` takes a `squash` that `M03.unify` returned
+///     the residuals `(b_rest, c_rest)` and that the composite is
+///     `{ pre = sa.pre @ c_rest; post = sb.post @ b_rest }`; it does not prove
+///     that this is the right signature, it assumes it and then transports the
+///     stack across it. The transport is where the work is, and it is discharged
+///     by `M03.lemma_unify_common` and `append_assoc`. So the residue of T2 is
+///     the correctness of `M03.compose`, which lives in M03 and is proved there
+///     -- `lemma_unify_disjoint`, `lemma_unify_common`, `lemma_compose_assoc`.
+///     The theorem relocated; it did not evaporate. What the relocation buys is
+///     that composition is written ONCE, so no clause of `denote_static` can get
+///     it wrong independently.
+///
 /// T3  NATURALITY IN THE ROW.
 ///     For all `r`, `r'`, `x : vstack s.pre`, `y : vstack r`:
 ///         denote_static t (r @ r') (vappend x y)  pushes `y` through unchanged.
-///     `dframe` is the combinator form and is proved; the statement about
-///     `denote_static` itself is an induction over the term whose every case is
-///     an appeal to `M02.lemma_frame_apply` plus one `append_assoc`. It is the
-///     general form of "a word does not disturb the stack beneath it".
+///     `dframe` is the combinator form and is proved. It is the general form of
+///     "a word does not disturb the stack beneath it".
+///
+///     MOST CASES ARE ROUTINE AND `THandle` IS NOT, which is worth recording
+///     before anyone budgets the induction as uniform. The structural cases are
+///     an appeal to `M02.lemma_frame_apply` plus one `append_assoc`. `THandle`
+///     is different in kind: the obligation is that `M04.handle` COMMUTES WITH
+///     FRAMING, and `handle` is a fold that prepends its state segment `st` to
+///     the result -- so the statement to prove relates `handle h state (m at row
+///     r @ r')` to `handle h state (m at row r)` framed by `r'`, with `st`
+///     sitting between the two appends on one side and not the other. That is a
+///     `st @ (a @ r')` versus `(st @ a) @ r'` mismatch under a recursive fold
+///     whose `Op` case is guarded by a runtime test, which is the same shape
+///     that makes M10's H2 and H3 hard. Expect T3's `THandle` case to cost what
+///     H2 costs, and probably to share a lemma with it.
 ///
 /// T4  PURITY IS REAL.
 ///     If `is_pure env t` then `denote_static env t s e () r stk` is `Pure _`.
@@ -562,26 +639,31 @@ let lemma_ex_if_denote ()
 ///     correction below, since a pure row must then exclude `!Dict` -- and the
 ///     structural ones.
 ///
-/// T5  EFFECT-ROW SOUNDNESS.  *** FALSE AS PREVIOUSLY STATED. ***
-///     It read: if `infer env t = Some (_, row)` then `within row (denote env t r stk)`.
-///     The `TWord` clause refutes it. A word `w` with an empty row denotes
-///     `Op w ...`, and `within` requires `eff_of w` to appear in the row, so the
-///     denotation of an ordinary pure-looking word violates its own row.
+/// T5  EFFECT-ROW SOUNDNESS.  *** REPAIRED; TRUE AS ORIGINALLY STATED. ***
+///     If `infer env t = Some (_, row)` then `within row (denote_static env t s e
+///     () r stk)`. Every operation the denotation can perform is listed in the
+///     row the type system computed.
 ///
-///     This is not a defect in the denotation. It is D-37 collecting its debt:
-///     "a word's meaning always depends on the dictionary it was elaborated
-///     against, and `!Dict` is the direct encoding of that fact." D-37 chose to
-///     leave `!Dict` implicit on the grounds that `M04.within` never sees it.
-///     `within` sees it now.
+///     IT WAS FALSE, AND WHY IS WORTH KEEPING. The `TWord` clause refuted it: a
+///     word `w` with an empty row denotes `Op w ...`, and `within` requires
+///     `eff_of w` to appear in the row, so an ordinary pure-looking word violated
+///     its own row. Not a defect in the denotation -- D-37 collecting its debt.
+///     That decision left `!Dict` implicit on the stated grounds that
+///     `M04.within` never sees it. `within` saw it as soon as a denotation
+///     existed.
 ///
-///     The corrected statement, and the change it requires:
-///         within (dict_row @ row) (denote_static env t s e () r stk)
-///     where `dict_row` is the singleton row of a RESERVED `Dict` effect id, and
-///     `M06.w_eff` returns it for every word that is not a declared operation.
-///     Equivalently: reserve the id, register defined words in `w_ops` under it
-///     (which is also what `coherent` needs from P03), and T5 becomes true as
-///     originally written with no special case at all. That is the better fix and
-///     it is a change to M04/M06, not to this file.
+///     D-63 repaired it at the source rather than weakening the statement.
+///     `M04.eff_dict` is a reserved id, `M06.w_eff` DERIVES the entry
+///     `(eff_of w, stage_of w)` at the head of every word's row instead of
+///     trusting a stored one, so the `TWord` case now holds by unfolding. There
+///     is no `dict_row` prefix in the statement and no special case anywhere.
+///
+///     STILL AN OBLIGATION, and the remaining content is the induction: `TSeq`
+///     needs `M04.lemma_within_weaken` on each side of `row_union`, `TCase`
+///     needs it across the branch fold, and `THandle` is the interesting case
+///     because `row_remove eff` genuinely narrows the row -- which is M10's H1,
+///     including its proviso that an implementation performing its own effect
+///     does not discharge it.
 ///
 /// T6  CAPABILITY SOUNDNESS.
 ///     No denotation duplicates a value of a non-copyable type or discards a

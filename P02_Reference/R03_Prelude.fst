@@ -20,18 +20,23 @@ let w_or  : word_id = 10
 let w_true  : word_id = 11
 let w_false : word_id = 12
 
-/// EFFECT 0 IS `IO`, AND ONLY THE HOST CAN HANDLE IT (category 2).
+/// EFFECT 1 IS `IO`, AND ONLY THE HOST CAN HANDLE IT (category 2).
 ///
 /// `print` and `read` are ordinary operations of an ordinary effect -- there is
 /// no second mechanism -- but no catcat program can supply an implementation,
-/// because the interpreter reserves effect 0 and the surface `effect`
-/// declaration allocates from 1 upward. An `IO` operation therefore always
+/// because the interpreter reserves effects 0 and 1 and the surface `effect`
+/// declaration allocates from 2 upward. An `IO` operation therefore always
 /// escapes every handler and reaches `R05`'s caller, which performs it.
+///
+/// It is 1 and not 0 because `M04.eff_dict` reserves 0 for the Dictionary
+/// (D-63). The two host-owned ids sit next to each other; nothing here depends
+/// on the value, and `bin/catcat.ml` dispatches on the WORD id rather than the
+/// effect, so the host loop is unaffected by the renumbering.
 ///
 /// That asymmetry is the whole of "suppliable only by the compiler or
 /// interpreter to the entry point": it is a property of who owns the id, not of
 /// the effect system, which needed no new feature to express it.
-let eff_io  : eff_id  = 0
+let eff_io  : eff_id  = 1
 let w_print : word_id = 13
 let w_read  : word_id = 14
 

@@ -813,3 +813,77 @@ side and should grow the same way.
 above, T5's falsity, N02 Q-13's soundness hole in roll/unroll, and two missing
 `M02` operations (`vpick`, `vroll_up`) whose absence would have put a duplication
 outside the one file T6 quantifies over.
+
+---
+
+## D-62. A soundness hole is fenced by a precondition, never by an `admit`.
+
+`M07.prim_den`'s `PUnroll` clause was `admit ()`, with a comment saying the case
+has no denotation as `M06.prim_sig` types it (N02 Q-13). That comment was
+accurate and the `admit` was still the wrong device.
+
+*Why the distinction is not cosmetic.* An `admit` makes `denote_static` total by
+fiat on a case whose semantics does not exist. Every theorem stated about the
+function afterwards — T3, T4, T6 — is then quantified over terms containing that
+case, so each is silently conditional on a fix nobody has made. Replacing it with
+a precondition makes the same theorems UNCONDITIONAL statements about a
+well-defined fragment, and the fragment grows when roll/unroll is settled.
+
+So `M05.uses_unroll` joins `needs_compiler` as a syntactic predicate over terms,
+`denote_static` requires both to be false, `prim_den` is refined by
+`not (PUnroll? p)`, and the clause is `false_elim ()`. M07 now has no `admit`.
+
+*They are not the same kind of exclusion, and the code says so.* `TSpecialize`
+is a PERMANENT boundary — its meaning is M11's E2, which is stated against
+`denote_static`, so defining it there would be circular. `uses_unroll` is a
+DEFECT MARKER: it gets deleted rather than discharged, and it is deliberately not
+folded into `needs_compiler`, which the linker consumes and which has every
+reason to survive. Merging them would hide a defect inside a permanent feature.
+
+*Generalisable rule:* when a case is unimplementable rather than merely unproved,
+exclude it from the domain. An `admit` says "this is true and I have not shown
+it"; the case here is not true.
+
+---
+
+## D-63. One signature table. `w_sig` reads from `w_ops`, and `!Dict` is effect 0.
+
+D-60 established that a word call and an operation call are the same node of the
+free monad. `M06.wenv` nevertheless carried TWO signature tables — `w_defs` for
+words, `w_ops` for operations — with nothing relating them. M07 stated the
+missing agreement as `coherent env` and refined `denote_static` by it.
+
+*That was the wrong repair, and the failure mode is the interesting part.* P03
+did not satisfy `coherent`: `E06_Repl` registered an `effect`'s operations in
+both tables but a plain `define` in only one, and the prelude in only one. So the
+denotation was vacuous for every program the REPL could actually elaborate — a
+semantics for nothing, at exactly the point where the spec is supposed to mean
+something. A side condition maintained by discipline in another directory is not
+a fix; it is the drift written down.
+
+*The fix is to delete the second copy.* `M06.w_sig` is now
+`sig_of_op (op_of env.w_ops w)`. The two tables cannot disagree because there is
+one of them, `coherent` is definitionally `True` and is gone from M07, and P03
+cannot regress: a word absent from `w_ops` has no signature rather than a stale
+one. `wenv`'s remaining field is `w_effs`, holding the one thing `w_ops` genuinely
+does not know — the effects a word's BODY performs, which is not a property of
+its declaration.
+
+*The same change closes T5.* `M04.eff_dict = 0` is reserved for the Dictionary,
+`op_decl` gains `od_stage`, and `M06.w_eff` DERIVES the head entry
+`(eff_of w, stage_of w)` rather than trusting a stored one. So `TWord w`'s row
+always mentions the effect its denotation performs, and T5 is true as originally
+written with no `dict_row` prefix and no special case. `!Dict` stops being an
+elided convention and becomes an ordinary effect that happens to be reserved.
+
+*Consequences taken.* `R03.eff_io` moves 0 → 1 and user effects allocate from 2;
+`bin/catcat.ml` dispatches on the WORD id, so the host loop is untouched.
+`M04.op_unknown` now defaults to `Dict`, which is what an unbound word actually
+is — before, it silently claimed `IO`. `M06.row_visible` elides a STATIC `Dict`
+entry, and `E05.row_effs` is the single place that happens, so rendering and the
+REPL's declared-effects check agree by construction. A dynamic `Dict` entry is
+not elided, because that one is a real claim.
+
+*Accepted cost:* nothing that calls a word is `is_pure` any more. That is not a
+regression but D-37 being honest — and it is precisely the property M11's E3
+claims `specialize` restores, so the statement got sharper rather than weaker.

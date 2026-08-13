@@ -116,30 +116,38 @@ let prelude_words : list nentry = [
 /// anyone declaring it.
 let prelude_effs : list (string & eff_id) = [("IO", eff_io)]
 
-/// Every prelude word is pure, so the effect row is `pure_row` throughout.
-/// That stops being true at the first `effect` declaration.
-let rec nenv_decls (ws:list nentry) : Tot (list (word_id & wdecl)) (decreases ws) =
+/// EVERY WORD GETS AN OPERATION DECLARATION, not just the ones an `effect`
+/// declared (D-63). `M06.w_sig` reads a word's signature out of `w_ops`, so a
+/// word missing from this table has no signature at all — which is the point:
+/// the drift M07's `coherent` predicate used to describe, where a `define`
+/// populated one signature table and not the other, is no longer expressible.
+///
+/// A prelude word that is not an operation of a declared effect belongs to the
+/// Dictionary, so it gets `eff_dict` at `SStatic`. `print` and `read` get `IO`
+/// at `SDynamic`, which is what their row said before. Neither needs a `w_effs`
+/// entry: a prelude word has no body whose effects would go there.
+let rec nenv_ops (ws:list nentry) : Tot (list (word_id & op_decl)) (decreases ws) =
   match ws with
   | []     -> []
-  | n :: r -> (n.n_id, { wd_sig = n.n_sig;
-                         wd_eff = (match n.n_op with
-                                   | None   -> pure_row
-                                   | Some e -> [(e, SDynamic)]) })
-              :: nenv_decls r
+  | n :: r -> (n.n_id, { od_eff   = (match n.n_op with
+                                     | None   -> eff_dict
+                                     | Some e -> e);
+                         od_stage = (match n.n_op with
+                                     | None   -> SStatic
+                                     | Some _ -> SDynamic);
+                         od_sig   = { op_pre = n.n_sig.pre; op_post = n.n_sig.post } })
+              :: nenv_ops r
 
 let prelude_nenv : nenv = { ne_words = prelude_words; ne_effs = prelude_effs }
 
 let init_session : session = {
   se_nenv  = prelude_nenv;
-  se_wenv  = { w_defs = nenv_decls prelude_words;
-               w_ops  = { se_ops =
-                 [(w_print, { od_eff = eff_io;
-                              od_sig = { op_pre = [i64_t]; op_post = [] } });
-                  (w_read,  { od_eff = eff_io;
-                              od_sig = { op_pre = []; op_post = [i64_t] } })] } };
+  se_wenv  = { w_effs = [];
+               w_ops  = { se_ops = nenv_ops prelude_words } };
   se_dict  = prelude;
   se_next  = w_user_base;
-  se_next_eff = 1;
+  /// 0 is `Dict` and 1 is `IO`; user effects allocate from 2.
+  se_next_eff = 2;
   se_macros = builtin_macros;
   se_stack = [];
   se_shape = [];
@@ -226,9 +234,18 @@ let install_def (s:session) (name:string) (declared:option srow)
                         ne_words = ({ n_name = name; n_id = id;
                                       n_sig = row; n_op = None })
                                    :: s.se_nenv.ne_words };
-          se_wenv = { s.se_wenv with
-                        w_defs = (id, { wd_sig = row; wd_eff = grow })
-                                 :: s.se_wenv.w_defs };
+          /// A defined word is a Dictionary operation (D-60, D-63): its
+          /// signature goes in `w_ops` under `eff_dict`, exactly like a
+          /// declared effect's operation goes in under its own effect. The
+          /// body's own effects go in `w_effs`, with the static `Dict` entries
+          /// stripped — `M06.w_eff` re-derives the one that matters, and
+          /// keeping the rest would make rows grow with call depth.
+          se_wenv = { w_effs = (id, row_visible grow) :: s.se_wenv.w_effs;
+                      w_ops  = { se_ops =
+                        (id, { od_eff   = eff_dict;
+                               od_stage = SStatic;
+                               od_sig   = { op_pre = row.pre; op_post = row.post } })
+                        :: s.se_wenv.w_ops.se_ops } };
           se_dict = dict_extend s.se_dict id (WDef t);
           se_next = id + 1 } in
         (s', "defined " ^ name ^ " " ^ render_row_eff s.se_nenv row grow)
@@ -251,14 +268,17 @@ let rec install_ops (s:session) (eid:eff_id) (ds:list (string & ssig))
      | Inl e -> Inl ("declare " ^ opname ^ ": " ^ e)
      | Inr row ->
        let id = s.se_next in
-       let decl = { od_eff = eid; od_sig = { op_pre = row.pre; op_post = row.post } } in
+       let decl = { od_eff = eid; od_stage = SDynamic;
+                    od_sig = { op_pre = row.pre; op_post = row.post } } in
        let s' = { s with
          se_nenv = { s.se_nenv with
                        ne_words = ({ n_name = opname; n_id = id;
                                      n_sig = row; n_op = Some eid })
                                   :: s.se_nenv.ne_words };
-         se_wenv = { w_defs = (id, { wd_sig = row; wd_eff = [(eid, SDynamic)] })
-                              :: s.se_wenv.w_defs;
+         /// No `w_effs` entry: an operation performs itself and nothing else,
+         /// and `M06.w_eff` derives that entry from `decl` (D-63). Storing a
+         /// second copy is what used to let the two disagree.
+         se_wenv = { s.se_wenv with
                      w_ops  = { se_ops = (id, decl) :: s.se_wenv.w_ops.se_ops } };
          se_dict = dict_extend s.se_dict id (WOp eid);
          se_next = id + 1 } in

@@ -12,7 +12,7 @@
    `IO` effect this loop performs it and calls `resume_line`. That is the whole
    of "effects only the compiler or interpreter can supply": `print` and `read`
    are ordinary operations of an ordinary effect, and the only thing special
-   about them is that nothing inside the language owns effect id 0.
+   about them is that nothing inside the language owns effect ids 0 (Dict) or 1 (IO).
 
    The continuation `resume_line` takes is the INTERPRETER's machine state, not
    a catcat value — see the note in R05_Driver.fsti about why that distinction

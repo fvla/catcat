@@ -69,7 +69,7 @@ assume val state_typed (env:wenv) (st:mstate) (s:srow) : Tot bool
 ///
 /// S5  AGREEMENT (the bridge theorem).
 ///     For `t` in M07's static fragment -- `not (needs_compiler t)`, with
-///     `infer env t = Some (s, e)` and `coherent env` -- and every `r`, `stk`:
+///     `infer env t = Some (s, e)` -- and every `r`, `stk`:
 ///
 ///         run env fuel { code = [t]; stk = DStack _ stk }
 ///

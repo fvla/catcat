@@ -5,7 +5,7 @@ describes the implemented language, not the designed one: where the two differ,
 that is called out rather than glossed. For the designed language see
 [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md).
 
-> **Current as of commit `5333d56`.**
+> **Current as of commit `9cd7f10`.**
 > Source of truth: [E01_Lexer.fst](../P03_Elaboration/E01_Lexer.fst) (lexing),
 > [E03_Parser.fst](../P03_Elaboration/E03_Parser.fst) (grammar),
 > [E02_Ast.fst](../P03_Elaboration/E02_Ast.fst) (the tree it produces),
@@ -508,8 +508,9 @@ catcat> define greet ( -- !IO ) { 1 print 2 print }
 
 These are **ordinary operations of an ordinary effect**. Nothing about the
 effect system is special-cased for them, and the only asymmetry is over who may
-*declare* one: the host owns effect 0 and `effect` allocates from 1 upward, so
-no program can bring a new host-serviced effect into existence. That is what
+*declare* one: the host owns effects 0 (`Dict`) and 1 (`IO`) and `effect`
+allocates from 2 upward, so no program can bring a new host-serviced effect
+into existence. That is what
 "suppliable only by the compiler or interpreter" means — it is a fact about who
 owns the identifier, not a restriction the effect system had to grow.
 

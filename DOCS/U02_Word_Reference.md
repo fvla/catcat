@@ -3,7 +3,7 @@
 Every word the language provides today. That is a short list: eleven primitives,
 two constants, two IO operations, and three stack shuffles.
 
-> **Current as of commit `5333d56`.**
+> **Current as of commit `9cd7f10`.**
 > Source of truth:
 > [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
@@ -181,8 +181,9 @@ catcat> echo 5 | catcat.exe 'read dup * print'
 
 These are **operations of the built-in `IO` effect**, not primitives — `locate
 print` says so. Nothing in the effect system is special-cased for them; the only
-asymmetry is that the interpreter owns effect id 0 while `effect` allocates from
-1 upward, so no program can declare another host-serviced effect.
+asymmetry is that the interpreter owns effect ids 0 (`Dict`) and 1 (`IO`) while
+`effect` allocates from 2 upward, so no program can declare another
+host-serviced effect.
 
 `IO` is nevertheless an effect like any other and can be intercepted with
 `handle` — see [U01](U01_Grammar.md) §6, which also covers declaring effects,

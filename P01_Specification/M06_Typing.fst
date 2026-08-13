@@ -26,39 +26,74 @@ open M05_Terms
 (* Environments and effect-row operations                                   *)
 (* ------------------------------------------------------------------------ *)
 
-/// What the type checker knows about one word: its signature and its effects.
-type wdecl = { wd_sig : srow; wd_eff : erow }
-
-/// Declared signature and effect row of each named word. Because interface
-/// operations and ordinary words are both `TWord`, this table is also the
-/// Dictionary as seen by the type checker (D04).
+/// ONE TABLE OF SIGNATURES, NOT TWO (D-63).
+///
+/// This record used to carry `w_defs : list (word_id & wdecl)` giving each word
+/// a signature and a row, ALONGSIDE `w_ops` giving each operation an effect and
+/// a signature. Nothing related them, and nothing had to until M07 had to denote
+/// `TWord w`: a word call is an operation call (D-60), so `M04.Op` demands
+/// arguments of shape `(op_of w).op_pre` where the signature says
+/// `(w_sig w).pre`. M07 stated the missing agreement as a predicate `coherent`
+/// and refined `denote_static` by it — and P03 did not satisfy it, so the
+/// denotation was vacuous for every program the REPL could actually elaborate.
+///
+/// The fix is not to make P03 maintain the agreement. It is to remove the
+/// second copy: `w_sig` now READS FROM `w_ops`, so the two cannot disagree
+/// because there is only one of them, `coherent` is definitionally true and has
+/// been deleted from M07, and a word with no `w_ops` entry has no signature
+/// rather than a stale one. A discipline P03 could forget becomes an
+/// impossibility.
+///
+/// What is left here is the part `w_ops` genuinely does not know: the effects a
+/// word's BODY performs, which is not a property of its declaration. The
+/// Dictionary entry itself is derived, not stored — see `w_eff`.
 ///
 /// AN ASSOCIATION LIST, for the reason given at `M04.sig_env` (D-45): a
 /// function-typed field cannot be built without a closure, and P03's REPL has
 /// to build one of these for every line it checks.
 type wenv = {
-  w_defs : list (word_id & wdecl);
-  /// Operation declarations, used to check handler implementations.
+  /// The extra effects each word's body performs, beyond performing itself.
+  w_effs : list (word_id & erow);
+  /// Every word's signature and effect, operations and Dictionary words alike.
   w_ops  : sig_env;
 }
 
-/// An UNDECLARED word is the identity program with no effects.
-///
-/// Total for the same reason `M04.op_of` is, though less forcefully — nothing
-/// here appears in a type. It is still the right default: `infer` reports an
-/// unknown word by way of the composition failing, which gives a signature
-/// mismatch at the point of use rather than a lookup failure with no context.
-let wd_unknown : wdecl = { wd_sig = sid; wd_eff = pure_row }
-
-let rec lookup_word (ds:list (word_id & wdecl)) (w:word_id)
-  : Tot wdecl (decreases ds) =
+let rec lookup_row (ds:list (word_id & erow)) (w:word_id)
+  : Tot erow (decreases ds) =
   match ds with
-  | []            -> wd_unknown
-  | (w', d) :: r  -> if w' = w then d else lookup_word r w
+  | []            -> pure_row
+  | (w', e) :: r  -> if w' = w then e else lookup_row r w
 
-let w_sig (env:wenv) (w:word_id) : Tot srow = (lookup_word env.w_defs w).wd_sig
+/// A word's signature IS its operation's signature. An UNDECLARED word gets
+/// `M04.op_unknown`, hence `( -- )`: `infer` then reports it by way of the
+/// composition failing, which gives a signature mismatch at the point of use
+/// rather than a lookup failure with no context.
+let w_sig (env:wenv) (w:word_id) : Tot srow = sig_of_op (op_of env.w_ops w)
 
-let w_eff (env:wenv) (w:word_id) : Tot erow = (lookup_word env.w_defs w).wd_eff
+/// A word's effect row: the effect it performs BY BEING CALLED, followed by
+/// whatever its body performs.
+///
+/// THE HEAD ENTRY IS WHAT MAKES M07's T5 TRUE (D-63). `TWord w` denotes
+/// `Op w`, so `M04.within` demands `eff_of w` appear in the row; deriving that
+/// entry here rather than trusting a stored one means it cannot be absent. For
+/// a Dictionary word it is `(eff_dict, SStatic)` — the `!Dict` of D-37, finally
+/// a real row entry instead of an elided convention. For a declared operation it
+/// is the effect's own entry, which is what the row said before.
+///
+/// A consequence worth stating plainly: NOTHING THAT CALLS A WORD IS PURE, so
+/// `is_pure` below now means "pure after the Dictionary is resolved" for exactly
+/// the programs it used to call pure outright. That is not a regression, it is
+/// D-37 being honest — and it is precisely the property M11's E3 claims
+/// `specialize` restores.
+let w_eff (env:wenv) (w:word_id) : Tot erow =
+  (eff_of env.w_ops w, stage_of env.w_ops w) :: lookup_row env.w_effs w
+
+/// A row as a reader should see it: the static `Dict` entry elided, because it
+/// is on every word and therefore tells a reader nothing (D-37). Rendering and
+/// the REPL's declared-effects check both go through this, so "never written"
+/// is implemented in one place rather than assumed in several.
+let row_visible (row:erow) : erow =
+  filter (fun (e, s) -> not (e = eff_dict && s = SStatic)) row
 
 /// Row union. Kept as append: deduplication is an optimisation on the
 /// representation, never a semantic step, and `lemma_within_weaken` in M04 is

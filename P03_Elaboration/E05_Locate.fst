@@ -131,13 +131,26 @@ let show_word (e:nenv) (w:word_id) : Tot string =
 (* Effect rows                                                              *)
 (* ------------------------------------------------------------------------ *)
 
-/// The distinct effects of a row. `M06.row_union` is append, so a row
-/// routinely repeats an effect; what a reader wants is the set.
-let rec row_effs (r:erow) : Tot (list eff_id) (decreases r) =
+/// The distinct effects of a row, as a reader should see them.
+///
+/// Two things happen here. `M06.row_union` is append, so a row routinely
+/// repeats an effect and what a reader wants is the set. And `M06.row_visible`
+/// drops the static `Dict` entry, which is on EVERY word (D-37, D-63): it is to
+/// the effect row what the implicit row variable is to a stack signature, so
+/// printing it would add a `!Dict` to every signature in the system and tell
+/// nobody anything. A dynamic `Dict` entry is not dropped, because that one is
+/// a real claim about the program.
+///
+/// This is also the function `install_def` compares a declared effect list
+/// against, which is deliberate: what a user writes and what the REPL prints
+/// should be the same notion of "the effects of this word".
+let rec row_effs_of (r:erow) : Tot (list eff_id) (decreases r) =
   match r with
   | []           -> []
-  | (i, _) :: rr -> let rest = row_effs rr in
+  | (i, _) :: rr -> let rest = row_effs_of rr in
                     if mem i rest then rest else i :: rest
+
+let row_effs (r:erow) : Tot (list eff_id) = row_effs_of (row_visible r)
 
 /// Space-separated, no leading space — the form that goes inside `( … )`.
 let rec render_effs_in (e:nenv) (is:list eff_id) : Tot string (decreases is) =
