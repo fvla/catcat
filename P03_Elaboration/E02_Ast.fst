@@ -71,6 +71,9 @@ type ssig = {
 
 type sterm =
   | StInt   : int -> sterm
+  /// A double-quoted literal (D-65). Carries the DECODED text: escapes are
+  /// resolved in `E01`, so nothing downstream re-interprets a backslash.
+  | StStr   : string -> sterm
   | StWord  : string -> sterm
   /// `$x` — a read of a named local.
   | StVar   : string -> sterm
@@ -101,6 +104,7 @@ type sterm =
 let rec sterm_size (t:sterm) : Tot pos =
   match t with
   | StInt _    -> 1
+  | StStr _    -> 1
   | StWord _   -> 1
   | StVar _    -> 1
   | StBlock ts -> 1 + sterms_size ts

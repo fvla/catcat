@@ -12,7 +12,7 @@ Mechanized in [M01_Kinds](../P01_Specification/M01_Kinds.fst) through
 ## 1. Types
 
 ```
-prim  ::= i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64 | f32 | f64 | bool | unit
+prim  ::= i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64 | f32 | f64 | bool | unit | str
 
 dtype ::= TPrim prim
         | TSeal nom_id [cap] seg      -- nominal type over a representation

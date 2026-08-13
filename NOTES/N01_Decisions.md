@@ -936,3 +936,50 @@ which are `assume val` — so no value could be exhibited until those are define
 and the types would be documentation with extra syntax. M07's T6 cannot be stated
 at all: it needs an erasure from `vstack` to a multiset of leaf values and M02 has
 no such function. Saying so is better than a type that approximates it.
+
+---
+
+## D-65. `str` is a primitive; IO moves strings, not numbers.
+
+Two changes, one of which forced the other.
+
+*The type.* `M01.prim` gains `PStr`, with `prim_rep PStr = string`. A TABLE ROW
+AND NOT A `dtype` CONSTRUCTOR, which is the same choice D-55 made for
+intrinsics: a constructor would touch `dtype_size`, `has_cap`, `wf_dtype`,
+`R04.erase_value` and every renderer, whereas a row touches `prim_rep` and the
+handful of places that enumerate primitives because they must. It is abstract in
+the sense `f32` already is — the core never inspects a string, since
+concatenation and formatting are `R01.prim_word` entries rather than core
+operations, so an F* `string` is enough for everything M02–M11 says.
+
+*IO.* `print` and `read` were `( i64 -- !IO )` and `( -- i64 !IO )`. They were a
+placeholder from before there was a string type, and an IO facility that can
+only move integers cannot emit a message. They are now `str`-typed, and `print`
+adds NO newline — the string is written as itself, which the `i64` version had
+no room to offer.
+
+*Four prelude words came with it, and three of them are not optional.* `show`
+(`i64 -- str`) and `parse` (`str -- i64`) exist because string IO must not COST
+the numeric IO it replaces; without them a number can neither be printed nor
+read. `cat` is the third, because a message is a literal and a value joined, and
+without it the only printable strings are the ones written whole. `str=` is the
+one convenience — spelled separately from `=` because the core is monomorphic
+(D02 §5) and a single `=` over both types is an interface, which is D03's job
+and not something to fake with a second prelude entry.
+
+*Lexing stays a DFA (D-30).* A double-quoted literal needs two states —
+in-string and after-backslash — and every decision remains a predicate on the
+one character in hand. NEWLINES ARE ORDINARY CONTENT, as in Perl, so a literal
+spans lines with no heredoc and no continuation character; the cost is that an
+unclosed quote is reported at end of input rather than end of line, which is the
+trade the `{` … `}` rule already makes. Escapes are `\n \t \r \" \\` and an
+unrecognised one is an ERROR rather than the character itself, because `"\q"` is
+a typo far more often than an intent.
+
+*Two acknowledged rough edges, both recorded rather than papered over.*
+`E05.show_lit` re-quotes a decompiled string without re-escaping it, so `locate`
+on a word containing `"\n"` prints text that will not re-parse — the fix is to
+invert `E01.escape_char`, and it belongs with escaping on both sides rather than
+as a patch on one. And `parse` yields 0 on malformed input, exactly as the
+`i64`-typed `read` already did; the honest type is `( str -- option[i64] )` and
+it becomes writable when sums have surface syntax.

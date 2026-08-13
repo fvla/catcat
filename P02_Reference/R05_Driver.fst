@@ -38,6 +38,10 @@ let rec render_value (v:rvalue) : Tot string =
   | RBool false -> "false"
   | RUnit       -> "unit"
   | RBits n     -> "bits:" ^ string_of_int n
+  /// Quoted, so a string on the stack is distinguishable from a bare word in
+  /// the REPL echo. There is no escaping on the way out: this is a diagnostic
+  /// renderer, and `print` is what emits a string as itself.
+  | RStr s      -> "\"" ^ s ^ "\""
   | RSeal n vs  -> "<" ^ string_of_int n ^ ":" ^ render_list vs ^ ">"
   | RSum tag vs -> "#" ^ string_of_int tag ^ "(" ^ render_list vs ^ ")"
   | RBox v      -> "box(" ^ render_value v ^ ")"

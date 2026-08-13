@@ -10,6 +10,7 @@ let is_space (c:C.char) : Tot bool =
 
 let is_delim (c:C.char) : Tot bool =
   c = '{' || c = '}' || c = '(' || c = ')' || c = '[' || c = ']' || c = ':'
+  || c = '"'
 
 let is_word_char (c:C.char) : Tot bool =
   not (is_space c) && not (is_delim c)
@@ -66,6 +67,58 @@ let rec skip_line (cs:list C.char)
   | c :: r    -> if c = '\n' then r else skip_line r
 
 (* ------------------------------------------------------------------------ *)
+(* Strings                                                                  *)
+(* ------------------------------------------------------------------------ *)
+
+/// The character an escape denotes, or `None` if the escape is not one we have.
+///
+/// Enumerated rather than defaulting to the character itself: `"\q"` is a typo
+/// far more often than it is an intent, and a lexer that silently accepts it
+/// makes the escape set unknowable to a reader.
+let escape_char (c:C.char) : Tot (option C.char) =
+  if c = 'n'  then Some '\n'
+  else if c = 't'  then Some '\t'
+  else if c = 'r'  then Some '\r'
+  else if c = '"'  then Some '"'
+  else if c = '\\' then Some '\\'
+  else None
+
+/// Scan a double-quoted literal, the opening quote already consumed.
+///
+/// NEWLINES ARE ORDINARY CONTENT (D-65). A string runs to its closing quote
+/// however many lines that takes, as in Perl, so a multi-line literal needs no
+/// heredoc and no continuation character. The cost is that an unclosed quote
+/// swallows the rest of the input and is reported at EOF rather than at the end
+/// of the line — the same trade the `{` … `}` bracket rule already makes.
+///
+/// STILL ZERO LOOKAHEAD (D-30). Two states — in-string and after-backslash —
+/// and every decision is a predicate on the one character in hand. A DFA with
+/// two states is still a DFA, which is what the planned CFG-to-recursive-descent
+/// generator needs; what would break the rule is deciding on the NEXT
+/// character, and nothing here does.
+let rec take_string (acc:list C.char) (cs:list C.char)
+  : Tot (either string (r:(list C.char & list C.char) { length (snd r) <= length cs }))
+        (decreases cs) =
+  match cs with
+  | [] -> Inl "unterminated string: no closing '\"' before end of input"
+  | c :: r ->
+    if c = '"' then Inr (rev acc, r)
+    else if c = '\\'
+    then (match r with
+          | []      -> Inl "unterminated string: input ends in a backslash escape"
+          | e :: r' ->
+            (match escape_char e with
+             | None    -> Inl ("unknown string escape '\\"
+                               ^ S.string_of_list [e]
+                               ^ "'; the escapes are \\n \\t \\r \\\" \\\\")
+             | Some ch -> (match take_string (ch :: acc) r' with
+                           | Inl m  -> Inl m
+                           | Inr (str, rest) -> Inr (str, rest))))
+    else (match take_string (c :: acc) r with
+          | Inl m           -> Inl m
+          | Inr (str, rest) -> Inr (str, rest))
+
+(* ------------------------------------------------------------------------ *)
 (* The main loop                                                            *)
 (* ------------------------------------------------------------------------ *)
 
@@ -107,6 +160,10 @@ let rec lex_go (acc:list token) (cs:list C.char)
     else if c = '[' then lex_go (TkLBrack :: acc) r
     else if c = ']' then lex_go (TkRBrack :: acc) r
     else if c = ':' then lex_go (TkColon :: acc) r
+    else if c = '"'
+    then (match take_string [] r with
+          | Inl e            -> Inl e
+          | Inr (str, rest)  -> lex_go (TkStr (S.string_of_list str) :: acc) rest)
     else
       let (run, rest) = take_run [c] r in
       (match classify_run run with
@@ -124,6 +181,7 @@ let render_token (t:token) : Tot string =
   match t with
   | TkWord w   -> w
   | TkInt n    -> string_of_int n
+  | TkStr s    -> "\"" ^ s ^ "\""
   | TkArrow    -> "--"
   | TkLBrace   -> "{"
   | TkRBrace   -> "}"

@@ -34,19 +34,25 @@ let banner () =
    the operation's arguments removed and its results pushed. *)
 let perform op stk =
   if op = R03_Prelude.w_print then
+    (* `print_string`, not `print_endline`: the string is emitted as itself, so
+       a trailing newline is the program's to write with "\n". The i64 version
+       this replaced had no choice, since a number has no room for one. *)
     match stk with
-    | R01_Runtime.RInt n :: rest ->
-        print_endline (Z.to_string n);
+    | R01_Runtime.RStr s :: rest ->
+        print_string s;
+        flush stdout;
         Some rest
     | _ -> None
   else if op = R03_Prelude.w_read then begin
     print_string "? ";
     flush stdout;
+    (* EOF reads as the empty string. There is no `option` in the signature to
+       report it with, and inventing a sentinel line would be worse; a program
+       that needs to tell them apart wants a `read` returning a sum, which is a
+       signature change and not a host-loop decision. *)
     match read_line () with
-    | exception End_of_file -> Some (R01_Runtime.RInt Z.zero :: stk)
-    | line ->
-        let n = try Z.of_string (String.trim line) with _ -> Z.zero in
-        Some (R01_Runtime.RInt n :: stk)
+    | exception End_of_file -> Some (R01_Runtime.RStr "" :: stk)
+    | line -> Some (R01_Runtime.RStr line :: stk)
   end
   else None
 

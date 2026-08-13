@@ -7,6 +7,50 @@ open M04_Effects
 open M05_Terms
 open R01_Runtime
 
+(* ------------------------------------------------------------------------ *)
+(* Reading an integer out of a string                                       *)
+(* ------------------------------------------------------------------------ *)
+
+/// `parse`'s implementation, and the inverse of `OShowI`.
+///
+/// IT EXISTS SO THAT STRING IO DOES NOT COST NUMERIC INPUT. `read` used to
+/// return an `i64`; now it returns a `str`, and without this word there would be
+/// no path from typed input back to a number at all (D-65).
+///
+/// MALFORMED INPUT YIELDS 0 rather than failing, which is the same concession
+/// the `i64`-typed `read` already made and is documented as. The honest return
+/// type is `( str -- option[i64] )`, and it becomes writable when sums have
+/// surface syntax; until then a sentinel is preferable to a stuck machine,
+/// because a stuck machine loses the REPL session.
+///
+/// Duplicates `E01_Lexer.int_of_run` in miniature, deliberately: P02 cannot
+/// depend on P03, and a shared home for it would be a fourth project holding
+/// ten lines. Worth revisiting if a second such function appears.
+let digit_of (c:FStar.Char.char) : Tot int =
+  if c = '0' then 0 else if c = '1' then 1 else if c = '2' then 2
+  else if c = '3' then 3 else if c = '4' then 4 else if c = '5' then 5
+  else if c = '6' then 6 else if c = '7' then 7 else if c = '8' then 8
+  else if c = '9' then 9 else (-1)
+
+let rec digits_of (acc:int) (cs:list FStar.Char.char)
+  : Tot (option int) (decreases cs) =
+  match cs with
+  | []     -> Some acc
+  | c :: r -> let d = digit_of c in
+              if d < 0 then None else digits_of (acc * 10 + d) r
+
+let parse_int (s:string) : Tot int =
+  match FStar.String.list_of_string s with
+  | []          -> 0
+  | '-' :: rest -> (match rest with
+                    | [] -> 0
+                    | _  -> (match digits_of 0 rest with
+                             | None   -> 0
+                             | Some n -> 0 - n))
+  | cs          -> (match digits_of 0 cs with
+                    | None   -> 0
+                    | Some n -> n)
+
 let rec find_handler (k:kont) (e:eff_id) (op:op_id)
   : Tot (option (term & option rstack)) (decreases k) =
   match k with
@@ -72,6 +116,13 @@ let apply_prim (p:prim_word) (k:kont) (s:rstack) : Tot sresult =
   | ONot,  RBool a :: r          -> SNext ({ code = k; stk = RBool (not a) :: r })
   | OAnd,  RBool a :: RBool b :: r -> SNext ({ code = k; stk = RBool (b && a) :: r })
   | OOr,   RBool a :: RBool b :: r -> SNext ({ code = k; stk = RBool (b || a) :: r })
+  /// Strings. `OCatS` and `OEqS` take their operands in stack order, so the
+  /// DEEPER value comes first in the result: `"a" "b" cat` is `"ab"`, matching
+  /// the convention every arithmetic case above already follows.
+  | OShowI, RInt a :: r           -> SNext ({ code = k; stk = RStr (string_of_int a) :: r })
+  | OCatS, RStr a :: RStr b :: r  -> SNext ({ code = k; stk = RStr (b ^ a) :: r })
+  | OEqS,  RStr a :: RStr b :: r  -> SNext ({ code = k; stk = RBool (b = a) :: r })
+  | OParseI, RStr a :: r          -> SNext ({ code = k; stk = RInt (parse_int a) :: r })
   | _ -> SStuck "primitive applied to ill-shaped stack"
 
 /// Runtime image of a literal. Integer widths are erased -- M06 has already
@@ -83,6 +134,7 @@ let lit_value (l:lit) : Tot rvalue =
   | LPrim PUnit _ -> RUnit
   | LPrim PF32 _  -> RBits 0
   | LPrim PF64 _  -> RBits 0
+  | LPrim PStr s  -> RStr s
   | LPrim _ v     -> RInt v
 
 /// Every core intrinsic, in one table (D-55), mirroring `M06.prim_sig` row for

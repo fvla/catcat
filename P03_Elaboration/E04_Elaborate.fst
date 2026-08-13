@@ -96,6 +96,7 @@ let prim_of_name (s:string) : Tot (option prim) =
   else if s = "u32" then Some PU32 else if s = "u64" then Some PU64
   else if s = "f32" then Some PF32 else if s = "f64" then Some PF64
   else if s = "bool" then Some PBool else if s = "unit" then Some PUnit
+  else if s = "str" then Some PStr
   else None
 
 let rec elab_ty (t:sty) : Tot (either string dtype) (decreases (sty_size t)) =
@@ -290,6 +291,12 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
         | Inr trm -> elab_terms env cs
                        ({ sl_name = None; sl_ty = TPrim PI64 } :: sh)
                        (trm :: acc) rest)
+
+     /// No range check and no failure case, unlike `StInt`: `E01` has already
+     /// decoded the escapes, so every `StStr` is a valid `str` (D-65).
+     | StStr s ->
+       elab_terms env cs ({ sl_name = None; sl_ty = TPrim PStr } :: sh)
+         (TPrimOp (PLit (LPrim PStr s)) :: acc) rest
 
      | StVar x ->
        (match elab_var cs sh x with
@@ -671,6 +678,7 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
   | t :: rest ->
     (match t with
      | StInt _ -> infer_terms env cs (ipush (MT (TPrim PI64)) st) rest
+     | StStr _ -> infer_terms env cs (ipush (MT (TPrim PStr)) st) rest
 
      | StVar x ->
        (match ifind x 0 st.i_above with

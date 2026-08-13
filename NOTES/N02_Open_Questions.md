@@ -137,3 +137,24 @@ the REPL prints changed. The same edit removed `M07.coherent` outright by giving
 `wenv` one signature table instead of two, so T5 is true as originally written.
 The worry that it would change what the REPL prints for every `define` did not
 materialise — the elision rule D-37 already specified is what prevented it.
+
+**Q-15. Is `str` right to be `Copy` and `Drop`?** `M01.has_cap` gives every
+`TPrim` both capabilities, so `PStr` (D-65) duplicates and discards freely. For
+an immutable value that is semantically unimpeachable — two copies are
+indistinguishable — and it is what makes strings usable without a borrow
+checker that does not exist yet.
+
+*What it commits to.* Freely copyable means the implementation must intern or
+refcount rather than own a buffer, because an owned buffer duplicated by `dup`
+is either a deep copy at every `dup` or an alias. The alternative is to make
+`str` a pointer type like `TBox` — linear, explicit `clone`, no `dup` — which is
+what Rust does with `String` and which the capability machinery already supports
+without a new feature.
+
+*Why it is a question and not a task:* it cannot be settled without the memory
+model, and the memory model is not the next thing. Note the decision is CHEAP TO
+DEFER in one direction only — going from Copy to linear later breaks every
+program that duplicates a string, whereas the reverse breaks nothing.
+*Cost of leaving open:* a performance model nobody can state for the one type
+every program touches.
+*Closes when:* there is an allocator, or `Box`/`Rc` get surface construction.

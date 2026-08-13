@@ -72,6 +72,7 @@ noeq type session = {
 
 let i64_t : dtype = TPrim PI64
 let bool_t : dtype = TPrim PBool
+let str_t  : dtype = TPrim PStr
 
 let bin_i64 : srow = { pre = [i64_t; i64_t]; post = [i64_t] }
 let cmp_i64 : srow = { pre = [i64_t; i64_t]; post = [bool_t] }
@@ -101,15 +102,36 @@ let prelude_words : list nentry = [
   { n_name = "or";  n_id = w_or;  n_sig = bin_bool; n_op = None };
   { n_name = "true";  n_id = w_true;  n_sig = push_bool; n_op = None };
   { n_name = "false"; n_id = w_false; n_sig = push_bool; n_op = None };
+  /// String words. `show` is the only way to get a number into a message now
+  /// that IO is string-typed (D-65), and `cat` the only way to join one to a
+  /// literal; without the pair, strings would be writable and useless.
+  { n_name = "show"; n_id = w_show;
+    n_sig = { pre = [i64_t]; post = [str_t] };          n_op = None };
+  { n_name = "cat";  n_id = w_cat;
+    n_sig = { pre = [str_t; str_t]; post = [str_t] };   n_op = None };
+  /// Spelled `str=` because `=` is already `i64` equality and the core is
+  /// monomorphic (D02 §5). An overloaded `=` is an interface, which is D03's
+  /// job and not something to fake here with a second prelude entry.
+  { n_name = "str="; n_id = w_streq;
+    n_sig = { pre = [str_t; str_t]; post = [bool_t] };  n_op = None };
+  /// Inverse of `show`. 0 on malformed input — the concession the `i64`-typed
+  /// `read` already made, kept rather than replaced by a stuck machine.
+  { n_name = "parse"; n_id = w_parse;
+    n_sig = { pre = [str_t]; post = [i64_t] };          n_op = None };
   /// The built-in `IO` effect (category 2). These are ORDINARY operations of
   /// an ordinary effect — `n_op = Some eff_io` and nothing else — but no
-  /// program can handle them, because `effect` allocates ids from 1 upward and
-  /// the host owns 0. So `print` and `read` always escape to `bin/catcat.ml`,
-  /// which is the only thing in the system that can actually perform one.
+  /// program can handle them, because `effect` allocates ids from 2 upward and
+  /// the host owns 0 (`Dict`) and 1 (`IO`). So `print` and `read` always escape
+  /// to `bin/catcat.ml`, the only thing in the system that can perform one.
+  ///
+  /// THEY TAKE AND RETURN STRINGS. The `i64` versions were a placeholder from
+  /// before there was a string type, not a design: an IO facility that can only
+  /// move integers cannot emit a message, and every example that wanted one had
+  /// to print its parts as bare numbers.
   { n_name = "print"; n_id = w_print;
-    n_sig = { pre = [i64_t]; post = [] };  n_op = Some eff_io };
+    n_sig = { pre = [str_t]; post = [] };  n_op = Some eff_io };
   { n_name = "read";  n_id = w_read;
-    n_sig = { pre = []; post = [i64_t] };  n_op = Some eff_io };
+    n_sig = { pre = []; post = [str_t] };  n_op = Some eff_io };
 ]
 
 /// `IO` is in scope from the first line, so `( -- i64 !IO )` resolves without

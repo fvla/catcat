@@ -129,6 +129,7 @@ have to be written by hand.
 | `u8` `u16` `u32` `u64` | valid; no operations |
 | `f32` `f64` | valid; no operations (§1) |
 | `bool` | `true`/`false`, or a comparison. Consumed by `if` |
+| `str` | immutable string; `"…"` literals, see §7 |
 | `unit` | valid; no literal |
 | `Box[t]` | owning unique pointer. Neither `Copy` nor `Drop` — linear |
 | `Rc[t]` | shared refcounted pointer |
@@ -165,33 +166,62 @@ Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).
 
 ---
 
-## 7. IO
+## 7. Strings and IO
 
 | Word | Signature | Meaning |
 |---|---|---|
-| `print` | `( i64 -- !IO )` | write the top of the stack and a newline |
-| `read` | `( -- i64 !IO )` | read a line and push it as an `i64` |
+| `show` | `( i64 -- str )` | render a number |
+| `parse` | `( str -- i64 )` | read a number; `0` if malformed |
+| `cat` | `( str str -- str )` | concatenate, `below` then `top` |
+| `str=` | `( str str -- bool )` | equality |
+| `print` | `( str -- !IO )` | write the string, **no newline added** |
+| `read` | `( -- str !IO )` | read a line, newline stripped |
+
+Literals are double-quoted and may span lines — see [U01](U01_Grammar.md) §2 for
+the escapes.
 
 ```
-catcat> 42 print
-42
-catcat> echo 5 | catcat.exe 'read dup * print'
+catcat> "a" "b" cat
+ok  "ab"
+catcat> "answer: " 42 show cat "\n" cat print
+answer: 42
+catcat> echo 5 | catcat.exe 'read parse dup * show print'
 25
 ```
 
-These are **operations of the built-in `IO` effect**, not primitives — `locate
-print` says so. Nothing in the effect system is special-cased for them; the only
-asymmetry is that the interpreter owns effect ids 0 (`Dict`) and 1 (`IO`) while
-`effect` allocates from 2 upward, so no program can declare another
-host-serviced effect.
+`str=` is spelled separately from `=` because the core is monomorphic: `=` is
+`i64` equality and nothing overloads it. A single `=` over both is an interface,
+which is a real feature and not a second prelude entry.
+
+`str` is `Copy` and `Drop` like every other primitive, so it duplicates and
+discards freely. That is right for an immutable value and it does commit the
+eventual implementation to sharing rather than to owned buffers — an owned
+buffer would be `Box`-like and therefore linear.
+
+The first four are primitives; `print` and `read` are **operations of the
+built-in `IO` effect**, and `locate` says which is which:
+
+```
+catcat> locate cat
+cat ( str str -- str )
+  \ primitive: string concatenation
+catcat> locate print
+print ( str -- !IO )
+  \ operation of effect IO
+```
+
+Nothing in the effect system is special-cased for them; the only asymmetry is
+that the interpreter owns effect ids 0 (`Dict`) and 1 (`IO`) while `effect`
+allocates from 2 upward, so no program can declare another host-serviced effect.
 
 `IO` is nevertheless an effect like any other and can be intercepted with
 `handle` — see [U01](U01_Grammar.md) §6, which also covers declaring effects,
 writing handlers, and what `!IO` in a signature now means.
 
-A malformed `read` (not a number, or end of input) yields `0` rather than
-failing. That is a REPL convenience, not a decision: there is no error type to
-return yet.
+**`parse` yields `0` on anything it cannot read**, and `read` yields `""` at end
+of input. Both are placeholders for the same missing thing: the honest signature
+is `( str -- option[i64] )`, which needs sums to have surface syntax. A sentinel
+is preferred to a stuck machine, because a stuck machine loses the session.
 
 ---
 

@@ -10,7 +10,7 @@ module E01_Lexer
 /// that design show up directly here:
 ///
 ///   * **Brackets are self-delimiting.** `{hypot dup *}` and `{ hypot dup * }`
-///     lex identically, because `{ } ( ) [ ] :` terminate a word run without
+///     lex identically, because `{ } ( ) [ ] :` and `"` terminate a word run without
 ///     needing surrounding space. This is the divergence from Forth that buys
 ///     precise tooling.
 ///   * **Sigils are lexical.** `$x`, `#T`, `!IO` are recognised by their first
@@ -41,6 +41,9 @@ open FStar.List.Tot
 type token =
   | TkWord   : string -> token
   | TkInt    : int -> token
+  /// A double-quoted string literal, quotes stripped and escapes resolved.
+  /// May span lines (D-65); see `take_string`.
+  | TkStr    : string -> token
   /// `--`, the input/output separator inside a signature. An ordinary word run
   /// that `classify_run` promotes to its own token, so the parser cannot
   /// confuse it with a user-defined word. It must be space-separated; `--` is

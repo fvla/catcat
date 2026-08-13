@@ -28,6 +28,26 @@ type prim =
   | PF32 | PF64
   | PBool
   | PUnit
+  /// An immutable string. A TABLE ROW AND NOT A `dtype` CONSTRUCTOR (D-65),
+  /// which is the same choice D-55 made for intrinsics: adding a constructor
+  /// would touch `dtype_size`, `has_cap`, `wf_dtype`, `R04.erase_value` and
+  /// every renderer, whereas a row touches `prim_rep` and the places that
+  /// enumerate primitives because they must.
+  ///
+  /// IT IS ABSTRACT IN THE SAME SENSE `f32` IS. The core calculus never inspects
+  /// a string -- concatenation and formatting are prelude words backed by
+  /// `R01.prim_word`, not core operations -- so a primitive with an F* `string`
+  /// representation is enough to state and prove everything M02-M11 says. What a
+  /// string is *made of* is a question for the memory model, which does not
+  /// exist yet.
+  ///
+  /// CAPABILITIES ARE THE ONE THING TO REVISIT. `has_cap` gives every `TPrim`
+  /// both `CCopy` and `CDrop`, so `str` is freely duplicated and discarded. For
+  /// an immutable value that is semantically right — two copies are
+  /// indistinguishable — but it commits the eventual implementation to interning
+  /// or refcounting rather than to owned buffers, because an owned buffer would
+  /// have to be `TBox`-like and therefore linear. N02 Q-15 records the choice.
+  | PStr
 
 /// Floating point is abstract in the specification. The core calculus never
 /// inspects a float, so an abstract type is enough to state and prove every
@@ -48,6 +68,7 @@ let prim_rep (p:prim) : Type0 =
   | PF32  -> f32      | PF64  -> f64
   | PBool -> bool
   | PUnit -> unit
+  | PStr  -> string
 
 (* ------------------------------------------------------------------------ *)
 (* Capabilities                                                             *)

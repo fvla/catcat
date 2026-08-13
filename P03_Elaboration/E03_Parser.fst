@@ -382,6 +382,7 @@ let rec parse_terms (mt:list mprod) (closing:bool) (acc:list sterm) (ts:list tok
                         then POk (rev acc) rest
                         else PErr "unexpected '}'"
   | TkInt n :: rest -> parse_terms mt closing (StInt n :: acc) rest
+  | TkStr s :: rest -> parse_terms mt closing (StStr s :: acc) rest
 
   /// A word that names a macro invokes it; anything else is an ordinary word.
   /// The expansion is spliced into the enclosing sequence, so a macro's output

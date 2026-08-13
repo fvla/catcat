@@ -40,6 +40,11 @@ let eff_io  : eff_id  = 1
 let w_print : word_id = 13
 let w_read  : word_id = 14
 
+let w_show  : word_id = 15
+let w_cat   : word_id = 16
+let w_streq : word_id = 17
+let w_parse : word_id = 18
+
 let w_user_base : word_id = 100
 
 let prelude : rdict = [
@@ -61,6 +66,10 @@ let prelude : rdict = [
   (w_false, WDef (TPrimOp (PLit (LPrim PBool false))));
   (w_print, WOp eff_io);
   (w_read,  WOp eff_io);
+  (w_show,  WPrim OShowI);
+  (w_cat,   WPrim OCatS);
+  (w_streq, WPrim OEqS);
+  (w_parse, WPrim OParseI);
 ]
 
 /// `PI64`'s representation is `sint 64`, so the literal must be in range. Out

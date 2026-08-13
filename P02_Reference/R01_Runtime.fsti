@@ -68,6 +68,10 @@ type rvalue =
   | RBool : bool -> rvalue
   | RUnit : rvalue
   | RBits : int -> rvalue
+  /// `M01.PStr`. Nested directly rather than as a heap handle, for the same
+  /// reason `RBox` is: the reference interpreter has no allocator and strings
+  /// are immutable, so sharing is unobservable (D-65).
+  | RStr  : string -> rvalue
   | RSeal : nom_id -> list rvalue -> rvalue
   | RSum  : nat -> list rvalue -> rvalue
   | RBox  : rvalue -> rvalue
@@ -81,10 +85,27 @@ type rstack = list rvalue
 (* Primitive operations                                                     *)
 (* ------------------------------------------------------------------------ *)
 
+/// `WPrim` words, not `M05.prim_op` rows: these are ORDINARY WORDS whose
+/// definition the interpreter happens to know, exactly like `+`. Nothing in the
+/// core mentions them, so adding one costs a constructor here, a case in
+/// `R02.apply_prim` and a prelude entry — and no change to the language.
 type prim_word =
   | OAddI | OSubI | OMulI | ODivI | OModI
   | OLtI  | OLeI  | OEqI
   | ONot  | OAnd  | OOr
+  /// Strings. `OShowI` is `i64 -- str` and `OCatS` is `str str -- str`.
+  ///
+  /// `OShowI` EXISTS BECAUSE `print` NO LONGER TAKES A NUMBER (D-65). Making IO
+  /// string-typed without a way to render an integer would leave numbers
+  /// unprintable, which is a capability the placeholder IO had and its
+  /// replacement must not lose. `OCatS` is here for the same reason one step on:
+  /// a message is a literal and a value joined, and without concatenation the
+  /// only printable strings are the ones written whole.
+  | OShowI | OCatS
+  | OEqS
+  /// `str -- i64`, the inverse of `OShowI`. Without it, string IO would cost
+  /// the numeric INPUT the placeholder `read` had.
+  | OParseI
 
 (* ------------------------------------------------------------------------ *)
 (* The dictionary                                                           *)

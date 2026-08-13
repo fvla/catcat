@@ -21,7 +21,8 @@ let rec erase_value (#t:dtype) (v:value t) : Tot rvalue (decreases v) =
      | PF32  -> RBits 0
      | PF64  -> RBits 0
      | PI8   -> RInt x | PI16 -> RInt x | PI32 -> RInt x | PI64 -> RInt x
-     | PU8   -> RInt x | PU16 -> RInt x | PU32 -> RInt x | PU64 -> RInt x)
+     | PU8   -> RInt x | PU16 -> RInt x | PU32 -> RInt x | PU64 -> RInt x
+     | PStr  -> RStr x)
   | VSeal n _ inner       -> RSeal n (erase_stack inner)
   | VSum tag payload      -> RSum tag (erase_stack payload)
   | VBox v                -> RBox (erase_value v)

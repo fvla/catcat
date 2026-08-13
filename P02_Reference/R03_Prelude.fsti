@@ -47,13 +47,25 @@ val w_false : word_id
 
 /// The first id available to user definitions. Kept explicit so P03 can
 /// allocate above the primitives without a magic constant.
-/// Effect 0 is `IO`, reserved for the host. See the note in the implementation:
-/// no catcat program can handle it, because the surface `effect` declaration
-/// allocates effect ids from 1 upward, so an `IO` operation always escapes to
-/// `R05`'s caller — which is the only place that can actually perform one.
+/// Effect 1 is `IO`, reserved for the host (0 is `M04.eff_dict`). See the note
+/// in the implementation: no catcat program can handle it, because the surface
+/// `effect` declaration allocates effect ids from 2 upward, so an `IO` operation
+/// always escapes to `R05`'s caller — the only place that can perform one.
+///
+/// `print` and `read` are STRING-TYPED (D-65). They were `i64`-typed while
+/// there was no string type; that was a placeholder, and `w_show` is what keeps
+/// numbers printable now that it is gone.
 val eff_io  : eff_id
 val w_print : word_id
 val w_read  : word_id
+
+/// String words, bound to `WPrim`: `show` is `( i64 -- str )`, `cat` is
+/// `( str str -- str )`, `str=` is `( str str -- bool )`.
+val w_show  : word_id
+val w_cat   : word_id
+val w_streq : word_id
+/// `( str -- i64 )`, inverse of `show`. Malformed input yields 0.
+val w_parse : word_id
 
 val w_user_base : word_id
 

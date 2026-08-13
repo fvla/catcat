@@ -65,6 +65,7 @@ let render_prim (p:prim) : Tot string =
   | PU8 -> "u8"     | PU16 -> "u16"   | PU32 -> "u32"   | PU64 -> "u64"
   | PF32 -> "f32"   | PF64 -> "f64"
   | PBool -> "bool" | PUnit -> "unit"
+  | PStr -> "str"
 
 let rec render_ty (d:dtype) : Tot string (decreases (dtype_size d)) =
   match d with
@@ -188,6 +189,12 @@ let show_lit (l:lit) : Tot string =
   | LPrim PUnit _ -> "unit"
   | LPrim PF32 _  -> "<f32>"
   | LPrim PF64 _  -> "<f64>"
+  /// Re-quoted but NOT re-escaped, so a decompiled string containing a quote or
+  /// a newline prints as text that will not re-parse. Flagged rather than fixed:
+  /// `locate`'s round-trip claim is a test of the elaborator, and the honest
+  /// move is to fix the printer when escaping exists on both sides, not to hide
+  /// the asymmetry. See `E01.escape_char` for the set that would need inverting.
+  | LPrim PStr s  -> "\"" ^ s ^ "\""
 
 /// `dup`, `pop` and `swap` are surface words and print as themselves. `pick`
 /// and `roll` are not: they exist only as the compiled form of a `$x` local,
@@ -314,6 +321,9 @@ let show_prim_word (o:prim_word) : Tot string =
   | OLtI  -> "integer less-than" | OLeI -> "integer less-or-equal"
   | OEqI  -> "integer equality"
   | ONot  -> "boolean negation" | OAnd -> "boolean and" | OOr -> "boolean or"
+  | OShowI -> "integer to string" | OCatS -> "string concatenation"
+  | OEqS   -> "string equality"
+  | OParseI -> "string to integer (0 if malformed)"
 
 (* ------------------------------------------------------------------------ *)
 (* Macros                                                                   *)
@@ -346,6 +356,7 @@ let rec show_spairs (ps:list (string & string)) : Tot string (decreases ps) =
 let rec show_sterm (t:sterm) : Tot string (decreases %[(sterm_size t <: nat); 0]) =
   match t with
   | StInt n    -> string_of_int n
+  | StStr s    -> "\"" ^ s ^ "\""
   | StWord w   -> w
   | StVar x    -> "$" ^ x
   | StBlock ts -> braces (show_sterms ts)

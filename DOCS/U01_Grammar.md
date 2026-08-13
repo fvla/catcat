@@ -47,6 +47,7 @@ type       = "Box" "[" type "]"
            | name ;
 
 term       = integer
+           | string
            | word
            | "$" name
            | conditional
@@ -120,7 +121,7 @@ bracket punctuation is one word, so `+`, `<=`, `pop-all` and `hypot` are all
 ordinary names. Arithmetic is spelled with operators — see
 [U02](U02_Word_Reference.md).
 
-**Self-delimiting punctuation:** `{ } ( ) [ ] :`. These end a word run with no
+**Self-delimiting punctuation:** `{ } ( ) [ ] : "`. These end a word run with no
 surrounding space needed, so `{dup *}` and `{ dup * }` are identical. This is
 the deliberate divergence from Forth that makes precise tooling possible.
 
@@ -152,9 +153,37 @@ requirement is what lets `-` be a word:
 10 -3 +     \ negative literal -> 7
 ```
 
+**Strings** are double-quoted and **may span lines**, as in Perl — a literal
+newline inside the quotes is part of the string:
+
+```
+catcat> "one
+two" print
+one
+two
+```
+
+The escapes are `\n` `\t` `\r` `\"` `\\`, and an unrecognised one is an error
+rather than the character itself:
+
+```
+catcat> "bad \q escape"
+error: unknown string escape '\q'; the escapes are \n \t \r \" \\
+catcat> "oops
+error: unterminated string: no closing '"' before end of input
+```
+
+`"` is self-delimiting like the brackets, so `"a""b"` is two literals. Because a
+string runs to its closing quote however many lines that takes, an unclosed one
+is reported at end of input rather than at the end of the line — the same trade
+the `{ … }` rule makes.
+
+Single quotes and backticks are not lexed. See [U02](U02_Word_Reference.md) §7
+for `show`, `cat`, `parse` and `str=`.
+
 **Comments** run from `\` to end of line. `( … )` is a *type annotation*, not a
 comment — the one place this language reverses a Forth convention rather than
-dropping it.
+dropping it. Inside a string a `\` is an escape, not a comment.
 
 ---
 
@@ -493,18 +522,24 @@ static. It is recorded as an open question, not claimed as the final answer.
 
 ### `IO`, and effects only the host can supply
 
-```
 | Word | Signature |
 |---|---|
-| `print` | `( i64 -- !IO )` |
-| `read` | `( -- i64 !IO )` |
-```
+| `print` | `( str -- !IO )` |
+| `read` | `( -- str !IO )` |
 
 ```
-catcat> 42 print
+catcat> "42\n" print
 42
-catcat> define greet ( -- !IO ) { 1 print 2 print }
+catcat> define greet ( str -- !IO ) { "hello, " swap cat "!\n" cat print }
+defined greet ( str -- !IO )
+catcat> "catcat" greet
+hello, catcat!
 ```
+
+`print` writes the string as-is and adds **no newline** — write `"\n"` yourself.
+The `i64`-typed `print`/`read` this replaced could not offer the choice.
+[U02](U02_Word_Reference.md) §7 covers `show` and `parse`, which are how numbers
+get in and out.
 
 These are **ordinary operations of an ordinary effect**. Nothing about the
 effect system is special-cased for them, and the only asymmetry is over who may
@@ -518,7 +553,7 @@ What it does **not** mean is that `IO` is unhandleable. It is an effect like any
 other, so you can intercept it:
 
 ```
-catcat> handle IO over ( ) init { } { print { pop } } { 1 print }
+catcat> handle IO over ( ) init { } { print { pop } } { "1" print }
 ok  (empty)
 ```
 
@@ -549,7 +584,7 @@ Runs `body` with words rebound. **Static**: the rebinding is discharged during
 elaboration and leaves *nothing* in the compiled program.
 
 ```
-catcat> define noisy ( i64 -- i64 !IO ) { dup print }
+catcat> define noisy ( i64 -- i64 !IO ) { dup show print }
 catcat> define quiet ( i64 -- i64 )     { 1 * }
 catcat> define t2 { with { noisy quiet } { noisy noisy } }
 defined t2 ( i64 -- i64 )
@@ -619,7 +654,7 @@ is otherwise invisible.
 | dynamic `with` / `!Dict` | every rebinding is resolved at elaboration (§7); there is no runtime dictionary lookup |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
-| strings `"…"`, quotation `'…'`, backtick | not lexed |
+| quotation `'…'`, backtick | not lexed. Strings ARE lexed (§2) |
 | macro hygiene | absent (§5): a `$x` naming no slot is captured by whatever encloses the expansion |
 | macros as words | a macro is a template, not a program; the eventual design is an ordinary word with an effect that consumes code, which needs the elaboration-time interpreter |
 | `Box`/`Rc` construction | types exist; no surface word builds one |
