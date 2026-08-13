@@ -91,11 +91,16 @@ first token of a declaration.
 
 **Four words are effectively taken**, not by the grammar but by being dispatched
 on wherever a term may start: `if` and `unsafe` (both macro-table entries),
-`handle` and `with`. Each
-is still *definable* — `define if { 9 }` is accepted — but every later use is
-read as the construct, so the definition can never be called. Nothing warns
-about this yet. **Every macro declared adds a word to this list**, which is the
-real cost of the macro system and is not diagnosed.
+`handle` and `with`. Each is still *definable* — `define if { 9 }` is accepted —
+but every later use is read as the construct, so the definition can never be
+called.
+
+Nothing warns about any of this. **Every macro declared adds a word to that
+list**, which is the real cost of the macro system and is not diagnosed.
+
+`recurse` is a fifth taken name, by a different route: inside a `define` with a
+written signature it is bound to the word being defined (§6), shadowing any
+other binding of that name for the length of the body.
 
 `{ … }` parses as a term anywhere, but the only constructs that **consume** one
 are `define`, the conditional of §4, the handler and rebinding forms of §6 and
@@ -547,7 +552,7 @@ These are **ordinary operations of an ordinary effect**. Nothing about the
 effect system is special-cased for them, and the only asymmetry is over who may
 *declare* one.
 
-**The reserved block** is effects 0–3, and `effect` allocates from 4 upward, so
+**The reserved block** is effects 0–4, and `effect` allocates from 5 upward, so
 no program can bring a new host-serviced effect into existence:
 
 | Id | Effect | Discharged by | Operations |
@@ -556,6 +561,7 @@ no program can bring a new host-serviced effect into existence:
 | 1 | `IO` | the REPL, which performs it | `print`, `read` |
 | 2 | `Unsafe` | you, with `unsafe { … }` | **none** |
 | 3 | `C` | the REPL, which calls libc | each `extern` |
+| 4 | `Rec` | you, with `handle Rec` — usually nobody | **none** |
 
 That is what "suppliable only by the compiler or interpreter" means — a fact
 about who owns the identifier, not a restriction the effect system had to grow.
@@ -600,6 +606,68 @@ macro unsafe
 There is no keyword and no elaborator case. A word whose row still says
 `!Unsafe` *is* an unsafe word, by the same rule that makes `!IO` mean what it
 means.
+
+### `Rec`: recursion and loops
+
+A word's own name is **not** in scope inside its body. `recurse` is, and it means
+"call the word being defined" — Forth's `RECURSE`, for Forth's reason:
+
+```
+catcat> define fact ( i64 -- i64 !Rec ) { dup 0 <= if { } then { pop 1 } else { dup 1 - recurse * } endif }
+defined fact ( i64 -- i64 !Rec )
+catcat> 5 fact
+ok  120
+```
+
+**The signature is mandatory.** Inferring the type of a word whose body calls it
+is solving a fixpoint, and writing the signature is the missing information:
+
+```
+catcat> define f { recurse }
+error: f uses 'recurse', which needs a written signature — the signature of a recursive word cannot be inferred from its own body
+```
+
+**`!Rec` is what "may not terminate" looks like in a type**, and it propagates
+like any other effect:
+
+```
+catcat> define fact6 ( -- i64 ) { 6 fact }
+error: fact6 declares no effects but its body has !Rec
+catcat> define fact6 ( -- i64 !Rec ) { 6 fact }
+defined fact6 ( -- i64 !Rec )
+```
+
+Carrying it all the way to the top level is the normal outcome, not a problem to
+be silenced. `handle Rec over ( ) init { } { } { … }` discharges it if you want
+to assert that a particular call does terminate — an unproved claim, exactly as
+much of a promise as `unsafe` is.
+
+**A loop is a tail call.** There is no `while`; `recurse` in tail position is one,
+and the continuation does not grow:
+
+```
+catcat> define countdown ( i64 -- !IO !Rec ) { dup 0 <= if { } then { pop } else { dup show print " " print 1 - recurse } endif }
+catcat> 5 countdown
+5 4 3 2 1
+catcat> define sum ( $n:i64 $acc:i64 -- i64 !Rec ) { $n 0 <= if { } then { $acc } else { $n 1 - $acc $n + recurse } endif }
+defined sum ( i64 i64 -- i64 !Rec )
+catcat> 100 0 sum
+ok  5050
+```
+
+A runaway recursion hits the interpreter's fuel bound rather than the machine's
+stack:
+
+```
+catcat> define spin ( i64 -- i64 !Rec ) { recurse }
+catcat> 1 spin
+out of fuel
+```
+
+Mutual recursion between two words is **not** detected — the check is syntactic
+and looks only for self-reference, so two words that call each other get neither
+`!Rec` nor a diagnostic. Anonymous loops are also absent: a macro expands to
+terms and cannot create the declaration a self-reference needs to name.
 
 ### `extern`: calling C
 
@@ -744,7 +812,8 @@ is otherwise invisible.
 
 | Feature | State |
 |---|---|
-| loops, recursion | not parsed — `if` is the whole of control flow |
+| mutual recursion | undetected: the `!Rec` check is syntactic self-reference only (§6) |
+| anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
 | `#T` generics | parses, elaborator rejects |
 | `let` and `let (…)` | not parsed |
 | dynamic `with` / `!Dict` | every rebinding is resolved at elaboration (§7); there is no runtime dictionary lookup |

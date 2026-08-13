@@ -349,3 +349,38 @@ and uses_unroll_impls (is:list (op_id & term))
   match is with
   | []          -> false
   | (_, t) :: r -> uses_unroll t || uses_unroll_impls r
+
+/// Whether `w` is called anywhere in `t`.
+///
+/// One use, and it is the whole of recursion (D-67): a `define` whose body calls
+/// itself is a word the Dictionary must resolve AT RUNTIME rather than by
+/// inlining, because inlining it does not terminate. `E06.install_def` asks this
+/// question and gives such a word the `Rec` effect, so "may not terminate" is
+/// visible in a signature instead of being a property a reader has to derive.
+///
+/// Deliberately syntactic and deliberately not transitive. Mutual recursion
+/// between two words is invisible to it, which is honest rather than adequate:
+/// closing that needs the call-graph reachability over `w_defs` that M11's E5
+/// also wants, and neither exists yet.
+let rec mentions_word (w:word_id) (t:term)
+  : Tot bool (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TWord w'              -> w' = w
+  | TSeq a b              -> mentions_word w a || mentions_word w b
+  | TCase _ bs            -> mentions_word_list w bs
+  | THandle _ _ i impls b -> mentions_word w i || mentions_word_impls w impls
+                           || mentions_word w b
+  | TSpecialize b         -> mentions_word w b
+  | _                     -> false
+
+and mentions_word_list (w:word_id) (ts:list term)
+  : Tot bool (decreases %[terms_size ts; 1]) =
+  match ts with
+  | []     -> false
+  | t :: r -> mentions_word w t || mentions_word_list w r
+
+and mentions_word_impls (w:word_id) (is:list (op_id & term))
+  : Tot bool (decreases %[impls_size is; 1]) =
+  match is with
+  | []          -> false
+  | (_, t) :: r -> mentions_word w t || mentions_word_impls w r

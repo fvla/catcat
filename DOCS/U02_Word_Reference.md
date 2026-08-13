@@ -159,9 +159,9 @@ the start of a declaration, and so are `effect`, `extern`, `macro` and
 `else`, `endif`, `over`, `init`, `declare`, `alt` and `end` are likewise free —
 each is a keyword only inside the construct that introduces it. Four names are
 effectively taken — `if`, `unsafe`, `handle` and `with` — because they are
-dispatched on
-wherever a term may start: a definition of one is accepted but can never be
-called ([U01](U01_Grammar.md) §1). **Declaring a macro adds a name to that
+dispatched on wherever a term may start: a definition of one is accepted but can
+never be called ([U01](U01_Grammar.md) §1). `recurse` is a fifth inside any
+signed `define`, where it names the word being defined. **Declaring a macro adds a name to that
 list**, silently.
 
 Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).

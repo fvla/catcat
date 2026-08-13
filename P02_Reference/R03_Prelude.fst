@@ -20,9 +20,10 @@ let w_or  : word_id = 10
 let w_true  : word_id = 11
 let w_false : word_id = 12
 
-/// THE RESERVED EFFECT BLOCK: 0 `Dict`, 1 `IO`, 2 `Unsafe`, 3 `C` (D-66).
+/// THE RESERVED EFFECT BLOCK: 0 `Dict`, 1 `IO`, 2 `Unsafe`, 3 `C`, 4 `Rec`
+/// (D-66, D-67).
 ///
-/// All four are HOST EFFECTS in the same precise sense: no catcat program can
+/// All five are HOST EFFECTS in the same precise sense: no catcat program can
 /// supply an implementation for one, because `effect` allocates from
 /// `eff_user_base` upward and cannot name an id below it. What varies is who
 /// discharges them.
@@ -40,6 +41,12 @@ let w_false : word_id = 12
 ///   * `C` (3) is a foreign call. `extern` declares one; the host performs it
 ///     against libc. Every `extern` word ALSO carries `!Unsafe`, because the
 ///     thing on the other side of the boundary is not checked by anything here.
+///   * `Rec` (4) HAS NO OPERATIONS EITHER, and is the other half of the same
+///     idea as `Unsafe`: a word whose body calls itself carries it, so "may not
+///     terminate" is in the signature rather than left for a reader to derive
+///     (D-67). Koka spells the same thing `div`. Discharging it with
+///     `handle Rec` is a claim that this call does terminate, unproved and
+///     therefore exactly as much of a promise as `unsafe` is.
 ///
 /// RESERVING AN ID IS THE WHOLE MECHANISM, and it needed no new feature: it is
 /// a fact about who owns the identifier, not a restriction the effect system
@@ -50,11 +57,12 @@ let eff_dict_r  : eff_id = 0
 let eff_io      : eff_id = 1
 let eff_unsafe  : eff_id = 2
 let eff_c       : eff_id = 3
+let eff_rec     : eff_id = 4
 
 /// The first id available to a surface `effect` declaration. Named so that P03
 /// does not have to track the block above by hand — `se_next_eff` was a literal
 /// `2` that a fifth reserved effect would have silently invalidated.
-let eff_user_base : eff_id = 4
+let eff_user_base : eff_id = 5
 
 /// `print` and `read`: ordinary operations of the ordinary effect `IO`. There is
 /// no second mechanism, and "suppliable only by the compiler or interpreter to

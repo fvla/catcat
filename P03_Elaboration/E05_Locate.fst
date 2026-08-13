@@ -461,7 +461,17 @@ let locate (mt:list mprod) (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
       match dict_lookup d n.n_id with
       | Some (WPrim o) -> hdr ^ "\n  \\ primitive: " ^ show_prim_word o
       | Some (WOp eff) -> hdr ^ "\n  \\ operation of effect " ^ show_eff e eff
-      | Some (WDef t)  -> "define " ^ hdr ^ " {\n  " ^ show_term e t ^ "\n}"
+      /// INSIDE A WORD'S OWN BODY ITS ID IS SPELLED `recurse`, not its name,
+      /// because the name is not in scope there (D-67). Prepending that binding
+      /// makes `show_word` — which takes the first match — print text that
+      /// re-parses, which is the round-trip this module's header claims and
+      /// which a self-call would otherwise quietly break.
+      | Some (WDef t)  ->
+        let e' = { e with
+                     ne_words = ({ n_name = "recurse"; n_id = n.n_id;
+                                   n_sig = n.n_sig; n_op = n.n_op })
+                                :: e.ne_words } in
+        "define " ^ hdr ^ " {\n  " ^ show_term e' t ^ "\n}"
       /// Reachable only if the name environment and the dictionary disagree,
       /// which would be a session bug rather than a user error. Say which.
       | None -> hdr ^ "\n  \\ internal error: bound to id "

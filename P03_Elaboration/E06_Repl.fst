@@ -137,7 +137,7 @@ let prelude_words : list nentry = [
 /// `IO` is in scope from the first line, so `( -- i64 !IO )` resolves without
 /// anyone declaring it.
 let prelude_effs : list (string & eff_id) =
-  [("IO", eff_io); ("Unsafe", eff_unsafe); ("C", eff_c)]
+  [("IO", eff_io); ("Unsafe", eff_unsafe); ("C", eff_c); ("Rec", eff_rec)]
 
 /// EVERY WORD GETS AN OPERATION DECLARATION, not just the ones an `effect`
 /// declared (D-63). `M06.w_sig` reads a word's signature out of `w_ops`, so a
@@ -224,10 +224,52 @@ let subset_effs (a b:list eff_id) : Tot bool = for_all (fun i -> mem i b) a
 /// effect list is not an assertion of purity — a `define` with no signature at
 /// all would otherwise be unable to use any effect — so it is only checked
 /// when a signature was written.
+/// The id the word being defined will get. Both this module and the elaborator
+/// have to agree on it BEFORE the body is elaborated, because `recurse` inside
+/// the body compiles to a call to it (D-67). One expression, referred to from
+/// both places, rather than two copies of `s.se_next`.
+let self_id (s:session) : Tot word_id = s.se_next
+
+/// The environment a recursive body is checked in: the word itself, at its
+/// DECLARED signature, under the `Rec` effect.
+///
+/// It has to be the declared signature and there is no way around that. A word's
+/// signature is otherwise inferred from its body, and the body of a recursive
+/// word mentions the word — so inferring it is solving a fixpoint, which this
+/// elaborator does not do and D-31's "mandatory inside an effect declaration"
+/// carve-out already anticipated for the analogous case.
+let self_wenv (s:session) (row:srow) : Tot wenv =
+  { s.se_wenv with
+      w_ops = { se_ops =
+        (self_id s, { od_eff   = eff_rec;
+                      od_stage = SDynamic;
+                      od_sig   = { op_pre = row.pre; op_post = row.post } })
+        :: s.se_wenv.w_ops.se_ops } }
+
+/// The name `recurse`, bound to the word being defined. Forth's `RECURSE`, and
+/// for Forth's reason: the word's own name is not in scope inside its body.
+///
+/// ANONYMOUS ON PURPOSE. Binding the name instead would silently change the
+/// meaning of `define f { 1 } define f ( … ) { f }` — the inner `f` would stop
+/// meaning the outer one — and a program that already parsed would quietly do
+/// something else. `recurse` cannot collide with anything, and it is in scope
+/// only where it means something.
+let self_nenv (s:session) (row:srow) : Tot nenv =
+  { s.se_nenv with
+      ne_words = ({ n_name = "recurse"; n_id = self_id s;
+                    n_sig = row; n_op = None })
+                 :: s.se_nenv.ne_words }
+
 let install_def (s:session) (name:string) (declared:option srow)
                 (deceffs:option (list eff_id)) (row:srow) (t:term)
   : Tot (session & string) =
-  let env = s.se_wenv in
+  /// Checked against the self-extended environment when a signature was
+  /// declared, so that a `recurse` the elaborator resolved has something to
+  /// typecheck against. With no declared signature there is no self binding, and
+  /// `E06` has already refused the body (see `SdDefineInfer`).
+  let env = (match declared with
+             | Some _ -> self_wenv s row
+             | None   -> s.se_wenv) in
   match infer env t with
   | None -> (s, "error: " ^ name ^ " does not typecheck")
   | Some (got, grow) ->
@@ -252,6 +294,20 @@ let install_def (s:session) (name:string) (declared:option srow)
                ^ (if Nil? actual then " none" else render_effs s.se_nenv actual))
       else
         let id = s.se_next in
+        /// RECURSION IS A DICTIONARY WORD THAT CANNOT BE INLINED (D-67).
+        ///
+        /// A word whose body calls itself gets `eff_rec` at `SDynamic` instead of
+        /// `eff_dict` at `SStatic`, and the difference is exactly D04's two
+        /// tiers. A static Dictionary word is resolved by inlining — which is
+        /// `M11.specialize`, which is `M04.handle` run early (D-60) — and
+        /// inlining a self-reference does not terminate. A dynamic one is
+        /// resolved by frame lookup when it runs, which is what `R02.step`
+        /// already does for `WDef`, and it terminates or it does not.
+        ///
+        /// So `!Rec` is not a new mechanism bolted on for recursion. It is the
+        /// existing annotation saying WHEN this word's meaning is supplied, at
+        /// the one value where the answer has to be "later".
+        let is_rec = mentions_word id t in
         let s' = { s with
           se_nenv = { s.se_nenv with
                         ne_words = ({ n_name = name; n_id = id;
@@ -265,13 +321,14 @@ let install_def (s:session) (name:string) (declared:option srow)
           /// keeping the rest would make rows grow with call depth.
           se_wenv = { w_effs = (id, row_visible grow) :: s.se_wenv.w_effs;
                       w_ops  = { se_ops =
-                        (id, { od_eff   = eff_dict;
-                               od_stage = SStatic;
+                        (id, { od_eff   = (if is_rec then eff_rec else eff_dict);
+                               od_stage = (if is_rec then SDynamic else SStatic);
                                od_sig   = { op_pre = row.pre; op_post = row.post } })
                         :: s.se_wenv.w_ops.se_ops } };
           se_dict = dict_extend s.se_dict id (WDef t);
           se_next = id + 1 } in
-        (s', "defined " ^ name ^ " " ^ render_row_eff s.se_nenv row grow)
+        (s', "defined " ^ name ^ " "
+             ^ render_row_eff s'.se_nenv row (w_eff s'.se_wenv id))
 
 (* --- effect declarations -------------------------------------------------- *)
 
@@ -442,22 +499,41 @@ let run_expr (s:session) (post below:list dtype) (r:rresult) : Tot dresult =
 let eval_decl (s:session) (d:sdecl) : Tot dresult =
   match d with
 
+  /// ELABORATED AGAINST THE SELF-EXTENDED NAME ENVIRONMENT (D-67), so that a
+  /// `recurse` in the body resolves to the word being defined. `elab_sig` has
+  /// already produced `row` at this point, which is what makes that possible:
+  /// the signature is known before the body is read.
   | SdDefine name sg body ->
     (match resolve_effs s.se_nenv sg.ss_eff with
      | Inl e -> DDone s ("error: " ^ e)
      | Inr es ->
-       (match elab_define s.se_nenv sg body with
-        | Inl e         -> DDone s ("error: " ^ e)
-        | Inr (row, t)  -> let (s', m) = install_def s name (Some row) (Some es) row t in
-                           DDone s' m))
+       (match elab_sig sg with
+        | Inl e -> DDone s ("error: " ^ e)
+        | Inr row0 ->
+          (match elab_define (self_nenv s row0) sg body with
+           | Inl e         -> DDone s ("error: " ^ e)
+           | Inr (row, t)  ->
+             let (s', m) = install_def s name (Some row) (Some es) row t in
+             DDone s' m)))
 
   /// The inferred form prints the signature it worked out, which is the same
   /// text a language server would show inline (D01's tooling goal, N02 Q-11).
+  ///
+  /// NO `recurse` HERE, and the message says why rather than letting it surface
+  /// as "unknown word". Inferring the signature of a word whose body calls it is
+  /// solving a fixpoint; the elaborator composes signatures left to right and
+  /// has nothing to start the iteration from. Writing the signature IS the
+  /// missing information, not a formality.
   | SdDefineInfer name body ->
-    (match elab_define_infer s.se_nenv body with
-     | Inl e         -> DDone s ("error: " ^ e)
-     | Inr (row, t)  -> let (s', m) = install_def s name None None row t in
-                        DDone s' m)
+    if mentions_recurse_list body
+    then DDone s ("error: " ^ name ^ " uses 'recurse', which needs a written \
+                  signature — the signature of a recursive word cannot be \
+                  inferred from its own body")
+    else
+      (match elab_define_infer s.se_nenv body with
+       | Inl e         -> DDone s ("error: " ^ e)
+       | Inr (row, t)  -> let (s', m) = install_def s name None None row t in
+                          DDone s' m)
 
   /// An effect declaration installs nothing runnable — it names operations and
   /// gives them signatures. Calling one without a handler in scope is legal and

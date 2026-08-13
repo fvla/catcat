@@ -1046,3 +1046,82 @@ record that has already changed twice.
 *A declared `extern` the host does not implement fails at the CALL*, reported as
 "escaped with no handler in scope". That is not a gap in the framing but the
 framing working: the host is the outermost handler and it declined.
+
+---
+
+## D-67. Recursion is `recurse` plus the `Rec` effect. Conditionals stay in the core.
+
+Two halves of one request, answered differently, and the difference is the point.
+
+### Recursion: a Dictionary word that cannot be inlined
+
+`define f … { … f … }` never worked, and the reason is exactly the one the
+request names. A program is a concatenation of primitives and operation calls,
+`TWord w` denotes `Op w` (D-60), and resolving a word statically is `M04.handle`
+run at elaboration time — which for a self-reference does not terminate. Named
+recursion is not awkward here by accident; it is the one case where the ambient
+Dictionary CANNOT supply a meaning early.
+
+So the answer is the annotation D04 already has. A self-calling word gets
+`od_stage = SDynamic` instead of `SStatic`: its meaning is supplied at runtime by
+frame lookup, which `R02.step` already does for `WDef`, rather than by inlining.
+**`!Rec` is not a mechanism added for recursion. It is the existing static/dynamic
+tier at the one value where the answer has to be "later".**
+
+*Why its own reserved id (4) rather than `Dict` at `SDynamic`.* Semantically the
+latter is deeper — recursion IS dictionary resolution deferred. But `row_visible`
+elides only a STATIC `Dict` entry, so a dynamic one would start printing `!Dict`
+on every recursive word and every caller, and D-37's whole claim is that `!Dict`
+is never written. A separate `Rec` keeps that promise and says the useful thing:
+not "resolved late" but "may not terminate". Koka spells the same effect `div`.
+
+*`recurse`, not the word's own name.* Forth's `RECURSE`, for Forth's reason — the
+name is not in scope inside its own body. Keeping it anonymous is not deference to
+tradition: binding the name would silently change what
+`define f { 1 }  define f ( … ) { f }` means, turning a program that already
+parsed into a different one. `recurse` collides with nothing and exists only
+where it means something. `E05.locate` prints it back as `recurse` too, so the
+round-trip that module claims survives a self-call.
+
+*A recursive word must declare its signature.* Inferring it is solving a fixpoint
+and this elaborator composes signatures left to right. `define f { recurse }`
+says so rather than reporting "unknown word", because the difference between a
+missing import and a missing signature is the whole of the diagnosis.
+
+*`!Rec` propagates and is not silenced by default.* Every caller of a recursive
+word carries it up to the top level, which is correct and is what Koka does with
+`div`. `handle Rec over ( ) init { } { } { … }` discharges it — an unproved claim
+that this call terminates, exactly as much of a promise as `unsafe` is, and the
+same shape. **No `terminates { … }` macro was added**, deliberately: `unsafe` is
+needed because C cannot be called otherwise, whereas `!Rec` reaching `main` is
+the normal and honest outcome, and sugar for silencing it would invite silencing
+it.
+
+`Unsafe` and `Rec` are now a pair: reserved effects with NO operations, never
+performed at runtime, pure row markers that propagate by the ordinary rules and
+are discharged by an ordinary handler. That is a shape worth naming, and it is
+where an effect system earns more than an effect system usually does.
+
+### Conditionals: already as close to an effect as they should get
+
+The request asked for these too, and this is the part I would push back on.
+
+`if` is ALREADY not a language feature: it is one entry in `E03.builtin_macros`,
+the parser is generic over that table, and `macro` adds to it. What it expands to
+is `PBoolSum` plus `TCase`, and `TCase` is the ELIMINATOR OF A PRIMITIVE TYPE —
+sums are primitive (D01 §3.1) because a stack's shape is static and a sum has a
+different shape per branch. Something has to eliminate them.
+
+Making that an effect would mean the branches are handler implementations, so the
+condition would have to sit inside the handled block and the program would read
+backwards; it would need an effect per sum type; and it would forfeit
+`M03.srow_join`, which is what lets branches of unequal depth agree
+row-polymorphically. The gain would be uniformity with recursion, and recursion
+is a different situation: its problem was that static resolution diverges, and a
+conditional's does not.
+
+*What is genuinely shared, and is now true:* neither is core SYNTAX. `if` is a
+macro over a core eliminator; a loop is `recurse` inside one. Anonymous loops —
+a `while { … } { … }` with no surrounding `define` — remain absent, because a
+macro expands to terms and cannot create the declaration a self-reference needs
+to name.

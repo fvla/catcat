@@ -337,3 +337,39 @@ and count_var_lists (x:string) (bs:list (list sterm))
   match bs with
   | []     -> 0
   | b :: r -> count_var_list x b + count_var_lists x r
+
+/// Whether `recurse` appears anywhere in a surface body (D-67).
+///
+/// Asked only to produce a better message: `define f { recurse }` has no
+/// signature to check a self-call against, and "unknown word: recurse" would
+/// send a reader looking for a missing import rather than a missing signature.
+/// The elaborated form of the same question is `M05.mentions_word`, which is
+/// what decides the `Rec` effect; this one runs earlier and decides nothing.
+let rec mentions_recurse (t:sterm)
+  : Tot bool (decreases %[(sterm_size t <: nat); 0]) =
+  match t with
+  | StWord w    -> w = "recurse"
+  | StBlock ts  -> mentions_recurse_list ts
+  | StCase bs   -> mentions_recurse_lists bs
+  | StHandle _ _ i im b ->
+    mentions_recurse_list i || mentions_recurse_impls im || mentions_recurse_list b
+  | StWith _ b  -> mentions_recurse_list b
+  | _           -> false
+
+and mentions_recurse_list (ts:list sterm)
+  : Tot bool (decreases %[sterms_size ts; 1]) =
+  match ts with
+  | []     -> false
+  | t :: r -> mentions_recurse t || mentions_recurse_list r
+
+and mentions_recurse_lists (bs:list (list sterm))
+  : Tot bool (decreases %[sterm_lists_size bs; 1]) =
+  match bs with
+  | []      -> false
+  | b :: r  -> mentions_recurse_list b || mentions_recurse_lists r
+
+and mentions_recurse_impls (im:list (string & list sterm))
+  : Tot bool (decreases %[simpls_size im; 1]) =
+  match im with
+  | []           -> false
+  | (_, b) :: r  -> mentions_recurse_list b || mentions_recurse_impls r
