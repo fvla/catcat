@@ -1,9 +1,9 @@
 # U02 — Word Reference
 
-Every word the language provides today. That is a short list: eleven primitives,
-two constants, two IO operations, and three stack shuffles.
+Every word the language provides today. That is a short list: fifteen
+primitives, two constants, two IO operations, and three stack shuffles.
 
-> **Current as of commit `fb9f82c`.**
+> **Current as of commit `e6bb33e`.**
 > Source of truth:
 > [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
