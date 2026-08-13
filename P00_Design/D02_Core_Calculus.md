@@ -216,7 +216,7 @@ term ::= TNil                             -- identity
        | TSeq term term                   -- juxtaposition; the ONLY sequencing form
        | TPrimOp prim_op                   -- an intrinsic; see below
        | TWord word_id                     -- named word OR interface operation
-       | TCase [seg] [term]                -- sum elimination, one block per variant
+       | TDispatch [op_id] [seg]           -- sum elimination: perform op #tag
        | THandle eff_id seg term [(op_id, term)] term
        | TSpecialize term                  -- staging; see D04
 ```
@@ -252,16 +252,23 @@ to an operation — which is why `print` is not in the table.
 Note what is **absent**: no lambda, no application, no let, no local binding, no
 closure. Locals (`$x`) elaborate to stack shuffles and the core never learns they
 existed. **There is also no conditional** — `PBoolSum` coerces a `bool` to a
-two-variant sum and `TCase` does the rest, so branching on a boolean and
+two-variant sum and elimination does the rest, so branching on a boolean and
 branching on a user sum are the same construct (D-33). A dedicated `TIf` would
 have needed a second copy of the branch-agreement rule.
 
+**And elimination is itself a handler** (D-68). `TDispatch ops variants` performs
+the operation the scrutinee's tag selects; the branches are the implementations an
+enclosing `THandle` supplies. So `case` is not a branching construct either — the
+core has no branching construct at all, only dispatch and handling.
+
 ### Branch agreement
 
-`TCase`'s branches do **not** need equal signatures. Each is row-polymorphic, so
-they agree when there is a common instantiation, computed by `M03.srow_join`:
-frame each branch by what the other demanded extra, then require the results to
-match. So
+Branches do **not** need equal signatures. Each is row-polymorphic, so they agree
+when there is a common instantiation, computed by `M03.srow_join`: frame each
+branch by what the other demanded extra, then require the results to match. Since
+D-68 that join computes the OPERATIONS' DECLARATIONS rather than the case's type
+— variant `i` is declared `( variants[i] @ j.pre -- j.post )` — and
+`M06.impl_frame` then instantiates each branch to it. So
 
 ```
 dup 10 < if { } then { 1 - } endif        -- ( i64 -- i64 )
@@ -271,14 +278,16 @@ is well typed although one arm is `( -- )` and the other `( i64 -- i64 )`. This
 is not a special allowance for conditionals; it is what row polymorphism already
 meant, applied to alternatives rather than to sequences. The rule originally
 required equality, which made every boolean branch unable to touch the stack —
-caught by building `if`, since nothing had ever constructed a `TCase` before.
+caught by building `if`, since nothing had ever constructed a case before.
 
 ---
 
 ## 6. Quotations are not values
 
-`TCase`, `THandle` and `TSpecialize` take `term` arguments *syntactically*. There
-is no constructor that pushes a block onto the value stack.
+`THandle` and `TSpecialize` take `term` arguments *syntactically*. There is no
+constructor that pushes a block onto the value stack — and since D-68 there is
+one fewer such constructor, because a case's branches are a handler's
+implementations.
 
 This is the precise content of D01 §3.2: code is first-class at elaboration time,
 but there are no runtime function values. Consequences:

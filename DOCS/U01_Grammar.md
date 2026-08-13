@@ -423,7 +423,7 @@ deliberately not valid syntax rather than a plausible-looking guess:
 |---|---|
 | `pick.2` / `roll.2` | deep stack access two slots down — the compiled form of a `$x` local, whose name is gone |
 | `#7` | a word id with no name in scope |
-| `bool>sum`, `case { … } { … }` | a `TCase` that is not the two-branch boolean shape `if` reconstructs |
+| `bool>sum`, `dispatch …` | a sum elimination that is not the two-branch boolean shape `if` reconstructs |
 
 So `locate hypotsq` shows the locals gone:
 
@@ -552,7 +552,7 @@ These are **ordinary operations of an ordinary effect**. Nothing about the
 effect system is special-cased for them, and the only asymmetry is over who may
 *declare* one.
 
-**The reserved block** is effects 0–4, and `effect` allocates from 5 upward, so
+**The reserved block** is effects 0–5, and `effect` allocates from 6 upward, so
 no program can bring a new host-serviced effect into existence:
 
 | Id | Effect | Discharged by | Operations |
@@ -562,6 +562,7 @@ no program can bring a new host-serviced effect into existence:
 | 2 | `Unsafe` | you, with `unsafe { … }` | **none** |
 | 3 | `C` | the REPL, which calls libc | each `extern` |
 | 4 | `Rec` | you, with `handle Rec` — usually nobody | **none** |
+| 5 | `Case` | the handler an `if` elaborates to | one per branch |
 
 That is what "suppliable only by the compiler or interpreter" means — a fact
 about who owns the identifier, not a restriction the effect system had to grow.

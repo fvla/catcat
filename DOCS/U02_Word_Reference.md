@@ -213,8 +213,9 @@ print ( str -- !IO )
 ```
 
 Nothing in the effect system is special-cased for them; the only asymmetry is
-that the interpreter owns effect ids 0 (`Dict`) and 1 (`IO`) while `effect`
-allocates from 2 upward, so no program can declare another host-serviced effect.
+over who may DECLARE one: the interpreter owns effects 0–5 and `effect` allocates
+from 6 upward, so no program can declare another host-serviced effect. The block
+is listed in [U01](U01_Grammar.md) §6.
 
 `IO` is nevertheless an effect like any other and can be intercepted with
 `handle` — see [U01](U01_Grammar.md) §6, which also covers declaring effects,
