@@ -3,7 +3,7 @@
 Every word the language provides today. That is a short list: fifteen
 primitives, two constants, two IO operations, and three stack shuffles.
 
-> **Current as of commit `e6bb33e`.**
+> **Current as of commit `543d3e9`.**
 > Source of truth:
 > [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
@@ -154,10 +154,12 @@ define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
 
 Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`.
 `define` itself is not a reserved word either; it is recognised by position at
-the start of a declaration, and so are `effect`, `macro` and `locate`. `then`,
+the start of a declaration, and so are `effect`, `extern`, `macro` and
+`locate`. `then`,
 `else`, `endif`, `over`, `init`, `declare`, `alt` and `end` are likewise free —
-each is a keyword only inside the construct that introduces it. Three names are
-effectively taken — `if`, `handle` and `with` — because they are dispatched on
+each is a keyword only inside the construct that introduces it. Four names are
+effectively taken — `if`, `unsafe`, `handle` and `with` — because they are
+dispatched on
 wherever a term may start: a definition of one is accepted but can never be
 called ([U01](U01_Grammar.md) §1). **Declaring a macro adds a name to that
 list**, silently.
