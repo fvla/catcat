@@ -55,14 +55,14 @@ open M10_Handlers
 /// partial evaluation at all -- it IS `M04.handle` applied to the Dictionary
 /// frame, run at elaboration time. That collapses most of the first clause above
 /// into machinery that already exists and is already verified.
-assume val specialize (env:wenv) (d:dict env.w_ops) (t:term { well_typed env t })
+assume val specialize (env:wenv) (d:dict) (t:term { well_typed env t })
   : Tot term
 
 /// The residual is still well typed, with the static effects gone. Stated
 /// separately from E2 because the compiler needs it long before anyone proves
 /// semantic preservation, and because M06's `lemma_static_specializes_to_pure`
 /// already establishes the type-level half.
-assume val specialize_typed (env:wenv) (d:dict env.w_ops) (t:term { well_typed env t })
+assume val specialize_typed (env:wenv) (d:dict) (t:term { well_typed env t })
   : Lemma (well_typed env (specialize env d t))
 
 (* ------------------------------------------------------------------------ *)
@@ -137,6 +137,52 @@ let stage_required (env:wenv) (t:term { well_typed env t }) : Tot stage_req =
 let lemma_no_specialize_needs_nothing (env:wenv) (t:term { well_typed env t })
   : Lemma (requires not (needs_compiler t))
           (ensures  stage_required env t == ReqNone) = ()
+
+(* ------------------------------------------------------------------------ *)
+(* The staging obligations, as types                                        *)
+(* ------------------------------------------------------------------------ *)
+
+/// E1 and E3 are STATABLE and stated (D-64, D-69); E2 is not yet, and the
+/// difference says exactly what is missing.
+///
+/// A type here is checked but not assumed, so writing one costs nothing and
+/// catches a statement that mentions the wrong thing. What it cannot do is make
+/// `specialize` exist: both types below are inhabited only by a proof about a
+/// function that is still `assume val`, so they are uninhabited for a reason
+/// that is not a proof difficulty.
+
+/// E1. Specialization changes a program's cost, never its interface.
+let e1_type : Type =
+    (env:wenv) -> (d:dict) -> (t:term { well_typed env t })
+  -> Lemma (well_typed env (specialize env d t) /\
+            fst (Some?.v (infer env (specialize env d t)))
+            == fst (Some?.v (infer env t)))
+
+/// E3. A fully static, fully resolved row leaves nothing behind.
+///
+/// NOTE WHAT THIS DOES AND DOES NOT SAY, because D04 §4 overstates it and the
+/// gap has widened. `M06.is_pure` is `Nil? row` — a statement about the ROW,
+/// not about the residual term. A `THandle` whose effect is discharged is
+/// already `is_pure` while its denotation is full of `M04.Op` nodes, so E3 does
+/// not say "the residual contains no effect operations at all".
+///
+/// That was true before and is now universal: since D-68 every `if` elaborates
+/// to a handler around a dispatch, so EVERY conditional is a discharged handler
+/// with live `Op` nodes underneath. E3 as stated is satisfied by such a program
+/// without erasing anything.
+///
+/// The zero-cost claim therefore needs a second statement E3 does not make —
+/// that the residual contains no handler frame for a static effect either — and
+/// that one is FALSE for a case on a runtime tag, which can never be folded.
+/// The honest resolution is that `THandle e [] TNil impls (TDispatch ops vs)`
+/// is a syntactically recognisable shape (it is exactly what `E05.locate`
+/// matches) which a backend compiles to a branch. That is a compiler pass, not
+/// a theorem about `specialize`, and D04 §4 should say so.
+let e3_type : Type =
+    (env:wenv) -> (d:dict) -> (t:term { well_typed env t })
+  -> Lemma (requires all_static (snd (Some?.v (infer env t))) /\
+                     resolvable d (snd (Some?.v (infer env t))))
+           (ensures  is_pure env (specialize env d t))
 
 (* ------------------------------------------------------------------------ *)
 (* Obligations                                                              *)

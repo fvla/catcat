@@ -76,17 +76,53 @@ open M06_Typing
 /// Because modules are Dictionary handlers (D04), swapping an entire module
 /// for a reinterpreted one -- the SIMD-functor example from the draft -- is
 /// pushing one frame, not a separate language feature.
-noeq type dict (env:sig_env) = {
-  frames : list eff_id;
-  stages : eff_id -> stage;
+/// A DICTIONARY CARRIES BODIES (D-69). It used to be
+///
+///     { frames : list eff_id; stages : eff_id -> stage }
+///
+/// which names which effects are present and at what stage, and says nothing
+/// about what any of them MEAN. `M11.specialize env d t` is supposed to resolve
+/// `t`'s static effects against `d` and emit a residual — and with only a list
+/// of ids to resolve against, there was nothing to resolve them TO. That was not
+/// a small omission: it is why E3 could not be attempted, and it went unnoticed
+/// because `specialize` was `assume val`, so nothing ever had to consume a
+/// `dict`.
+///
+/// ONE TABLE FOR WORDS AND OPERATIONS, because `op_id` and `word_id` are one
+/// namespace (D-01). Inlining a statically resolved word and inlining a static
+/// effect's implementation are the same act on the same table, which is the
+/// concrete form of "the Dictionary is a handler chain".
+///
+/// De-closured (D-45): `stages` was a function field, which every extractable
+/// module is barred from and which `dict` had no reason to keep once it needed
+/// to be built rather than merely described.
+noeq type dict = {
+  /// What a statically resolved word or operation is replaced BY.
+  d_defs   : list (word_id & term);
+  /// Which effects this dictionary resolves, and when.
+  d_stages : list (eff_id & stage);
 }
+
+let empty_dict : dict = { d_defs = []; d_stages = [] }
+
+let rec lookup_def (ds:list (word_id & term)) (w:word_id)
+  : Tot (option term) (decreases ds) =
+  match ds with
+  | []            -> None
+  | (w', t) :: r  -> if w' = w then Some t else lookup_def r w
+
+let rec lookup_stage_of (ss:list (eff_id & stage)) (e:eff_id)
+  : Tot (option stage) (decreases ss) =
+  match ss with
+  | []            -> None
+  | (e', s) :: r  -> if e' = e then Some s else lookup_stage_of r e
 
 /// Whether every effect in a row is resolvable in `d`, and at which stage.
 /// The two-tier design of D04 lives in this one function: a `SStatic` effect
 /// must be resolvable here at elaboration time, and a `SDynamic` one is
 /// permitted to defer to a runtime frame.
-let resolvable (#env:sig_env) (d:dict env) (row:erow) : bool =
-  for_all (fun (e, _) -> mem e d.frames) row
+let resolvable (d:dict) (row:erow) : bool =
+  for_all (fun (e, _) -> Some? (lookup_stage_of d.d_stages e)) row
 
 (* ------------------------------------------------------------------------ *)
 (* Obligations                                                              *)

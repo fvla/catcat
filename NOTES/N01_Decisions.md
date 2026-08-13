@@ -1190,3 +1190,70 @@ operation dispatch at runtime rather than a direct branch, so D04's erasure (E3,
 unproved) became load-bearing for the most common construct in the language.
 That was priced before building; it is the bet D01 §1.2 already makes, now made
 where it is most visible.
+
+---
+
+## D-69. A Dictionary carries bodies. E3 is blocked on `specialize`, not on effort.
+
+Asked whether D04's E3 could be discharged. It cannot, and the reason is worth
+recording precisely because it is not the reason it looked like.
+
+*E3's type-level half is already proved.* `M06.lemma_static_specializes_to_pure`
+shows that `TSpecialize`'s TYPING RULE takes an all-static row to an empty one.
+What E3 adds is that the FUNCTION `specialize` implements what that rule
+promises, and that needs `specialize` to exist.
+
+*It could not exist, and not for want of effort.* `M10.dict` was
+
+    { frames : list eff_id; stages : eff_id -> stage }
+
+— which effects are present and at what stage, and nothing about what any of them
+MEAN. `specialize env d t` is supposed to resolve `t`'s static effects against
+`d`; with only a list of ids to resolve against, there was nothing to resolve
+them TO. The omission survived because `specialize` was `assume val`, so nothing
+ever had to consume a `dict`. That is the same failure mode as `M07.coherent`
+(D-63): a placeholder nothing consumes is never tested.
+
+`dict` now carries `d_defs : list (word_id & term)` — ONE table for words and
+operations, because they are one namespace (D-01), so inlining a resolved word
+and inlining a static effect's implementation are the same act on the same table.
+Also de-closured (D-45); `stages` had no reason to stay a function once it had to
+be built rather than described.
+
+*E1 and E3 are now stated as types (D-64); E2 still cannot be.* E2 needs
+`handle_d`, a fold of `M04.handle` over the dictionary's frames, and building it
+needs each binding's DENOTATION — so E2 is stated in prose until `denote_static`
+is applied to dictionary bodies.
+
+### E3 does not say what D04 §4 claims it says
+
+`M06.is_pure` is `Nil? row`: a statement about the ROW, not the residual term. A
+`THandle` whose effect is discharged is already `is_pure` while its denotation is
+full of `M04.Op` nodes.
+
+That was always true and is now UNIVERSAL. Since D-68 every `if` elaborates to a
+handler around a dispatch, so every conditional is a discharged handler with live
+`Op` nodes underneath, and E3 is satisfied by such a program without erasing
+anything at all.
+
+So the zero-cost claim needs a second statement E3 does not make — that the
+residual contains no handler frame for a static effect either — and that one is
+FALSE for a case on a runtime tag, which can never be folded. The honest
+resolution is that `THandle e [] TNil impls (TDispatch ops vs)` is a
+syntactically recognisable shape, which is precisely what `E05.locate` already
+matches, and a BACKEND compiles it to a branch. That is a compiler pass, not a
+theorem about `specialize`.
+
+### What `specialize` needs before E3 is attemptable
+
+1. **Termination.** Inlining a self-referencing word does not terminate. D-67's
+   `!Rec` marks that, and `all_static` therefore excludes directly recursive
+   words — but D-67's check is syntactic self-reference only, so MUTUAL recursion
+   is neither marked nor excluded. `all_static` is not currently sufficient for
+   the inliner to terminate, and closing that needs the call-graph reachability
+   over `w_defs` that M11's E5 also wants.
+2. **Agreement between `d` and `env`.** Inlining `w` replaces a term of signature
+   `w_sig w` by a body; E1 holds only if the body's inferred signature IS
+   `w_sig w`. Nothing states that today, and it is the same shape of obligation
+   D-63 removed by deleting `wenv`'s second signature table — which suggests the
+   fix is again structural rather than a side condition.
