@@ -180,10 +180,26 @@ let parse_sig_body (ts:list token)
 /// keeps `then`, `else` and `endif` ordinary word names outside this
 /// production (D-34). Verified: they are all still definable.
 ///
-/// The one BUILT-IN production, and the only one that could not be written as a
-/// `macro` declaration: its expansion is `StCase`, which has no surface
-/// spelling. Its templates are therefore empty and unused, and `mp_builtin`
-/// says so rather than leaving a reader to infer it from the name.
+/// Two productions ship with the session, and they are built in for opposite
+/// reasons.
+///
+/// `if` COULD NOT be written as a `macro` declaration: it expands to `StCase`,
+/// which has no surface spelling. Its templates are empty and unused, and
+/// `mp_builtin` says so rather than leaving a reader to infer it.
+///
+/// `unsafe` COULD be, and its template below is exactly what a user would type
+/// (D-66):
+///
+///     macro unsafe ( { $b } ) { handle Unsafe over ( ) init { } { } { $b } }
+///
+/// It is here only so that it exists from the first line. That is the whole
+/// implementation of D-57's `unsafe`: an effect with no operations, discharged
+/// by an ordinary handler, sugared by an ordinary macro. There is no keyword, no
+/// elaborator case, no lint connecting a declaration to a block — a word whose
+/// row still carries `!Unsafe` IS an unsafe word, by the same rule that makes
+/// `!IO` mean what it means, and the propagation is the effect system doing its
+/// usual job. `locate unsafe` prints the expansion, so the sugar is inspectable
+/// rather than magic.
 let builtin_macros : list mprod = [
   { mp_name     = "if";
     mp_pre      = [MsBlock "c"; MsKeyword "then"; MsBlock "t"];
@@ -192,7 +208,12 @@ let builtin_macros : list mprod = [
                       mb_slots = [MsBlock "e"; MsKeyword "endif"];
                       mb_body  = [] } ];
     mp_body     = [];
-    mp_builtin  = true }
+    mp_builtin  = true };
+  { mp_name     = "unsafe";
+    mp_pre      = [MsBlock "b"];
+    mp_branches = [];
+    mp_body     = [StHandle "Unsafe" [] [] [] [StVar "b"]];
+    mp_builtin  = false }
 ]
 
 /// The built-in table really is LL(1), checked rather than asserted in prose.
@@ -627,6 +648,20 @@ let rec parse_declares (acc:list (string & ssig)) (ts:list token)
   | t :: _ ->
     PErr ("expected 'declare' or '}' here, found " ^ render_token t)
 
+/// `extern name ( sig )`. The same shape as one `declare`, because it is the
+/// same thing at a different effect (D-66): a word with a signature and no body.
+let parse_extern (ts:list token)
+  : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
+  match ts with
+  | TkWord name :: TkLParen :: r1 ->
+    (match parse_sig_body r1 with
+     | PErr e   -> PErr e
+     | POk sg r2 -> POk (SdExtern name sg) r2)
+  | TkWord name :: _ ->
+    PErr ("extern " ^ name ^ " needs a signature, as in 'extern " ^ name
+          ^ " ( str -- i64 )'")
+  | _ -> PErr "expected a name after 'extern'"
+
 let parse_effect (ts:list token)
   : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
   match ts with
@@ -767,6 +802,7 @@ let parse_decl (mt:list mprod) (ts:list token)
   | [] -> PErr "expected a declaration, found end of input"
   | TkWord "define" :: rest -> parse_define mt rest
   | TkWord "effect" :: rest -> parse_effect rest
+  | TkWord "extern" :: rest -> parse_extern rest
   | TkWord "macro"  :: rest -> parse_macro_decl mt rest
   | TkWord "locate" :: TkWord name :: rest -> POk (SdLocate name) rest
   | TkWord "locate" :: _ -> PErr "expected a word after 'locate'"

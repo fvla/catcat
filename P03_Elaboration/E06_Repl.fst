@@ -136,7 +136,8 @@ let prelude_words : list nentry = [
 
 /// `IO` is in scope from the first line, so `( -- i64 !IO )` resolves without
 /// anyone declaring it.
-let prelude_effs : list (string & eff_id) = [("IO", eff_io)]
+let prelude_effs : list (string & eff_id) =
+  [("IO", eff_io); ("Unsafe", eff_unsafe); ("C", eff_c)]
 
 /// EVERY WORD GETS AN OPERATION DECLARATION, not just the ones an `effect`
 /// declared (D-63). `M06.w_sig` reads a word's signature out of `w_ops`, so a
@@ -168,8 +169,8 @@ let init_session : session = {
                w_ops  = { se_ops = nenv_ops prelude_words } };
   se_dict  = prelude;
   se_next  = w_user_base;
-  /// 0 is `Dict` and 1 is `IO`; user effects allocate from 2.
-  se_next_eff = 2;
+  /// 0 `Dict`, 1 `IO`, 2 `Unsafe`, 3 `C`; user effects from 4 (D-66).
+  se_next_eff = eff_user_base;
   se_macros = builtin_macros;
   se_stack = [];
   se_shape = [];
@@ -306,6 +307,71 @@ let rec install_ops (s:session) (eid:eff_id) (ds:list (string & ssig))
          se_next = id + 1 } in
        install_ops s' eid r)
 
+(* --- foreign declarations ------------------------------------------------- *)
+
+/// Which types cross the C boundary. `i64` becomes `long`, `str` becomes
+/// `const char *`, and nothing else is allowed through yet.
+///
+/// CHECKED AT THE DECLARATION, not at the call. The host has no static
+/// information at the moment it performs an operation, so a signature it cannot
+/// marshal would fail as a stuck machine on some later line, pointing at the
+/// call rather than at the mistake. Rejecting `extern f ( bool -- )` where it is
+/// written is the difference between a type system and a crash.
+let c_marshalable (d:dtype) : Tot bool =
+  d = TPrim PI64 || d = TPrim PStr
+
+let rec c_marshalable_all (ds:list dtype) : Tot bool (decreases ds) =
+  match ds with
+  | []     -> true
+  | d :: r -> c_marshalable d && c_marshalable_all r
+
+/// Install a foreign function (D-66).
+///
+/// FOUR TABLES AGAIN, and the interesting one is the third. An `extern` word is
+/// an operation of `C`, so `w_ops` gets `od_eff = eff_c` and `R02.step` walks
+/// the handler chain for it exactly as it does for `print` — reaching the host
+/// when nobody intercepts. But it ALSO gets a `w_effs` entry of `!Unsafe`, and
+/// that is not decoration: `M06.w_eff` returns the derived head entry followed
+/// by the stored row, so a call to `strlen` has row `!C !Unsafe` and both
+/// propagate to every caller by the ordinary rules.
+///
+/// This is the split D-63 created paying off. The derived entry says what
+/// calling the word PERFORMS; the stored row says what its body does. For a
+/// foreign function the body is code this system has never seen, and `!Unsafe`
+/// is the honest name for that.
+let install_extern (s:session) (name:string) (sg:ssig)
+  : Tot (session & string) =
+  match lookup_name s.se_nenv name with
+  | Some _ -> (s, "error: " ^ name ^ " is already defined")
+  | None ->
+    (match elab_sig sg with
+     | Inl e -> (s, "error: extern " ^ name ^ ": " ^ e)
+     | Inr row ->
+       if not (Nil? sg.ss_eff)
+       then (s, "error: extern " ^ name
+                ^ ": the effects are fixed at !C !Unsafe and are not written")
+       else if not (c_marshalable_all row.pre && c_marshalable_all row.post)
+       then (s, "error: extern " ^ name
+                ^ ": only i64 and str cross the C boundary so far")
+       else if length row.post > 1
+       then (s, "error: extern " ^ name
+                ^ ": a C function returns at most one value")
+       else
+         let id = s.se_next in
+         let decl = { od_eff = eff_c; od_stage = SDynamic;
+                      od_sig = { op_pre = row.pre; op_post = row.post } } in
+         let s' = { s with
+           se_nenv = { s.se_nenv with
+                         ne_words = ({ n_name = name; n_id = id;
+                                       n_sig = row; n_op = Some eff_c })
+                                    :: s.se_nenv.ne_words };
+           se_wenv = { w_effs = (id, [(eff_unsafe, SDynamic)]) :: s.se_wenv.w_effs;
+                       w_ops  = { se_ops = (id, decl) :: s.se_wenv.w_ops.se_ops } };
+           se_dict = dict_extend s.se_dict id (WOp eff_c);
+           se_next = id + 1 } in
+         (s', "extern " ^ name ^ " "
+              ^ render_row_eff s'.se_nenv row (w_eff s'.se_wenv id)))
+
 let rec render_ops (e:nenv) (ds:list (string & ssig)) : Tot string (decreases ds) =
   match ds with
   | []               -> ""
@@ -408,6 +474,9 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
         | Inl e  -> DDone s ("error: " ^ e)
         | Inr s' -> DDone s' ("effect " ^ name ^ render_ops s'.se_nenv decls)))
 
+  | SdExtern name sg ->
+    let (s', msg) = install_extern s name sg in DDone s' msg
+
   /// Pure inspection: no term is elaborated, nothing runs, the session is
   /// returned untouched. `locate` is the one declaration that cannot fail
   /// interestingly, which is why it is safe to type at any point.
@@ -497,9 +566,26 @@ let resume_line (su:suspension) (k:kont) (stk:rstack) : Tot lresult =
   | DEffect op stk' k' s0 post below ->
     LEffect op stk' k' ({ su with su_sess = s0; su_post = post; su_below = below })
 
+/// WHAT THE HOST NEEDS IN ORDER TO SERVICE AN OPERATION (D-66).
+///
+/// `LEffect` carries a `word_id`, and for `IO` that was enough because there
+/// were two of them and the host could compare ids. A foreign call cannot work
+/// that way: `extern` allocates a fresh id per declaration, and what the host
+/// has to know is the C SYMBOL, which is the word's name.
+///
+/// These two functions are the whole interface. Exposing them beats letting
+/// `bin/catcat.ml` reach into `su_sess.se_nenv` itself, which would tie the
+/// host loop to the shape of a record that has changed twice already — and the
+/// suspension is the only thing the host is handed.
+let susp_op_name (su:suspension) (op:op_id) : Tot string =
+  show_word su.su_sess.se_nenv op
+
+let susp_op_eff (su:suspension) (op:op_id) : Tot eff_id =
+  eff_of su.su_sess.se_wenv.w_ops op
+
 /// What to print when an operation reaches the host and the host has no
-/// implementation for it — every user-declared effect, since only `IO` is the
-/// host's to service.
+/// implementation for it — every user-declared effect, since only `IO` and `C`
+/// are the host's to service.
 let unhandled_msg (s:session) (op:op_id) : Tot string =
   "unhandled: " ^ show_word s.se_nenv op ^ " escaped with no handler in scope"
 

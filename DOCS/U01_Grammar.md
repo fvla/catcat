@@ -20,13 +20,14 @@ that is called out rather than glossed. For the designed language see
 ```ebnf
 program    = decl* ;
 
-decl       = define | effect | macro | locate | expression ;
+decl       = define | effect | extern | macro | locate | expression ;
 
 define     = "define" word "(" signature ")" "{" term* "}"
            | "define" word                   "{" term* "}" ;   (* inferred *)
 
 effect     = "effect" word "{" declare* "}" ;                  (* see §6 *)
 declare    = "declare" word "(" signature ")" ;
+extern     = "extern" word "(" signature ")" ;                 (* see §6 *)
 
 macro      = "macro" word "(" mslot* ")" "{" term* "}"          (* see §5 *)
            | "macro" word "(" mslot* ")" malt+ "end" ;
@@ -71,9 +72,9 @@ The `conditional` production is written out here for readability, but it is not
 built into the parser: it is one entry in a **macro table** (§5), and the parser
 that reads it is generic over the table. The table grows: `macro` adds to it.
 
-**`define`, `effect`, `macro` and `locate` are not reserved words.** All four are
-recognised by *position* — first token of a declaration — so `define locate
-{ 42 }` is legal and `locate` inside a body is an ordinary word. The same rule
+**`define`, `effect`, `extern`, `macro` and `locate` are not reserved words.**
+All five are recognised by *position* — first token of a declaration — so
+`define locate { 42 }` is legal and `locate` inside a body is an ordinary word. The same rule
 leaves `then`, `else`, `endif`, `over`, `init`, `declare`, `alt` and `end` free
 everywhere outside the construct that introduces them. What position-recognition
 does cost is the first slot of a declaration:
@@ -88,8 +89,9 @@ error: expected a name after 'macro'
 The word exists and is callable inside a body; it is only unreachable as the
 first token of a declaration.
 
-**Three words are effectively taken**, not by the grammar but by being dispatched
-on wherever a term may start: `if` (the macro table), `handle` and `with`. Each
+**Four words are effectively taken**, not by the grammar but by being dispatched
+on wherever a term may start: `if` and `unsafe` (both macro-table entries),
+`handle` and `with`. Each
 is still *definable* — `define if { 9 }` is accepted — but every later use is
 read as the construct, so the definition can never be called. Nothing warns
 about this yet. **Every macro declared adds a word to this list**, which is the
@@ -543,11 +545,20 @@ get in and out.
 
 These are **ordinary operations of an ordinary effect**. Nothing about the
 effect system is special-cased for them, and the only asymmetry is over who may
-*declare* one: the host owns effects 0 (`Dict`) and 1 (`IO`) and `effect`
-allocates from 2 upward, so no program can bring a new host-serviced effect
-into existence. That is what
-"suppliable only by the compiler or interpreter" means — it is a fact about who
-owns the identifier, not a restriction the effect system had to grow.
+*declare* one.
+
+**The reserved block** is effects 0–3, and `effect` allocates from 4 upward, so
+no program can bring a new host-serviced effect into existence:
+
+| Id | Effect | Discharged by | Operations |
+|---|---|---|---|
+| 0 | `Dict` | elaboration — every word carries it, and it is never printed | every word |
+| 1 | `IO` | the REPL, which performs it | `print`, `read` |
+| 2 | `Unsafe` | you, with `unsafe { … }` | **none** |
+| 3 | `C` | the REPL, which calls libc | each `extern` |
+
+That is what "suppliable only by the compiler or interpreter" means — a fact
+about who owns the identifier, not a restriction the effect system had to grow.
 
 What it does **not** mean is that `IO` is unhandleable. It is an effect like any
 other, so you can intercept it:
@@ -570,6 +581,91 @@ rather than performed:
 ```
 catcat> 1 tick
 unhandled: tick escaped with no handler in scope
+```
+
+### `Unsafe`: an effect with no operations
+
+`Unsafe` declares nothing. A word carries `!Unsafe` in its row without there
+being anything to perform, so unsafety propagates by the ordinary row rules and
+**cannot be hidden by forgetting to annotate**. Discharging it is an ordinary
+handler, and `unsafe { … }` is a macro for exactly that:
+
+```
+catcat> locate unsafe
+macro unsafe
+  unsafe { $b }
+    -> { handle Unsafe over (  ) init { } { } { $b } }
+```
+
+There is no keyword and no elaborator case. A word whose row still says
+`!Unsafe` *is* an unsafe word, by the same rule that makes `!IO` mean what it
+means.
+
+### `extern`: calling C
+
+```
+extern name ( signature )
+```
+
+Declares a foreign function. The word name **is** the C symbol. The signature is
+mandatory — an `extern` has no body to infer one from — and the effects are not
+written, because they are always `!C !Unsafe`:
+
+```
+catcat> extern strlen ( str -- i64 )
+extern strlen ( str -- i64 !C !Unsafe )
+catcat> "hello, world" strlen
+ok  12
+catcat> extern getenv ( str -- str )
+extern getenv ( str -- str !C !Unsafe )
+catcat> "HOME" getenv strlen
+ok  12 15
+```
+
+That is libc, linked into the REPL — `strlen(3)`, not an imitation of it.
+Available today: `strlen`, `puts`, `abs`, `time`, `getpid`, `getenv`. The set is
+a fixed table in `bin/catcat_c.c` rather than `dlsym`, because calling an
+arbitrary symbol needs libffi to build a call frame at runtime; nothing on the
+catcat side would change if it did.
+
+Only `i64` and `str` cross the boundary, and at most one value comes back. Both
+are checked **where the `extern` is written**, not where it is called:
+
+```
+catcat> extern f ( bool -- )
+error: extern f: only i64 and str cross the C boundary so far
+```
+
+**Unsafety propagates, and the signature check catches it:**
+
+```
+catcat> define namelen ( str -- i64 ) { strlen }
+error: namelen declares no effects but its body has !C !Unsafe
+catcat> define namelen ( str -- i64 !C ) { unsafe { strlen } }
+defined namelen ( str -- i64 !C )
+```
+
+The second vouches for the memory safety of the call and still admits, in its
+type, that it talks to C.
+
+**And `C` is handleable, so a foreign call can be mocked** — no test double, no
+linker flag, no build variant:
+
+```
+catcat> define mocked ( str -- i64 ) { handle C over ( ) init { } { strlen { pop 99 } } { namelen } }
+defined mocked ( str -- i64 )
+catcat> "abcd" mocked
+ok  99
+```
+
+A declared `extern` the host does not implement is reported at the *call*, as an
+operation that escaped — which is what it is:
+
+```
+catcat> extern nosuchfn ( -- i64 )
+extern nosuchfn ( -- i64 !C !Unsafe )
+catcat> nosuchfn
+unhandled: nosuchfn escaped with no handler in scope
 ```
 
 ---
@@ -659,6 +755,8 @@ is otherwise invisible.
 | macros as words | a macro is a template, not a program; the eventual design is an ordinary word with an effect that consumes code, which needs the elaboration-time interpreter |
 | `Box`/`Rc` construction | types exist; no surface word builds one |
 | source positions in errors | absent — errors are messages without spans |
+| arbitrary C symbols | `extern` reaches a fixed table of six libc functions ([U02](U02_Word_Reference.md) §7a); `dlsym` plus libffi would lift it, and nothing on the catcat side would change |
+| C types beyond `i64` and `str` | refused at the `extern`, not at the call |
 
 Three entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and

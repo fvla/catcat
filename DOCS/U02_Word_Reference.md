@@ -225,6 +225,35 @@ is preferred to a stuck machine, because a stuck machine loses the session.
 
 ---
 
+## 7a. C functions
+
+`extern` declares a libc function; see [U01](U01_Grammar.md) §6 for the syntax,
+the `!C !Unsafe` row and how to mock one. These are the symbols the REPL is
+linked against today:
+
+| Symbol | Signature | Notes |
+|---|---|---|
+| `strlen` | `( str -- i64 )` | |
+| `puts` | `( str -- i64 )` | writes the string **and a newline**, unlike `print` |
+| `abs` | `( i64 -- i64 )` | C `int`, so it truncates outside 32 bits |
+| `time` | `( -- i64 )` | seconds since the epoch |
+| `getpid` | `( -- i64 )` | |
+| `getenv` | `( str -- str )` | `""` when unset — no option type yet |
+
+```
+catcat> extern strlen ( str -- i64 )
+extern strlen ( str -- i64 !C !Unsafe )
+catcat> "hello, world" strlen
+ok  12
+```
+
+You still write the `extern` yourself: the table above is what the *host* can
+service, not a set of predeclared words. A name outside it declares fine and
+fails at the call, reported as an operation that escaped — which is exactly what
+it is.
+
+---
+
 ## 8. Inspecting: `locate`
 
 ```

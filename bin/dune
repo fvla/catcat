@@ -13,4 +13,10 @@
  (name catcat)
  (modules catcat)
  (flags (:standard -w -a))
+ ; The C boundary (D-66). Real stubs over libc, linked into the REPL, so that
+ ; `extern strlen ( str -- i64 )` reaches strlen(3) and not an OCaml imitation
+ ; of it. libc itself needs no `-l`: every OCaml executable is already linked
+ ; against it, which is the whole reason this is a demonstration and not a
+ ; build-system project.
+ (foreign_stubs (language c) (names catcat_c))
  (libraries catcat_reference zarith))

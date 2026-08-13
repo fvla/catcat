@@ -267,6 +267,16 @@ type sdecl =
   /// checked for LL(1) compatibility with the table it is about to join by the
   /// session, which is the one place that knows the table.
   | SdMacro       : mprod -> sdecl
+  /// `extern name ( sig )` — a foreign function, called through libc (D-66).
+  ///
+  /// The word name IS the C symbol; there is no aliasing form, because one
+  /// would need a second name in the syntax to buy nothing the Dictionary
+  /// cannot already do (`with { c_name nicer_name }`).
+  ///
+  /// It is `declare` with a different effect, and deliberately parsed the same
+  /// way: an `extern` word has no body, so its signature is mandatory for the
+  /// reason D-31 already gives for an operation's.
+  | SdExtern      : string -> ssig -> sdecl
   /// A bare sequence of terms, evaluated against the current REPL stack.
   | SdExpr   : list sterm -> sdecl
 

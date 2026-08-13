@@ -20,23 +20,45 @@ let w_or  : word_id = 10
 let w_true  : word_id = 11
 let w_false : word_id = 12
 
-/// EFFECT 1 IS `IO`, AND ONLY THE HOST CAN HANDLE IT (category 2).
+/// THE RESERVED EFFECT BLOCK: 0 `Dict`, 1 `IO`, 2 `Unsafe`, 3 `C` (D-66).
 ///
-/// `print` and `read` are ordinary operations of an ordinary effect -- there is
-/// no second mechanism -- but no catcat program can supply an implementation,
-/// because the interpreter reserves effects 0 and 1 and the surface `effect`
-/// declaration allocates from 2 upward. An `IO` operation therefore always
-/// escapes every handler and reaches `R05`'s caller, which performs it.
+/// All four are HOST EFFECTS in the same precise sense: no catcat program can
+/// supply an implementation for one, because `effect` allocates from
+/// `eff_user_base` upward and cannot name an id below it. What varies is who
+/// discharges them.
 ///
-/// It is 1 and not 0 because `M04.eff_dict` reserves 0 for the Dictionary
-/// (D-63). The two host-owned ids sit next to each other; nothing here depends
-/// on the value, and `bin/catcat.ml` dispatches on the WORD id rather than the
-/// effect, so the host loop is unaffected by the renumbering.
+///   * `Dict` (0, `M04.eff_dict`) is discharged by the ambient Dictionary at
+///     elaboration time — `M11.specialize`. Every word carries it (D-63).
+///   * `IO` (1) is discharged by the interpreter's caller, which performs the
+///     operation and resumes. `print` and `read`.
+///   * `Unsafe` (2) HAS NO OPERATIONS AT ALL, and that is the whole design
+///     (D-57): a word carries `!Unsafe` in its row without there being anything
+///     to perform, so unsafety propagates by the ordinary row rules and cannot
+///     be hidden by forgetting to annotate. `handle Unsafe` with an empty
+///     implementation list discharges it, which is what an `unsafe { … }` block
+///     is — an ordinary handler, greppable, with no special case anywhere.
+///   * `C` (3) is a foreign call. `extern` declares one; the host performs it
+///     against libc. Every `extern` word ALSO carries `!Unsafe`, because the
+///     thing on the other side of the boundary is not checked by anything here.
 ///
-/// That asymmetry is the whole of "suppliable only by the compiler or
-/// interpreter to the entry point": it is a property of who owns the id, not of
-/// the effect system, which needed no new feature to express it.
-let eff_io  : eff_id  = 1
+/// RESERVING AN ID IS THE WHOLE MECHANISM, and it needed no new feature: it is
+/// a fact about who owns the identifier, not a restriction the effect system
+/// had to grow. Note that reserved does not mean unhandleable — `handle IO`
+/// works and is how a test mocks output. What a program cannot do is DECLARE a
+/// new effect that the host will service.
+let eff_dict_r  : eff_id = 0
+let eff_io      : eff_id = 1
+let eff_unsafe  : eff_id = 2
+let eff_c       : eff_id = 3
+
+/// The first id available to a surface `effect` declaration. Named so that P03
+/// does not have to track the block above by hand — `se_next_eff` was a literal
+/// `2` that a fifth reserved effect would have silently invalidated.
+let eff_user_base : eff_id = 4
+
+/// `print` and `read`: ordinary operations of the ordinary effect `IO`. There is
+/// no second mechanism, and "suppliable only by the compiler or interpreter to
+/// the entry point" is entirely the id-ownership fact stated above.
 let w_print : word_id = 13
 let w_read  : word_id = 14
 

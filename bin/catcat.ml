@@ -32,6 +32,34 @@ let banner () =
 
 (* Perform one IO operation, or decline it. Returns the stack to resume with:
    the operation's arguments removed and its results pushed. *)
+(* The C boundary. See bin/catcat_c.c for why this is a fixed table rather than
+   dlsym + libffi, and E06_Repl.install_extern for the catcat-visible side. *)
+external c_strlen : string -> int = "catcat_c_strlen"
+external c_puts   : string -> int = "catcat_c_puts"
+external c_abs    : int -> int    = "catcat_c_abs"
+external c_time   : unit -> int   = "catcat_c_time"
+external c_getpid : unit -> int   = "catcat_c_getpid"
+external c_getenv : string -> string = "catcat_c_getenv"
+
+(* Perform a foreign call, or decline it. `name` is the C symbol, which is the
+   catcat word's own name — there is no aliasing form.
+
+   The arity and types were checked when the `extern` was declared
+   (E06.c_marshalable), so a shape mismatch here means the table below and the
+   declaration disagree, and returning None reports that as "no handler" rather
+   than crashing the session. *)
+let perform_c name stk =
+  let i n = R01_Runtime.RInt (Z.of_int n) in
+  match name, stk with
+  | "strlen", R01_Runtime.RStr s :: rest -> Some (i (c_strlen s) :: rest)
+  | "puts",   R01_Runtime.RStr s :: rest -> Some (i (c_puts s) :: rest)
+  | "abs",    R01_Runtime.RInt n :: rest -> Some (i (c_abs (Z.to_int n)) :: rest)
+  | "getenv", R01_Runtime.RStr s :: rest ->
+      Some (R01_Runtime.RStr (c_getenv s) :: rest)
+  | "time",   _ -> Some (i (c_time ()) :: stk)
+  | "getpid", _ -> Some (i (c_getpid ()) :: stk)
+  | _ -> None
+
 let perform op stk =
   if op = R03_Prelude.w_print then
     (* `print_string`, not `print_endline`: the string is emitted as itself, so
@@ -62,10 +90,20 @@ let rec drive = function
       if out <> "" then print_endline out;
       session
   | E06_Repl.LEffect (op, stk, k, susp) -> (
-      match perform op stk with
+      (* Which host effect is this? IO and C are the two the host services;
+         anything else escaped with nobody to handle it. Dispatching on the
+         EFFECT rather than on the word id is what makes `extern` work at all,
+         since each declaration allocates a fresh id the host cannot know. *)
+      let eff = E06_Repl.susp_op_eff susp op in
+      let result =
+        if Z.equal eff R03_Prelude.eff_c
+        then perform_c (E06_Repl.susp_op_name susp op) stk
+        else perform op stk
+      in
+      match result with
       | Some stk' -> drive (E06_Repl.resume_line susp k stk')
-      (* Not an IO operation: nobody handled it and the host has no
-         implementation either. Report, and run the rest of the line. *)
+      (* Nobody handled it and the host has no implementation either. Report,
+         and run the rest of the line. *)
       | None -> drive (E06_Repl.abandon_line susp op))
 
 let step session line = drive (E06_Repl.eval_line session line)

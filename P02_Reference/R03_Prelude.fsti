@@ -55,7 +55,18 @@ val w_false : word_id
 /// `print` and `read` are STRING-TYPED (D-65). They were `i64`-typed while
 /// there was no string type; that was a placeholder, and `w_show` is what keeps
 /// numbers printable now that it is gone.
-val eff_io  : eff_id
+/// The reserved block, 0 through 3. See the implementation: all four are host
+/// effects in the sense that no program can DECLARE one, `Unsafe` has no
+/// operations at all and is a permission, and `C` is a foreign call.
+val eff_dict_r  : eff_id
+val eff_io      : eff_id
+val eff_unsafe  : eff_id
+val eff_c       : eff_id
+
+/// The first id a surface `effect` may allocate. P03 reads this rather than
+/// tracking the block above by hand.
+val eff_user_base : eff_id
+
 val w_print : word_id
 val w_read  : word_id
 

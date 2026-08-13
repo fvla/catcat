@@ -983,3 +983,66 @@ invert `E01.escape_char`, and it belongs with escaping on both sides rather than
 as a patch on one. And `parse` yields 0 on malformed input, exactly as the
 `i64`-typed `read` already did; the honest type is `( str -- option[i64] )` and
 it becomes writable when sums have surface syntax.
+
+---
+
+## D-66. Four reserved effects, and `extern` is `declare` at effect `C`.
+
+The host effects are now a block rather than a special case: `0 Dict`,
+`1 IO`, `2 Unsafe`, `3 C`, with `R03.eff_user_base = 4`. A surface `effect`
+allocates from there and so cannot name one, which is the entire mechanism — a
+fact about who owns the identifier, not a restriction the effect system had to
+grow. `se_next_eff` used to be a literal `2` in P03 that a fifth reserved effect
+would have silently invalidated; it reads `eff_user_base` now.
+
+**Reserved does not mean unhandleable**, and that distinction is the payoff.
+`handle IO … { print { pop } }` mocks output, and `handle C … { strlen { pop 99 } }`
+mocks a foreign call — the same construct, reached the same way. Being able to
+stub libc for a test without a test double, a linker flag or a build variant is
+the most practically valuable thing D-01 has produced so far.
+
+*`Unsafe` needed no code at all, which was the D-57 prediction and it held.* It
+has no operations. A word carries `!Unsafe` in its row without there being
+anything to perform, unsafety propagates by the ordinary row rules, and
+`handle Unsafe over ( ) init { } { } { … }` discharges it. The surface `unsafe
+{ … }` is a MACRO — spelled out in `E03.builtin_macros` in exactly the form a
+user would type, and `locate unsafe` prints it. So there is no keyword, no
+elaborator case, and no lint connecting a declaration to a block, where Rust
+needs all three.
+
+*`extern name ( sig )` is `declare` at a different effect.* Same parse shape,
+same mandatory signature and for the same reason (D-31: no body to infer from).
+The word name IS the C symbol; an aliasing form would need a second name in the
+syntax to buy what `with { strlen len }` already does.
+
+*Every `extern` word carries `!C` AND `!Unsafe`*, and that is D-63's split
+paying off rather than a special case. `M06.w_eff` returns the DERIVED entry
+`(eff_of w, stage_of w)` followed by the STORED row: the derived one says what
+calling the word performs, and the stored one says what its body does. A foreign
+function's body is code this system has never seen, so `w_effs` gets
+`[(eff_unsafe, SDynamic)]` and both propagate to every caller.
+
+*Marshalling is checked at the declaration, not the call.* `i64` and `str` cross;
+nothing else does, and `extern f ( bool -- )` is refused where it is written. The
+host has no static information at the moment it performs an operation, so an
+unmarshalable signature would otherwise surface as a stuck machine on some later
+line, pointing at the call rather than at the mistake.
+
+*The C table is fixed, not `dlsym`.* `bin/catcat_c.c` wraps six libc functions
+and dune links it into the REPL; libc needs no `-l`, since every OCaml executable
+already has it. Calling an ARBITRARY symbol needs libffi to build a call frame at
+runtime, which is a dependency and a large surface for a demonstration whose
+point is that the effect system carries foreign calls. Nothing above `perform` in
+the host loop would change if the table became libffi — which is the claim the
+fixed table is there to make cheaply.
+
+*The host dispatches on the EFFECT, not the word id.* It had compared against
+`w_print`/`w_read`, which worked because there were two. `extern` allocates a
+fresh id per declaration, so the host asks `E06.susp_op_eff` and then
+`E06.susp_op_name` for the symbol. Those two functions are the whole host
+interface; letting `bin/catcat.ml` reach into `su_sess.se_nenv` would tie it to a
+record that has already changed twice.
+
+*A declared `extern` the host does not implement fails at the CALL*, reported as
+"escaped with no handler in scope". That is not a gap in the framing but the
+framing working: the host is the outermost handler and it declined.
