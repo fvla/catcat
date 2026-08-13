@@ -293,3 +293,38 @@ let lemma_lift_frames (s:srow) (f:xform s.pre s.post) (r:seg)
                       (x:vstack s.pre) (y:vstack r)
   : Lemma (lift s f r (vappend x y) == vappend (f x) y) =
   lemma_frame_apply r f x y
+
+(* ------------------------------------------------------------------------ *)
+(* The composition laws, as a structure                                     *)
+(* ------------------------------------------------------------------------ *)
+
+/// `(srow, compose, sid)` IS A PARTIAL MONOID, and this is where that is
+/// checked rather than asserted (D-64). See `M02.frame_laws` for why a record
+/// and not a `class`.
+///
+/// "Partial" is not a weakening: `compose f g` fails exactly when the two
+/// signatures disagree at the head, which is a type error and not a missing
+/// case. What the unit laws say is that failure never happens against `sid`,
+/// and what associativity says is that when the composites exist at all they
+/// agree -- so a program's meaning does not depend on how a reader bracketed
+/// its juxtapositions. That is the precise form of the draft's claim that a
+/// program is nothing but a composition of functions.
+noeq type compose_laws = {
+  cl_left_unit  : (f:srow) -> Lemma (compose sid f == Some f);
+  cl_right_unit : (f:srow) -> Lemma (compose f sid == Some f);
+  cl_assoc      : (f:srow) -> (g:srow) -> (h:srow)
+                -> Lemma (match compose f g with
+                          | Some fg -> (match compose g h with
+                                        | Some gh -> compose fg h == compose f gh
+                                        | None    -> True)
+                          | None    -> True);
+}
+
+/// M07's T2 rests on this value and on nothing else about `compose`. Naming it
+/// is what keeps "T2 is discharged by construction" from overclaiming: the
+/// theorem did not evaporate, it is here.
+let srow_is_partial_monoid : compose_laws = {
+  cl_left_unit  = lemma_compose_left_unit;
+  cl_right_unit = lemma_compose_right_unit;
+  cl_assoc      = lemma_compose_assoc;
+}

@@ -582,17 +582,141 @@ let lemma_ex_if_denote ()
                == Pure (VCons (VPrim #PI64 9) VNil))
 
 (* ------------------------------------------------------------------------ *)
+(* The obligations, as types                                                *)
+(* ------------------------------------------------------------------------ *)
+
+/// AN OBLIGATION IS A TYPE; DISCHARGING IT IS EXHIBITING A VALUE (D-64).
+///
+/// The prose block at the foot of this file used to be the only statement of
+/// T1-T6, and prose has a specific failure mode this development already hit:
+/// T5 WAS FALSE FOR THREE COMMITS and nothing could tell, because a comment
+/// mentions `within` and `row` without either being the real one. A type
+/// mentions the real ones or it does not typecheck.
+///
+/// What is deliberately NOT done here is `assume val`. That would make each
+/// obligation available to later proofs, and T5's history is the argument
+/// against it: assuming a false lemma is not an incomplete development, it is an
+/// inconsistent one. A bare type is the safe half of the idea -- checked as a
+/// statement, worthless as a hypothesis, which is exactly right for something
+/// unproved.
+///
+/// So the pattern is: the type below is the obligation, a value of it is the
+/// theorem, and `denote_laws` at the end collects them. `t1_type` and `t2_type`
+/// are inhabited. The rest are not, and the absence of a value IS the gap --
+/// visible to the typechecker rather than to a reader who happens to scroll.
+
+/// T1. The empty program is the identity, at every row.
+let t1_type : Type =
+    (env:wenv) -> (r:seg) -> (stk:vstack r)
+  -> Lemma (denote_static env TNil sid pure_row () r stk == Pure stk)
+
+/// T2. Juxtaposition denotes composition along `M03.compose`.
+///
+/// Stating it against `denote_static` rather than pointing at `dcompose` is what
+/// keeps "true by construction" honest: the equation is what a reader wants
+/// checked, and if the `TSeq` clause is ever rewritten this is what notices.
+let t2_type : Type =
+    (env:wenv) -> (a:term) -> (b:term)
+  -> (sa:srow) -> (sb:srow) -> (s:srow)
+  -> (ea:erow) -> (eb:erow) -> (e:erow)
+  -> (b_rest:seg) -> (c_rest:seg)
+  -> (pfa:squash (not (needs_compiler a) /\ not (uses_unroll a) /\
+                  infer env a == Some (sa, ea)))
+  -> (pfb:squash (not (needs_compiler b) /\ not (uses_unroll b) /\
+                  infer env b == Some (sb, eb)))
+  -> (pf:squash (not (needs_compiler (TSeq a b)) /\ not (uses_unroll (TSeq a b)) /\
+                 infer env (TSeq a b) == Some (s, e) /\
+                 unify sa.post sb.pre == Some (b_rest, c_rest) /\
+                 s == ({ pre = sa.pre @ c_rest; post = sb.post @ b_rest })))
+  -> Lemma (denote_static env (TSeq a b) s e pf
+            == dcompose env.w_ops sa sb s b_rest c_rest ()
+                        (denote_static env a sa ea pfa)
+                        (denote_static env b sb eb pfb))
+
+/// T3. Naturality in the row: a program does not disturb the stack beneath it.
+///
+/// The two `append_assoc` equations are hypotheses rather than lemma calls
+/// because a `Lemma` statement cannot run a tactic before typechecking itself,
+/// and without them `vappend x y` and the argument of `denote_static ... (r @ r')`
+/// have propositionally-but-not-definitionally equal types. They are always
+/// true; carrying them costs a line and keeps the statement well formed.
+let t3_type : Type =
+    (env:wenv) -> (t:term) -> (s:srow) -> (e:erow)
+  -> (pf:squash (not (needs_compiler t) /\ not (uses_unroll t) /\
+                 infer env t == Some (s, e)))
+  -> (r:seg) -> (r':seg)
+  -> (_:squash ((s.pre @ r) @ r' == s.pre @ (r @ r') /\
+                (s.post @ r) @ r' == s.post @ (r @ r')))
+  -> (x:vstack (s.pre @ r)) -> (y:vstack r')
+  -> Lemma (denote_static env t s e pf (r @ r') (vappend x y)
+            == fbind (denote_static env t s e pf r x)
+                     (fun z -> Pure (vappend z y)))
+
+/// T4. Purity is real: a program with an empty row performs no operation.
+let t4_type : Type =
+    (env:wenv) -> (t:term) -> (s:srow) -> (e:erow)
+  -> (pf:squash (not (needs_compiler t) /\ not (uses_unroll t) /\
+                 infer env t == Some (s, e)))
+  -> (r:seg) -> (stk:vstack (s.pre @ r))
+  -> Lemma (requires is_pure env t)
+           (ensures  Pure? (denote_static env t s e pf r stk))
+
+/// T5. Effect-row soundness: every operation the denotation can perform is in
+/// the row the type system computed.
+let t5_type : Type =
+    (env:wenv) -> (t:term) -> (s:srow) -> (e:erow)
+  -> (pf:squash (not (needs_compiler t) /\ not (uses_unroll t) /\
+                 infer env t == Some (s, e)))
+  -> (r:seg) -> (stk:vstack (s.pre @ r))
+  -> Lemma (within e (denote_static env t s e pf r stk))
+
+/// T1, DISCHARGED. `infer env TNil` reduces to `Some (sid, pure_row)` and the
+/// `TNil` clause is `dnil`, so this is definitional.
+let thm_t1 : t1_type = fun env r stk -> ()
+
+/// T2, DISCHARGED. Also definitional -- the `TSeq` clause IS this call. That the
+/// proof is `()` is the content of "by construction", and now it is a proof
+/// rather than a claim about one.
+let thm_t2 : t2_type =
+  fun env a b sa sb s ea eb e b_rest c_rest pfa pfb pf -> ()
+
+/// The bundle. UNINHABITED TODAY, deliberately: `t3`, `t4` and `t5` have no
+/// values, so this record cannot be built, and that is the honest gap in the
+/// form the typechecker can see. Filling it is the work M09's S-series depends
+/// on.
+///
+/// T6 IS ABSENT BECAUSE IT CANNOT YET BE STATED, which is a different kind of
+/// gap and should not be disguised as this one. "No denotation duplicates a
+/// value of a non-copyable type" needs an erasure from `vstack` to a multiset of
+/// leaf values, and M02 has no such function; until it does, T6 has no type to
+/// be the type of. See the prose below.
+noeq type denote_laws = {
+  dl_t1 : t1_type;
+  dl_t2 : t2_type;
+  dl_t3 : t3_type;
+  dl_t4 : t4_type;
+  dl_t5 : t5_type;
+}
+
+(* ------------------------------------------------------------------------ *)
 (* Remaining obligations                                                    *)
 (* ------------------------------------------------------------------------ *)
 
-/// All of these are quantified over `denote_static`'s domain, which is the
+/// THE STATEMENTS NOW LIVE ABOVE, AS `t1_type` .. `t5_type` (D-64). What follows
+/// is the RATIONALE -- why each matters, what it costs, and which case is the
+/// hard one -- which is the part a type cannot carry. Where the two disagree the
+/// type wins, because it is the one the checker reads.
+///
+/// All of them are quantified over `denote_static`'s domain, which is the
 /// well-typed fragment minus `TSpecialize` and minus `PUnroll`. That is a real
 /// restriction and it is stated once here rather than repeated: because both
 /// exclusions are preconditions rather than admitted clauses, each obligation
 /// below is an UNCONDITIONAL claim about that fragment, and none of them is
 /// silently contingent on the roll/unroll hole being fixed first (D-62).
 
-/// T2  SEQUENCING IS KLEISLI COMPOSITION.  *** DISCHARGED, BY CONSTRUCTION. ***
+/// T1  THE EMPTY PROGRAM IS THE IDENTITY.  *** DISCHARGED, as `thm_t1`. ***
+///
+/// T2  SEQUENCING IS KLEISLI COMPOSITION.  *** DISCHARGED, as `thm_t2`. ***
 ///     `dcompose` above is the statement, and the `TSeq` clause is a call to it.
 ///     What licenses treating any word as a black box given only its signature
 ///     and row -- and therefore the optimiser's DAG view and incremental
@@ -610,6 +734,11 @@ let lemma_ex_if_denote ()
 ///     The theorem relocated; it did not evaporate. What the relocation buys is
 ///     that composition is written ONCE, so no clause of `denote_static` can get
 ///     it wrong independently.
+///
+///     `M03.srow_is_partial_monoid` is where the relocated half now lives as a
+///     value rather than as three separate lemmas, so "T2 rests on M03" is
+///     checkable too. And `thm_t2` proves the equation about `denote_static`
+///     itself by `()`, which is what "by construction" was asserting.
 ///
 /// T3  NATURALITY IN THE ROW.
 ///     For all `r`, `r'`, `x : vstack s.pre`, `y : vstack r`:

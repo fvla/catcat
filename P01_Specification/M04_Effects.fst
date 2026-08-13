@@ -152,7 +152,7 @@ noeq type free (env:sig_env) (a:seg) : Type =
          -> free env a
 
 let rec fbind (#env:sig_env) (#a #b:seg)
-              (m:free env a) (f:vstack a -> free env b)
+              (m:free env a) (f:(vstack a -> free env b))
   : Tot (free env b) (decreases m) =
   match m with
   | Pure v        -> f v
@@ -161,7 +161,7 @@ let rec fbind (#env:sig_env) (#a #b:seg)
 /// Kleisli composition. THIS is sequential composition of catcat programs:
 /// M07 defines the denotation so that juxtaposition is exactly `kcomp`.
 let kcomp (#env:sig_env) (#a #b #c:seg)
-          (f:vstack a -> free env b) (g:vstack b -> free env c)
+          (f:(vstack a -> free env b)) (g:(vstack b -> free env c))
   : vstack a -> free env c =
   fun s -> fbind (f s) g
 
@@ -171,7 +171,7 @@ let kcomp (#env:sig_env) (#a #b #c:seg)
 
 /// Left identity holds definitionally.
 let lemma_fbind_left_id (#env:sig_env) (#a #b:seg)
-                        (v:vstack a) (f:vstack a -> free env b)
+                        (v:vstack a) (f:(vstack a -> free env b))
   : Lemma (fbind (Pure v) f == f v) = ()
 
 /// Right identity and associativity need functional extensionality in the `Op`
@@ -224,8 +224,8 @@ let rec lemma_fbind_right_id (#env:sig_env) (#a:seg) (m:free env a)
 let lemma_assoc_op (#env:sig_env) (#a #b #c:seg) (op:op_id)
                    (arg:vstack (op_of env op).op_pre)
                    (k:(vstack (op_of env op).op_post ^-> free env a))
-                   (f:vstack a -> free env b)
-                   (g:vstack b -> free env c)
+                   (f:(vstack a -> free env b))
+                   (g:(vstack b -> free env c))
                    (h:vstack a -> free env c)
   : Lemma (requires (forall res. fbind (fbind (k res) f) g == fbind (k res) h))
           (ensures  fbind (fbind (Op op arg k) f) g == fbind (Op op arg k) h) =
@@ -237,8 +237,8 @@ let lemma_assoc_op (#env:sig_env) (#a #b #c:seg) (op:op_id)
 
 let rec lemma_fbind_assoc (#env:sig_env) (#a #b #c:seg)
                           (m:free env a)
-                          (f:vstack a -> free env b)
-                          (g:vstack b -> free env c)
+                          (f:(vstack a -> free env b))
+                          (g:(vstack b -> free env c))
   : Lemma (ensures fbind (fbind m f) g == fbind m (fun v -> fbind (f v) g))
           (decreases m) =
   match m with
@@ -392,3 +392,38 @@ let rec lemma_within_weaken (#env:sig_env) (#a:seg)
 /// `all_static`.
 let all_static (row:erow) : bool =
   for_all (fun (_, s) -> s = SStatic) row
+
+(* ------------------------------------------------------------------------ *)
+(* The monad laws, as a structure                                           *)
+(* ------------------------------------------------------------------------ *)
+
+/// `free env` IS A MONAD, indexed by `seg` and relative to `vstack` (D-64).
+/// See `M02.frame_laws` for why a record and not a `class`.
+///
+/// NOT AN INSTANCE OF A GENERIC `monad` CLASS, and the reason is worth naming
+/// because it is the recurring obstacle to abstracting anything in this
+/// development. A generic class wants `m : Type -> Type` with
+/// `bind : m a -> (a -> m b) -> m b`. Here the carrier is `seg -> Type` and the
+/// continuation takes a `vstack a`, not an `a` -- so `free` is a RELATIVE monad
+/// along `vstack`, and writing the general definition to hold one instance would
+/// be abstraction with no second inhabitant to justify it. The laws are what
+/// matter and they are stated concretely.
+noeq type free_laws (env:sig_env) = {
+  ml_left_id  : (#a:seg) -> (#b:seg) -> (v:vstack a) -> (f:(vstack a -> free env b))
+              -> Lemma (fbind (Pure v) f == f v);
+  ml_right_id : (#a:seg) -> (m:free env a) -> Lemma (fbind m Pure == m);
+  ml_assoc    : (#a:seg) -> (#b:seg) -> (#c:seg) -> (m:free env a)
+              -> (f:(vstack a -> free env b)) -> (g:(vstack b -> free env c))
+              -> Lemma (fbind (fbind m f) g == fbind m (fun v -> fbind (f v) g));
+}
+
+/// All three discharged, which is what `^->` bought (see `fbind`'s comment).
+/// M10's H2 and H3 are the same shape one level up and are NOT discharged, so
+/// there is deliberately no `handle_laws` value below: the type would be
+/// inhabited only by admitting its fields, and an admitted field is a `Lemma
+/// True` in better clothes.
+let free_is_monad (env:sig_env) : free_laws env = {
+  ml_left_id  = lemma_fbind_left_id;
+  ml_right_id = lemma_fbind_right_id;
+  ml_assoc    = lemma_fbind_assoc;
+}

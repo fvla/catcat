@@ -887,3 +887,52 @@ not elided, because that one is a real claim.
 *Accepted cost:* nothing that calls a word is `is_pure` any more. That is not a
 regression but D-37 being honest — and it is precisely the property M11's E3
 claims `specialize` restores, so the statement got sharper rather than weaker.
+
+---
+
+## D-64. An obligation is a type; discharging it is exhibiting a value.
+
+A proved law was a scatter of separate lemmas plus a comment saying what they add
+up to, and an unproved obligation was prose. Both are mechanized now, by the same
+device and for two different reasons.
+
+*Proved laws become records.* `M02.frame_is_functorial`,
+`M03.srow_is_partial_monoid` and `M04.free_is_monad` are values whose fields are
+the existing lemmas — no new proof, no new obligation, and the classification is
+now checked instead of asserted. The gain is that nothing can quietly stop adding
+up: restate one lemma and the bundle fails to build.
+
+*Unproved obligations become uninhabited types.* `M07.t3_type`, `t4_type`,
+`t5_type` are the statements; the absence of a value is the gap. `t1_type` and
+`t2_type` are inhabited by `thm_t1` and `thm_t2`, both `()` — which turns "T2 is
+discharged by construction" from a claim into a proof of the equation it was
+claiming.
+
+*Records, not `class`es, for now.* In F* a class is a record plus tactic-driven
+instance resolution. The bundling is what is wanted; resolution pays only when a
+later module wants to be generic over "any lawful X", and today each structure
+has exactly one. Promoting is one keyword when P04 needs it, so nothing is
+foreclosed by starting concrete.
+
+*NOT in M01, and this is the one place the natural instinct is wrong.* M01 knows
+`dtype`, `seg` and `cap`. A law bundle whose fields mention `frame`, `compose`,
+`fbind` or `denote_static` cannot precede those functions, so hoisting the
+declarations to M01 would need them carrier-polymorphic — and the carriers here
+are all bespoke (`free` is a RELATIVE monad along `vstack`, not an
+`m:Type -> Type`). That would be abstraction written for one inhabitant, at the
+cost of the invariant that numbering is dependency order. Each bundle therefore
+sits at the foot of the module that owns its structure.
+
+*And explicitly NOT `assume val`.* An `assume val` of an obligation makes it
+available to later proofs. T5 was FALSE for three commits; assuming it would have
+made the development inconsistent rather than merely incomplete. A bare type is
+the safe half — checked as a statement, useless as a hypothesis, which is exactly
+right for something unproved. This is the same principle as the ban on
+`Lemma True`, applied to a mechanism that would otherwise look more respectable.
+
+*What is not covered.* M08's O-series, M09's S-series and M11's E-series are
+statable as types but mention `step`, `run`, `state_typed` and `specialize`,
+which are `assume val` — so no value could be exhibited until those are defined,
+and the types would be documentation with extra syntax. M07's T6 cannot be stated
+at all: it needs an erasure from `vstack` to a multiset of leaf values and M02 has
+no such function. Saying so is better than a type that approximates it.

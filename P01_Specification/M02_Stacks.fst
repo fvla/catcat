@@ -293,3 +293,49 @@ let vroll (n:nom_id) (#t:dtype) (#r:seg) (s:vstack (t :: r))
 
 let lemma_pointers_are_linear (t:dtype)
   : Lemma (not (copyable (TBox t)) /\ not (copyable (TRc t))) = ()
+
+(* ------------------------------------------------------------------------ *)
+(* The frame laws, as a structure rather than a comment                     *)
+(* ------------------------------------------------------------------------ *)
+
+/// WHY BUNDLE LAWS THAT ARE ALREADY PROVED (D-64).
+///
+/// The lemmas above are each true and each separately citable, and a reader has
+/// to be told in prose that together they say `frame r` is a functor. Prose is
+/// where that claim can rot: nothing checks that the three lemmas still add up
+/// to functoriality after one of them is restated. A RECORD TYPE checks it. The
+/// obligation becomes a type, discharging it becomes exhibiting a value, and the
+/// value below costs nothing to build because the fields ARE the existing
+/// lemmas.
+///
+/// A record and not a `class`: in F* a class is a record plus tactic-driven
+/// instance resolution, and resolution pays only when a LATER module wants to be
+/// generic over "any lawful frame". There is exactly one. Promoting is one
+/// keyword when P04 needs it.
+///
+/// Function-typed fields are allowed here for the reason `M04.handler`'s are:
+/// D-20 bars them from modules P02 and P03 EXTRACT, and nothing extracts M02's
+/// law bundles — they are specification-side objects with no runtime content.
+noeq type frame_laws = {
+  /// Framing applies the transformer to the top and leaves the rest alone.
+  fl_apply : (#a:seg) -> (#b:seg) -> (r:seg) -> (f:xform a b)
+           -> (x:vstack a) -> (y:vstack r)
+           -> Lemma (frame r f (vappend x y) == vappend (f x) y);
+  /// Identity is preserved.
+  fl_id    : (#a:seg) -> (r:seg) -> (s:vstack (a @ r))
+           -> Lemma (frame r (vid #a) s == s);
+  /// Composition is preserved.
+  fl_comp  : (#a:seg) -> (#b:seg) -> (#c:seg) -> (r:seg)
+           -> (f:xform a b) -> (g:xform b c) -> (s:vstack (a @ r))
+           -> Lemma (frame r (vcomp f g) s == frame r g (frame r f s));
+}
+
+/// `frame r` is a functor, and this value is the proof. It is what licenses
+/// compiling a word once and reusing it at every stack depth rather than once
+/// per depth -- the claim `lemma_frame_comp`'s comment makes in prose, now
+/// checked.
+let frame_is_functorial : frame_laws = {
+  fl_apply = lemma_frame_apply;
+  fl_id    = lemma_frame_id;
+  fl_comp  = lemma_frame_comp;
+}
