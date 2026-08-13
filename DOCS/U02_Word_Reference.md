@@ -3,7 +3,7 @@
 Every word the language provides today. That is a short list: fifteen
 primitives, two constants, two IO operations, and three stack shuffles.
 
-> **Current as of commit `1847e70`.**
+> **Current as of commit `5e7060c`.**
 > Source of truth:
 > [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
