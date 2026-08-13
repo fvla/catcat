@@ -224,6 +224,47 @@ let subset_effs (a b:list eff_id) : Tot bool = for_all (fun i -> mem i b) a
 /// effect list is not an assertion of purity — a `define` with no signature at
 /// all would otherwise be unable to use any effect — so it is only checked
 /// when a signature was written.
+(* --- ids for the operations a `case` dispatches through -------------------- *)
+
+/// Where `E04` starts allocating operation ids for `case` sites (D-68).
+///
+/// One past the word being defined, since `install_def` takes `se_next` for the
+/// word itself. `E04` then hands each term `base` and its successor
+/// `base + sterm_size t`, so the ranges cannot overlap without a counter being
+/// threaded through the elaborator.
+let case_base (s:session) : Tot nat = s.se_next + 1
+
+/// Register the operations `E04` allocated, and reserve their ids.
+///
+/// THREE TABLES, and each is needed by a different consumer: `w_ops` so
+/// `M06.infer` can look up the declared signature a branch is framed to,
+/// `se_dict` so `R02.find_handler` walks the enclosing frame when the dispatch
+/// calls one, and `se_next` so nothing else is handed the same id. They get no
+/// `nenv` entry, deliberately — a case operation has no surface name and no
+/// program can call it directly.
+///
+/// `se_next` advances past the WHOLE budget rather than past the highest id
+/// actually used, because the budget is what `E04` reasoned with; using less
+/// would make the next declaration's range overlap this one's.
+let rec add_case_ops (o:sig_env) (ds:list (word_id & op_decl))
+  : Tot sig_env (decreases ds) =
+  match ds with
+  | []          -> o
+  | (i, d) :: r -> add_case_ops ({ se_ops = (i, d) :: o.se_ops }) r
+
+let rec add_case_dict (d:rdict) (ds:list (word_id & op_decl))
+  : Tot rdict (decreases ds) =
+  match ds with
+  | []          -> d
+  | (i, _) :: r -> add_case_dict (dict_extend d i (WOp eff_case)) r
+
+let with_case_ops (s:session) (ds:list (word_id & op_decl)) (body:list sterm)
+  : Tot session =
+  { s with
+      se_wenv = { s.se_wenv with w_ops = add_case_ops s.se_wenv.w_ops ds };
+      se_dict = add_case_dict s.se_dict ds;
+      se_next = case_base s + sterms_size body }
+
 /// The id the word being defined will get. Both this module and the elaborator
 /// have to agree on it BEFORE the body is elaborated, because `recurse` inside
 /// the body compiles to a call to it (D-67). One expression, referred to from
@@ -238,10 +279,10 @@ let self_id (s:session) : Tot word_id = s.se_next
 /// word mentions the word — so inferring it is solving a fixpoint, which this
 /// elaborator does not do and D-31's "mandatory inside an effect declaration"
 /// carve-out already anticipated for the analogous case.
-let self_wenv (s:session) (row:srow) : Tot wenv =
+let self_wenv (s:session) (wid:word_id) (row:srow) : Tot wenv =
   { s.se_wenv with
       w_ops = { se_ops =
-        (self_id s, { od_eff   = eff_rec;
+        (wid, { od_eff   = eff_rec;
                       od_stage = SDynamic;
                       od_sig   = { op_pre = row.pre; op_post = row.post } })
         :: s.se_wenv.w_ops.se_ops } }
@@ -260,7 +301,7 @@ let self_nenv (s:session) (row:srow) : Tot nenv =
                     n_sig = row; n_op = None })
                  :: s.se_nenv.ne_words }
 
-let install_def (s:session) (name:string) (declared:option srow)
+let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
                 (deceffs:option (list eff_id)) (row:srow) (t:term)
   : Tot (session & string) =
   /// Checked against the self-extended environment when a signature was
@@ -268,7 +309,7 @@ let install_def (s:session) (name:string) (declared:option srow)
   /// typecheck against. With no declared signature there is no self binding, and
   /// `E06` has already refused the body (see `SdDefineInfer`).
   let env = (match declared with
-             | Some _ -> self_wenv s row
+             | Some _ -> self_wenv s id row
              | None   -> s.se_wenv) in
   match infer env t with
   | None -> (s, "error: " ^ name ^ " does not typecheck")
@@ -293,7 +334,6 @@ let install_def (s:session) (name:string) (declared:option srow)
                ^ " but its body has"
                ^ (if Nil? actual then " none" else render_effs s.se_nenv actual))
       else
-        let id = s.se_next in
         /// RECURSION IS A DICTIONARY WORD THAT CANNOT BE INLINED (D-67).
         ///
         /// A word whose body calls itself gets `eff_rec` at `SDynamic` instead of
@@ -325,8 +365,7 @@ let install_def (s:session) (name:string) (declared:option srow)
                                od_stage = (if is_rec then SDynamic else SStatic);
                                od_sig   = { op_pre = row.pre; op_post = row.post } })
                         :: s.se_wenv.w_ops.se_ops } };
-          se_dict = dict_extend s.se_dict id (WDef t);
-          se_next = id + 1 } in
+          se_dict = dict_extend s.se_dict id (WDef t) } in
         (s', "defined " ^ name ^ " "
              ^ render_row_eff s'.se_nenv row (w_eff s'.se_wenv id))
 
@@ -510,11 +549,12 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
        (match elab_sig sg with
         | Inl e -> DDone s ("error: " ^ e)
         | Inr row0 ->
-          (match elab_define (self_nenv s row0) sg body with
-           | Inl e         -> DDone s ("error: " ^ e)
-           | Inr (row, t)  ->
-             let (s', m) = install_def s name (Some row) (Some es) row t in
-             DDone s' m)))
+          (match elab_define (self_nenv s row0) (case_base s) sg body with
+           | Inl e -> DDone s ("error: " ^ e)
+           | Inr (row, t, ds) ->
+             let (s2, m) = install_def (with_case_ops s ds body) (self_id s) name
+                                       (Some row) (Some es) row t in
+             DDone s2 m)))
 
   /// The inferred form prints the signature it worked out, which is the same
   /// text a language server would show inline (D01's tooling goal, N02 Q-11).
@@ -530,10 +570,12 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
                   signature — the signature of a recursive word cannot be \
                   inferred from its own body")
     else
-      (match elab_define_infer s.se_nenv body with
-       | Inl e         -> DDone s ("error: " ^ e)
-       | Inr (row, t)  -> let (s', m) = install_def s name None None row t in
-                          DDone s' m)
+      (match elab_define_infer s.se_nenv (case_base s) body with
+       | Inl e -> DDone s ("error: " ^ e)
+       | Inr (row, t, ds) ->
+         let (s2, m) = install_def (with_case_ops s ds body) (self_id s) name
+                                   None None row t in
+         DDone s2 m)
 
   /// An effect declaration installs nothing runnable — it names operations and
   /// gives them signatures. Calling one without a handler in scope is legal and
@@ -574,9 +616,10 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
                         ("macro " ^ p.mp_name ^ render_prod p))
 
   | SdExpr body ->
-    (match elab_expr s.se_nenv s.se_shape body with
+    (match elab_expr s.se_nenv (case_base s) s.se_shape body with
      | Inl e -> DDone s ("error: " ^ e)
-     | Inr t ->
+     | Inr (t, ds) ->
+       let s = with_case_ops s ds body in
        let env = s.se_wenv in
        (match infer env t with
         | None -> DDone s "error: expression does not typecheck"

@@ -317,12 +317,20 @@ let step (d:rdict) (s:mstate) : Tot sresult =
                            :: set_handler_state k e w None;
                      stk = give hst s.stk })))
 
-    | TCase _ branches ->
+    (* Dispatch: push the payload and CALL the operation the tag selects
+       (D-68). Spelled as `KTerm (TWord …)` rather than duplicating the
+       handler walk, because performing an operation is what `TWord` already
+       does -- the branch is found by `find_handler` in the enclosing frame like
+       any other implementation, so this clause adds no control flow to the
+       machine at all. Where a `TCase` step used to jump to a branch, this one
+       makes a call. *)
+    | TDispatch ops _ ->
       (match s.stk with
        | RSum tag vs :: r ->
-         if tag >= length branches then SStuck "case: tag out of range"
-         else SNext ({ code = KTerm (index branches tag) :: k; stk = give vs r })
-       | _ -> SStuck "case: not a sum value")
+         if tag >= length ops then SStuck "dispatch: tag out of range"
+         else SNext ({ code = KTerm (TWord (index ops tag)) :: k;
+                       stk = give vs r })
+       | _ -> SStuck "dispatch: not a sum value")
 
     (* Two steps, because the state has to be computed before the frame that
        holds it can exist: run `init`, then `KInit` moves its results in. *)

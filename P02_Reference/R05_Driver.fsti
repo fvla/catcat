@@ -90,6 +90,13 @@ val ex_arith : term
 /// class boundary has no runtime representation beyond the wrapper.
 val ex_counter : term
 
+/// The effect and operations a `case` over `option i64` dispatches through
+/// (D-68). One operation per variant; the branches are the handler's
+/// implementations, so `ex_sum` is a `THandle` around a `TDispatch`.
+val eff_opt  : eff_id
+val op_none  : op_id
+val op_some  : op_id
+
 /// Sum introduction and elimination. Exercises the one construct that cannot
 /// be encoded as a stack segment (D01 3.1).
 val ex_sum : term

@@ -91,19 +91,33 @@ let ex_counter : term =
 /// `option i64`: variant 0 empty, variant 1 carrying an i64.
 let opt_variants : list seg = [[]; [TPrim PI64]]
 
+let eff_opt : eff_id = 2
+let op_none : op_id  = 201
+let op_some : op_id  = 202
+
+/// ELIMINATION IS A HANDLER (D-68). The dispatch performs the operation the
+/// tag selects; the two branches are its implementations. Note that they are
+/// NOT at the same signature -- `None` pushes a zero and `Some` consumes the
+/// payload -- and both are accepted because each is framed to the joined
+/// declaration `( -- i64 )` by `M06.impl_frame`.
 let ex_sum : term =
   cat [
     int_lit 99;
     TPrimOp (PInj opt_variants 1);                        // Some 99
-    TCase opt_variants [ int_lit 0              // None  -> 0
-                       ; TNil ]                 // Some x -> x
+    THandle eff_opt [] TNil
+      [ (op_none, int_lit 0)                              // None   -> 0
+      ; (op_some, TNil) ]                                 // Some x -> x
+      (TDispatch [op_none; op_some] opt_variants)
   ]
 
 /// Effect 1, operation 200: "ask", pushing a number the handler chooses.
 let eff_ask : eff_id = 1
 let op_ask  : op_id  = 200
 
-let demo_dict : rdict = dict_extend prelude op_ask (WOp eff_ask)
+let demo_dict : rdict =
+  dict_extend (dict_extend (dict_extend prelude op_ask (WOp eff_ask))
+                           op_none (WOp eff_opt))
+              op_some (WOp eff_opt)
 
 /// A STATELESS handler: `st = []`, so the initialiser is `TNil` and the
 /// implementation is typed at the operation's own signature. The degenerate

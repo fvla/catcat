@@ -269,24 +269,30 @@ let prim_den (p:prim_op { not (PUnroll? p) }) (s:srow)
 (* Branches                                                                 *)
 (* ------------------------------------------------------------------------ *)
 
-/// One arm of a `case`: the branch run after its variant's payload is in place.
+(* ------------------------------------------------------------------------ *)
+(* Dispatch                                                                 *)
+(* ------------------------------------------------------------------------ *)
+
+/// Inversion of `M06.dispatch_ok`, at one tag (D-68).
 ///
-/// NOT a `cdenote`, and the reason is worth stating. `M06.infer_branches` types
-/// an arm as `compose ( -- v_i ) s_i`, treating the payload as if some program
-/// had pushed it. No program did: the payload comes out of the scrutinee. So the
-/// payload is a separate argument here, and `arm.pre` is only what the branch
-/// needs BEYOND it.
-let dcase_arm (env:sig_env) (v:seg) (sb:srow) (arm:srow) (b_rest c_rest:seg)
-              (_:squash (unify v sb.pre == Some (b_rest, c_rest) /\
-                         arm == ({ pre = c_rest; post = sb.post @ b_rest })))
-              (f:cdenote env sb)
-              (r:seg) (payload:vstack v) (rest:vstack (arm.pre @ r))
-  : Tot (free env (arm.post @ r)) =
-  lemma_unify_common v sb.pre;
-  append_assoc v c_rest r;
-  append_assoc sb.pre  b_rest r;
-  append_assoc sb.post b_rest r;
-  f (b_rest @ r) (vappend payload rest)
+/// `dispatch_ok` walks the operation and variant lists in step and checks each
+/// declaration against the join. The denotation needs the same fact for ONE
+/// operation, chosen by a tag that is a runtime value, so the list walk has to
+/// be turned into an indexed statement. That is this lemma, and it is the direct
+/// analogue of `lemma_impl_typed` below — both exist because a fold over a list
+/// is the wrong shape for a consumer that indexes into it.
+let rec lemma_dispatch_op (env:wenv) (ops:list op_id) (variants:list seg)
+                          (j:srow) (tag:nat)
+  : Lemma (requires Some? (dispatch_ok env ops variants j) /\
+                    length ops == length variants /\
+                    tag < length ops)
+          (ensures  op_of env.w_ops (index ops tag)
+                    == ({ op_pre  = index variants tag @ j.pre
+                        ; op_post = j.post }))
+          (decreases ops) =
+  match ops, variants with
+  | o :: os, v :: vs ->
+    if tag = 0 then () else lemma_dispatch_op env os vs j (tag - 1)
 
 (* ------------------------------------------------------------------------ *)
 (* Handler implementations                                                  *)
@@ -324,9 +330,7 @@ let rec lemma_impl_typed (env:wenv) (eff:eff_id) (st:seg)
           (ensures  (let Some b = impl_lookup impls op in
                      let osig = op_of env.w_ops op in
                      Some? (infer env b) /\
-                     fst (Some?.v (infer env b))
-                       == ({ pre  = st @ osig.op_pre
-                           ; post = st @ osig.op_post })))
+                     Some? (impl_frame (fst (Some?.v (infer env b))) st osig)))
           (decreases impls) =
   match impls with
   | []             -> ()
@@ -399,15 +403,24 @@ let rec denote_static (env:wenv) (t:term) (s:srow) (e:erow)
       let (arg, rest) = vsplit (w_sig env w).pre #r stk in
       Op w arg (on _ (fun res -> Pure (vappend res rest))))
 
-  /// Sum elimination. The scrutinee's tag selects the branch, and `denote_case`
-  /// walks the variant and branch lists together -- mirroring `infer_branches`,
-  /// which is what makes the join's framing available structurally instead of by
-  /// a separate inversion lemma.
-  | TCase variants branches ->
-    let Some (j, row) = infer_branches env variants branches in
+  /// SUM ELIMINATION IS ONE `Op` NODE (D-68), and the shape is deliberately the
+  /// same as `TWord`'s: split the arguments off, perform, resume with the
+  /// results in place. What varies is only WHICH operation, and that is the
+  /// scrutinee's tag.
+  ///
+  /// Note what is not here. No branch walk, no `srow_join` framing at the
+  /// denotation, no `append_assoc`: the join lives in the operations' declared
+  /// signatures, so by the time this clause runs the shapes already agree.
+  /// `denote_case` and `dcase_arm` are gone, and the branches are handled by
+  /// `M04.handle` in the enclosing `THandle` like any other implementation.
+  | TDispatch ops variants ->
+    let Some j = dispatch_row env ops variants in
     (fun r stk ->
       let VCons (VSum tag payload) rest = stk in
-      denote_case env variants branches j row () r tag payload rest)
+      lemma_dispatch_op env ops variants j tag;
+      let (jpre, below) = vsplit j.pre #r rest in
+      Op (index ops tag) (vappend payload jpre)
+         (on _ (fun res -> Pure (vappend res below))))
 
   /// Handling. `M04.handle` does the work; everything here is assembling its
   /// arguments.
@@ -424,12 +437,19 @@ let rec denote_static (env:wenv) (t:term) (s:srow) (e:erow)
       h_ops = (fun op ->
         match impl_lookup impls op with
         | None   -> fwd_impl env.w_ops st op
+        /// INSTANTIATED AT THE RESIDUAL `M06.impl_frame` RECOVERED, not at `[]`
+        /// (D-68). An implementation may now be more row-polymorphic than the
+        /// operation it implements, and `k` is exactly the row at which its
+        /// denotation has the declared type: `sb.pre @ k == st @ op_pre` and
+        /// `sb.post @ k == st @ op_post`, both by definition of `impl_frame`.
+        /// A `case` branch that ignores the stack beneath the scrutinee is the
+        /// reason this is not always `[]`.
         | Some b ->
           lemma_impl_typed env eff st impls op;
           let Some (sb, eb) = infer env b in
-          append_l_nil sb.pre;
-          append_l_nil sb.post;
-          (fun args -> denote_static env b sb eb () [] args))
+          lemma_impl_frame sb st (op_of env.w_ops op);
+          let Some k = impl_frame sb st (op_of env.w_ops op) in
+          (fun args -> denote_static env b sb eb () k args))
     } in
     (fun r stk ->
       append_l_nil st;
@@ -443,56 +463,6 @@ let rec denote_static (env:wenv) (t:term) (s:srow) (e:erow)
   /// is a genuine impossibility and not a gap -- `make admits` should not list it.
   | TSpecialize _ -> false_elim ()
 
-/// The branch dispatch of a `case`, walking variants and branches in step.
-///
-/// `j` is the joined signature `infer_branches` computed and `r` the ambient row.
-/// At each step `M03.srow_join` has framed this branch's arm by `r2` and the rest
-/// of the join by `r1`, and `M03.lemma_unify_common` is what says those two
-/// framings land on the same segment -- so taking branch 0 means instantiating
-/// its arm at `r2 @ r`, and skipping it means recursing at `r1 @ r`. That is the
-/// whole reason a `case` may have branches of different depths.
-and denote_case (env:wenv)
-                (variants:list seg) (branches:list term)
-                (j:srow) (row:erow)
-                (_:squash (not (needs_compiler_list branches) /\
-                           not (uses_unroll_list branches) /\
-                           length branches == length variants /\
-                           infer_branches env variants branches == Some (j, row)))
-                (r:seg) (tag:nat { tag < length variants })
-                (payload:vstack (index variants tag))
-                (rest:vstack (j.pre @ r))
-  : Tot (free env.w_ops (j.post @ r)) (decreases %[terms_size branches; 1]) =
-  match variants, branches with
-  /// Both impossible: no tag is below zero, and the lengths agree.
-  | [], _ -> false_elim ()
-  | _, [] -> false_elim ()
-
-  | [v], [b] ->
-    let Some (sb, eb) = infer env b in
-    let Some (b_rest, c_rest) = unify v sb.pre in
-    dcase_arm env.w_ops v sb j b_rest c_rest ()
-              (denote_static env b sb eb ()) r payload rest
-
-  | v :: vs, b :: bs ->
-    let Some (sb, eb) = infer env b in
-    let Some (b_rest, c_rest) = unify v sb.pre in
-    let arm : srow = { pre = c_rest; post = sb.post @ b_rest } in
-    let Some (jrest, e') = infer_branches env vs bs in
-    let Some (r1, r2) = unify arm.pre jrest.pre in
-    if tag = 0
-    then begin
-      append_assoc arm.pre  r2 r;
-      append_assoc arm.post r2 r;
-      dcase_arm env.w_ops v sb arm b_rest c_rest ()
-                (denote_static env b sb eb ()) (r2 @ r) payload rest
-    end
-    else begin
-      lemma_unify_common arm.pre jrest.pre;
-      append_assoc arm.pre    r2 r;
-      append_assoc jrest.pre  r1 r;
-      append_assoc jrest.post r1 r;
-      denote_case env vs bs jrest e' () (r1 @ r) (tag - 1) payload rest
-    end
 
 (* ------------------------------------------------------------------------ *)
 (* T1: the empty program is the identity                                    *)
@@ -536,17 +506,37 @@ let lemma_ex_two_denote ()
            == Pure (VCons (VPrim #PI64 3) (VCons (VPrim #PI64 2) VNil))) = ()
 
 /// The branching case, which is where the bookkeeping actually is. This is
-/// `7 true if { } then { pop 9 } endif` in the core:
+/// `7 true if { } then { pop 9 } endif` in the core, and after D-68 it is a
+/// HANDLER: dispatch performs the operation the tag selects, and the branches
+/// are the implementations.
 ///
 ///   * `PBoolSum` coerces the `bool` to `M01.bool_variants` (D-33);
 ///   * branch 0 is `( -- )` and branch 1 is `( i64 -- i64 )`, so the two do NOT
-///     have equal signatures and are joined only because framing branch 0 by
-///     `[i64]` makes them agree (`M03.srow_join`, D-34's else-less rule);
-///   * the tag is 1, so `denote_case` takes its skipping path and has to carry
-///     the join residual `r1` into the recursive row.
+///     have equal signatures. Both implement operations declared at the JOINED
+///     depth `( i64 -- i64 )`, so branch 0 is accepted only because
+///     `M06.impl_frame` instantiates it at the residual `[i64]` — D-34's
+///     else-less rule, now carried by the handler rule instead of by
+///     `srow_join` at the use site;
+///   * the tag is 1, so the dispatch performs the SECOND operation, and
+///     `lemma_dispatch_op` is what turns `dispatch_ok`'s list walk into a fact
+///     about that one index.
 ///
 /// Every one of those is a place a definition could be well typed and wrong.
 /// That the answer comes out by conversion is the check.
+let ex_eff : eff_id = 7
+let ex_op0 : op_id = 0
+let ex_op1 : op_id = 1
+
+/// Both variants of a `bool` carry no payload, so each operation is declared at
+/// the join alone: `( i64 -- i64 )`.
+let ex_odecl : op_decl =
+  { od_eff = ex_eff; od_stage = SDynamic;
+    od_sig = { op_pre = [TPrim PI64]; op_post = [TPrim PI64] } }
+
+let ex_wenv : wenv =
+  { w_effs = [];
+    w_ops  = { se_ops = [(ex_op0, ex_odecl); (ex_op1, ex_odecl)] } }
+
 let ex_dec : term =
   TSeq (TPrimOp (PStack (SPop (TPrim PI64)))) (TPrimOp (PLit (LPrim PI64 9)))
 
@@ -554,31 +544,33 @@ let ex_if : term =
   seq_of [ TPrimOp (PLit (LPrim PI64 7))
          ; TPrimOp (PLit (LPrim PBool true))
          ; TPrimOp PBoolSum
-         ; TCase bool_variants [TNil; ex_dec] ]
+         ; THandle ex_eff [] TNil
+                   [(ex_op0, TNil); (ex_op1, ex_dec)]
+                   (TDispatch [ex_op0; ex_op1] bool_variants) ]
 
 let ex_if_sig : srow = { pre = []; post = [TPrim PI64] }
 
 /// `assert_norm` rather than `()`, and the difference is fuel, not difficulty.
 /// The two-literal example above is discharged by the solver's own unfolding of
-/// `infer`; this one is six `TSeq` levels deep with an `infer_branches` fold
+/// `infer`; this one is six `TSeq` levels deep with a handler and a dispatch
 /// inside, which is past the default. `assert_norm` runs the normalizer instead,
 /// so what is being checked is still conversion.
 let lemma_ex_if_typed ()
-  : Lemma (infer empty_wenv ex_if == Some (ex_if_sig, pure_row)) =
-  assert_norm (infer empty_wenv ex_if == Some (ex_if_sig, pure_row))
+  : Lemma (infer ex_wenv ex_if == Some (ex_if_sig, pure_row)) =
+  assert_norm (infer ex_wenv ex_if == Some (ex_if_sig, pure_row))
 
 /// Named rather than passed as `()`, because `denote_static`'s precondition
 /// appears in the STATEMENT below and so has to be discharged while that
 /// statement is being typechecked, where a lemma call in the body is too late.
 let ex_if_pf : squash (not (needs_compiler ex_if) /\ not (uses_unroll ex_if) /\
-                       infer empty_wenv ex_if == Some (ex_if_sig, pure_row)) =
+                       infer ex_wenv ex_if == Some (ex_if_sig, pure_row)) =
   assert_norm (not (needs_compiler ex_if) /\ not (uses_unroll ex_if) /\
-               infer empty_wenv ex_if == Some (ex_if_sig, pure_row))
+               infer ex_wenv ex_if == Some (ex_if_sig, pure_row))
 
 let lemma_ex_if_denote ()
-  : Lemma (denote_static empty_wenv ex_if ex_if_sig pure_row ex_if_pf [] VNil
+  : Lemma (denote_static ex_wenv ex_if ex_if_sig pure_row ex_if_pf [] VNil
            == Pure (VCons (VPrim #PI64 9) VNil)) =
-  assert_norm (denote_static empty_wenv ex_if ex_if_sig pure_row ex_if_pf [] VNil
+  assert_norm (denote_static ex_wenv ex_if ex_if_sig pure_row ex_if_pf [] VNil
                == Pure (VCons (VPrim #PI64 9) VNil))
 
 (* ------------------------------------------------------------------------ *)

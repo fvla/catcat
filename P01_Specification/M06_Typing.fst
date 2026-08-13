@@ -213,6 +213,91 @@ let prim_sig (p:prim_op) : Tot (option srow) =
 (* Inference                                                                *)
 (* ------------------------------------------------------------------------ *)
 
+(* ------------------------------------------------------------------------ *)
+(* Dispatch                                                                 *)
+(* ------------------------------------------------------------------------ *)
+
+/// `pre` with `v` stripped off the front, or `None` if it does not start with
+/// `v`. `M03.unify` already walks two segments in lockstep, and a residual pair
+/// with an empty first component says exactly "the second extends the first".
+let strip_pre (v:seg) (pre:seg) : Tot (option seg) =
+  match unify v pre with
+  | Some ([], rest) -> Some rest
+  | _               -> None
+
+/// The residual a handler implementation is instantiated at, or `None` when its
+/// signature cannot be framed to the declared one (D-68).
+///
+/// `k` is RECOVERED, not guessed: `strip_pre` reads it off the declared `pre`,
+/// and the `post` check is then an equality rather than a search. Same argument
+/// as `M03.srow_join` — there are no type variables here, only prefix matching,
+/// so D-31's claim that the language needs no unifier survives this too.
+let impl_frame (s:srow) (st:seg) (osig:op_sig) : Tot (option seg) =
+  match strip_pre s.pre (st @ osig.op_pre) with
+  | None   -> None
+  | Some k -> if s.post @ k = st @ osig.op_post then Some k else None
+
+/// What `impl_frame` returning `Some k` actually means, spelled as the two
+/// segment equations a caller needs. `M07`'s `THandle` clause instantiates the
+/// implementation's denotation at `k`, and this is what makes the resulting type
+/// the declared one.
+///
+/// The `pre` half is `M03.lemma_unify_common` — `strip_pre` succeeds only when
+/// one residual is empty, and extending each side by the other's leftover then
+/// says the declared `pre` IS the body's `pre` framed by `k`. The `post` half is
+/// definitional, since `impl_frame` tests it directly.
+let lemma_impl_frame (s:srow) (st:seg) (osig:op_sig)
+  : Lemma (requires Some? (impl_frame s st osig))
+          (ensures  (let Some k = impl_frame s st osig in
+                     st @ osig.op_pre  == s.pre @ k /\
+                     st @ osig.op_post == s.post @ k)) =
+  let decl_pre = st @ osig.op_pre in
+  /// Matched rather than left to the solver: `Some? (strip_pre …)` says the
+  /// FIRST residual is empty, and that fact is inside a pattern the SMT encoding
+  /// does not see through on its own.
+  match unify s.pre decl_pre with
+  | Some ([], _) -> lemma_unify_common s.pre decl_pre; append_l_nil decl_pre
+  | _            -> ()
+
+/// Every operation of a dispatch declares the same joined behaviour beneath its
+/// own variant (D-68): variant `i` is `( variants[i] @ j.pre -- j.post )`.
+///
+/// THIS IS WHERE `M03.srow_join` WENT. It used to compute a `case`'s type by
+/// folding the branches; now the elaborator folds it to build these
+/// declarations, and this function checks they agree. The information is the
+/// same and the check is cheaper, because agreement is now a property of the
+/// DECLARATION rather than something rediscovered at every use.
+///
+/// The row is collected here too, one entry per operation, so a dispatch's
+/// effects are the effects of the operations it might perform — which is what
+/// `M04.within` needs and what makes M07's T5 hold for this case.
+let rec dispatch_ok (env:wenv) (ops:list op_id) (variants:list seg) (j:srow)
+  : Tot (option erow) (decreases ops) =
+  match ops, variants with
+  | [], []           -> Some pure_row
+  | o :: os, v :: vs ->
+    let osig = op_of env.w_ops o in
+    if osig.op_pre = v @ j.pre && osig.op_post = j.post
+    then (match dispatch_ok env os vs j with
+          | None   -> None
+          | Some r -> Some (row_union [(eff_of env.w_ops o, stage_of env.w_ops o)] r))
+    else None
+  | _ -> None
+
+/// The join a dispatch is at, read off its FIRST operation. There is nothing to
+/// infer: the declaration already fixes it, and `dispatch_ok` then checks the
+/// rest agree. Recovering `j.pre` needs the variant's length, which is why
+/// `TDispatch` carries the variants alongside the operations.
+let dispatch_row (env:wenv) (ops:list op_id) (variants:list seg)
+  : Tot (option srow) =
+  match ops, variants with
+  | o :: _, v :: _ ->
+    let osig = op_of env.w_ops o in
+    (match strip_pre v osig.op_pre with
+     | None      -> None
+     | Some jpre -> Some ({ pre = jpre; post = osig.op_post }))
+  | _ -> None
+
 /// Measures follow the M01/M05 pattern: rank orders `list(1) > term(0)`, and
 /// every term-to-list edge strictly decreases size.
 let rec infer (env:wenv) (t:term)
@@ -248,15 +333,20 @@ let rec infer (env:wenv) (t:term)
   /// same state. The shape after a `case` still has to be static, which is
   /// why sums cannot be segments.
   ///
-  /// A branch's arm is its body run after its payload has been pushed, so the
-  /// arm is `compose (push variant_i) branch_i`. Joining the arms gives what
-  /// the whole `case` demands beneath the scrutinee and leaves behind.
-  | TCase variants branches ->
-    if Nil? variants || length branches <> length variants then None
-    else (match infer_branches env variants branches with
-          | Some (j, row) ->
-            Some ({ pre = TSum variants :: j.pre; post = j.post }, row)
-          | None -> None)
+  /// THE BRANCHES ARE NOT HERE ANY MORE (D-68). Eliminating a sum is performing
+  /// the operation its tag selects; the branches are the implementations a
+  /// `THandle` supplies, so this rule reads the joined signature off the
+  /// declarations rather than folding it out of branch bodies. `infer_branches`
+  /// is gone and `infer_impls` does its work.
+  | TDispatch ops variants ->
+    if Nil? variants || length ops <> length variants then None
+    else (match dispatch_row env ops variants with
+          | None   -> None
+          | Some j ->
+            (match dispatch_ok env ops variants j with
+             | None     -> None
+             | Some row ->
+               Some ({ pre = TSum variants :: j.pre; post = j.post }, row)))
 
   /// Handling discharges `eff` from the body's row and adds whatever the
   /// initialiser and the implementations themselves need.
@@ -282,29 +372,6 @@ let rec infer (env:wenv) (t:term)
      | Some (s, row) -> Some (s, row_dynamic row)
      | None          -> None)
 
-/// The arm of one branch: push its variant's payload, then run the branch.
-/// Partial for the same reason `compose` is -- the branch may want a shape the
-/// payload does not supply.
-and infer_branches (env:wenv) (variants:list seg) (branches:list term)
-  : Tot (option (srow & erow)) (decreases %[terms_size branches; 1]) =
-  match variants, branches with
-  | [v], [b] ->
-    (match infer env b with
-     | Some (s, e) -> (match compose ({ pre = []; post = v }) s with
-                       | Some arm -> Some (arm, e)
-                       | None     -> None)
-     | None        -> None)
-  | v :: vs, b :: bs ->
-    (match infer env b, infer_branches env vs bs with
-     | Some (s, e), Some (j, e') ->
-       (match compose ({ pre = []; post = v }) s with
-        | None     -> None
-        | Some arm -> (match srow_join arm j with
-                       | Some j' -> Some (j', row_union e e')
-                       | None    -> None))
-     | _ -> None)
-  | _ -> None
-
 /// Each implementation is checked at the operation's declared signature with
 /// the handler's state segment framed ON TOP: `st @ op_pre -- st @ op_post`.
 /// "State types preserved" is exactly that framing, and it is what makes the
@@ -314,6 +381,20 @@ and infer_branches (env:wenv) (variants:list seg) (branches:list term)
 /// operation of `eff` is implemented — an unimplemented one is not an error,
 /// it forwards to the next handler outward, which is what `R02.find_handler`
 /// already does and what makes partial overriding of a Dictionary possible.
+///
+/// AN IMPLEMENTATION MAY BE MORE ROW-POLYMORPHIC THAN ITS DECLARATION (D-68).
+/// The test used to be equality, which was the one place in the language where
+/// a signature had to be written at a fixed depth rather than instantiated. It
+/// is now `impl_frame`: the body's own signature framed by some residual `k`
+/// must give the declared one, and `k` is recovered rather than guessed.
+///
+/// This is sound for the reason every other framing in the language is: a
+/// denotation is `r:seg -> vstack (pre @ r) -> free (post @ r)`, so a body of
+/// signature `s` instantiated at `k` HAS the required type on the nose. It is
+/// also what makes `TDispatch` usable at all — a `case` branch that does not
+/// touch the stack beneath the scrutinee has signature `( -- )`, while the
+/// operation it implements is declared at the joined depth, and demanding
+/// equality would reject `if { } then { pop 1 } else { … } endif`.
 and infer_impls (env:wenv) (eff:eff_id) (st:seg) (impls:list (op_id & term))
   : Tot (option erow) (decreases %[impls_size impls; 1]) =
   match impls with
@@ -322,9 +403,7 @@ and infer_impls (env:wenv) (eff:eff_id) (st:seg) (impls:list (op_id & term))
     (match infer env body, infer_impls env eff st rest with
      | Some (s, ei), Some er ->
        let osig = op_of env.w_ops op in
-       if eff_of env.w_ops op = eff
-          && s.pre = st @ osig.op_pre
-          && s.post = st @ osig.op_post
+       if eff_of env.w_ops op = eff && Some? (impl_frame s st osig)
        then Some (row_union ei er)
        else None
      | _ -> None)

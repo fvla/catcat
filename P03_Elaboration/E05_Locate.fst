@@ -233,6 +233,14 @@ let show_primop (p:prim_op) : Tot string =
 (* Terms                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
+/// The operations a dispatch may perform, for the `case` fallback rendering.
+/// Outside the mutual block below: it recurses on its own list and needs none
+/// of that block's measure.
+let rec show_ops (e:nenv) (ops:list op_id) : Tot string (decreases ops) =
+  match ops with
+  | []     -> ""
+  | o :: r -> " " ^ show_word e o ^ show_ops e r
+
 /// Juxtaposition with exactly one space, and none around an empty program.
 let cons_sp (a b:string) : Tot string =
   if a = "" then b else if b = "" then a else a ^ " " ^ b
@@ -267,17 +275,26 @@ let rec show_items (e:nenv) (ts:list term)
   | a :: TNil :: rest      -> show_items e (a :: rest)
   | a :: TSeq b c :: rest  -> show_items e (a :: b :: c :: rest)
 
-  /// The `if` reconstruction. Branches are stored in TAG order — false first
-  /// (D-33) — so the second one is `then` and the first is `else`.
-  | TPrimOp PBoolSum :: TCase vs [f; t] :: rest ->
+  /// The `if` reconstruction, now over the HANDLER a `case` elaborates to
+  /// (D-68). The shape to match is the whole `THandle … (TDispatch …)`, and the
+  /// branches are its implementations — still in TAG order, false first (D-33),
+  /// so the second is `then` and the first is `else`.
+  ///
+  /// Matching the composite rather than a single node is the cost of the
+  /// change, and it is a cost this module is the right place to pay: `locate`
+  /// is a test of the elaborator, so it should be written against what the
+  /// elaborator actually emits.
+  | TPrimOp PBoolSum
+    :: THandle _ [] TNil [(_, f); (_, t)] (TDispatch _ vs)
+    :: rest ->
     if vs = bool_variants
     then cons_sp ("if { } then " ^ braces (show_items e [t])
                   ^ " else " ^ braces (show_items e [f]) ^ " endif")
                  (show_items e rest)
-    else cons_sp "bool>sum" (show_items e (TCase vs [f; t] :: rest))
+    else cons_sp "bool>sum" (show_items e rest)
 
-  | TCase _ bs :: rest ->
-    cons_sp ("case" ^ show_branches e bs) (show_items e rest)
+  | TDispatch ops _ :: rest ->
+    cons_sp ("dispatch" ^ show_ops e ops) (show_items e rest)
   | THandle eff st init impls body :: rest ->
     cons_sp ("handle " ^ show_eff e eff
              ^ " over ( " ^ render_tys (rev st) ^ " )"

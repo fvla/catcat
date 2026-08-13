@@ -64,6 +64,11 @@ val eff_io      : eff_id
 val eff_unsafe  : eff_id
 val eff_c       : eff_id
 val eff_rec     : eff_id
+/// Every `case` site's operations belong to this effect (D-68). It does NOT
+/// need to be fresh per site: an inner handler that does not implement an outer
+/// case's operation forwards it outward, which `M04.fwd_impl` and
+/// `R02.find_handler` already do.
+val eff_case    : eff_id
 
 /// The first id a surface `effect` may allocate. P03 reads this rather than
 /// tracking the block above by hand.

@@ -58,11 +58,12 @@ let eff_io      : eff_id = 1
 let eff_unsafe  : eff_id = 2
 let eff_c       : eff_id = 3
 let eff_rec     : eff_id = 4
+let eff_case    : eff_id = 5
 
 /// The first id available to a surface `effect` declaration. Named so that P03
 /// does not have to track the block above by hand — `se_next_eff` was a literal
 /// `2` that a fifth reserved effect would have silently invalidated.
-let eff_user_base : eff_id = 5
+let eff_user_base : eff_id = 6
 
 /// `print` and `read`: ordinary operations of the ordinary effect `IO`. There is
 /// no second mechanism, and "suppliable only by the compiler or interpreter to

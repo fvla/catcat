@@ -1125,3 +1125,68 @@ macro over a core eliminator; a loop is `recurse` inside one. Anonymous loops �
 a `while { … } { … }` with no surrounding `define` — remain absent, because a
 macro expands to terms and cannot create the declaration a self-reference needs
 to name.
+
+---
+
+## D-68. Sum elimination is dispatch plus a handler. `TCase` is gone.
+
+D-67 argued conditionals should stay in the core. That was answered: `if` stays a
+macro, and the CORE ELIMINATOR becomes the effect/handler pattern. It does, and
+the objection I raised turned out to be a design constraint rather than a
+blocker — worth recording in that order, because the constraint is the load-
+bearing part.
+
+*The objection, and it was real.* `M04.op_impl` hands an implementation
+`vstack (st @ op_pre)` and nothing else, so a handler implementation cannot reach
+beneath the operation's arguments. A `case` branch can reach beneath the
+scrutinee, and not exotically — `if { } then { pop 1 } else { … } endif` pops the
+value under the bool, and `abs`, `fact` and `dec_if_big` all do it. Branches as
+plain implementations would have broken every conditional in the language.
+
+*The fix folds the frame into the DECLARATION.* Variant `i`'s operation is
+declared `( variants[i] @ j.pre -- j.post )` where `j` is what `M03.srow_join`
+computes. So `srow_join` did not disappear; it moved from computing a `case`'s
+TYPE at each use to computing its operations' DECLARATIONS once. `M06.dispatch_ok`
+then checks the declarations agree, which is cheaper than rediscovering the join.
+
+*And one relaxation was forced, which is an improvement on its own.*
+`infer_impls` tested `s.pre = st @ op_pre` by EQUALITY — the one place in the
+language where a signature had to be written at a fixed depth instead of being
+instantiated. It is now `impl_frame`: the body's signature framed by a recovered
+residual `k` must give the declared one. Sound for the reason every other framing
+is — a denotation is `r:seg -> vstack (pre @ r) -> free (post @ r)`, so
+instantiating at `k` HAS the declared type — and it is what lets a branch that
+ignores the stack beneath the scrutinee implement an operation declared at the
+joined depth. Handlers generally benefit: an implementation may now be more
+row-polymorphic than its operation.
+
+*What the core lost.* `TCase variants branches` became
+`TDispatch ops variants`, a LEAF. `M06.infer_branches` and `M07.denote_case` and
+`M07.dcase_arm` are deleted, not rewritten; what replaces them is `infer_impls`
+and `M04.handle`, which effects already needed. Every induction over `term` lost
+its branch-list case. `M07`'s clause is now one `Op` node with the same shape as
+`TWord`'s and needs no `append_assoc` at all, because by the time it runs the
+declarations have already made the shapes agree. `R02`'s step is
+`KTerm (TWord (index ops tag))` — where a case used to JUMP to a branch, it now
+makes a CALL, and the branch is found by `find_handler` like any implementation.
+
+*Two inversion lemmas, and they are the same shape.* `lemma_dispatch_op` turns
+`dispatch_ok`'s list walk into a fact about the one index a runtime tag selects;
+`lemma_impl_typed` does the same for `impl_lookup`. Both exist because a fold
+over a list is the wrong shape for a consumer that indexes into it.
+
+*Ids come from a positional budget, not a threaded counter.* Each term gets a
+`base` and hands `base + sterm_size t` to its successor, and
+`sterm_size (StCase bs) = 1 + length bs + …` is exactly the `1 + n` ids a case
+needs. So `E04` allocates without carrying mutable state. The EFFECT id is shared
+by every case site (`R03.eff_case`) and does not need to be fresh: an inner
+handler that does not implement an outer case's operation forwards it outward,
+which `M04.fwd_impl` and `R02.find_handler` already do.
+
+*Accepted costs, both real.* Declarations are at the FULL modelled shape either
+side rather than the tightest one — sound, since `impl_frame` frames each branch
+to it, but wider than necessary. And every `if` is now a handler frame plus an
+operation dispatch at runtime rather than a direct branch, so D04's erasure (E3,
+unproved) became load-bearing for the most common construct in the language.
+That was priced before building; it is the bet D01 §1.2 already makes, now made
+where it is most visible.

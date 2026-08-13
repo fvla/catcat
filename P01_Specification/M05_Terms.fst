@@ -161,8 +161,32 @@ noeq type term =
   /// A named word, or an interface operation. The typing rules do not
   /// distinguish them -- that is the unification of D03 made concrete.
   | TWord    : word_id -> term
-  /// Sum elimination: one `{}` block per variant, all with the same result.
-  | TCase    : variants:list seg -> branches:list term -> term
+  /// Sum elimination: PERFORM THE OPERATION THE TAG SELECTS (D-68).
+  ///
+  /// `ops` gives one operation id per variant. The scrutinee is a `TSum
+  /// variants` on top of the stack; eliminating it means performing
+  /// `index ops tag` with that variant's payload as the operation's arguments.
+  /// The BRANCHES ARE THE HANDLER'S IMPLEMENTATIONS, so a `case` is
+  ///
+  ///     THandle e [] TNil branches (TDispatch ops variants)
+  ///
+  /// and there is no branching construct in the core at all -- only dispatch,
+  /// which is one `M04.Op` node, and handling, which already existed.
+  ///
+  /// WHY THIS IS A LEAF AND `TCase` WAS NOT. The branches moved out, so this
+  /// constructor has no subterms: every induction over `term` loses its
+  /// branch-list case, and `M06.infer_branches` and `M07.denote_case` are gone
+  /// rather than rewritten. What replaces them is `infer_impls` and `handle`,
+  /// which the language already needed for effects.
+  ///
+  /// The common frame lives in the OPERATION'S DECLARED SIGNATURE: variant `i`
+  /// declares `( variants[i] @ j.pre -- j.post )` where `j` is what
+  /// `M03.srow_join` computes across the branches. That is what keeps a branch
+  /// able to reach beneath the scrutinee -- an implementation is handed exactly
+  /// `st @ op_pre` and nothing else, so without folding `j.pre` into `op_pre` a
+  /// branch could not touch the stack under the sum, and `if { } then { pop 1 }
+  /// else { … } endif` would stop typing.
+  | TDispatch : ops:list op_id -> variants:list seg -> term
   /// Install a handler for `eff` and run `body` under it.
   ///
   /// HANDLERS ARE STATEFUL OBJECTS, NOT CONTINUATION CONSUMERS (D-36). An
@@ -204,7 +228,7 @@ let rec term_size (t:term) : Tot pos =
   | TSeq a b            -> 1 + term_size a + term_size b
   | TPrimOp _           -> 1
   | TWord _             -> 1
-  | TCase _ bs          -> 1 + terms_size bs
+  | TDispatch _ _       -> 1
   | THandle _ _ i impls b -> 1 + term_size i + impls_size impls + term_size b
   | TSpecialize b       -> 1 + term_size b
 
@@ -255,7 +279,7 @@ let rec subst_words (su:list (word_id & word_id)) (t:term)
   match t with
   | TWord w              -> TWord (subst_word su w)
   | TSeq a b             -> TSeq (subst_words su a) (subst_words su b)
-  | TCase variants bs    -> TCase variants (subst_words_list su bs)
+  | TDispatch _ _        -> t
   | THandle e st i im b  -> THandle e st (subst_words su i)
                                     (subst_words_impls su im)
                                     (subst_words su b)
@@ -289,7 +313,7 @@ let rec needs_compiler (t:term)
   match t with
   | TSpecialize _       -> true
   | TSeq a b            -> needs_compiler a || needs_compiler b
-  | TCase _ bs          -> needs_compiler_list bs
+  | TDispatch _ _       -> false
   | THandle _ _ i impls b -> needs_compiler i || needs_compiler_impls impls
                            || needs_compiler b
   | _                   -> false
@@ -332,7 +356,7 @@ let rec uses_unroll (t:term)
   match t with
   | TPrimOp (PUnroll _ _) -> true
   | TSeq a b              -> uses_unroll a || uses_unroll b
-  | TCase _ bs            -> uses_unroll_list bs
+  | TDispatch _ _         -> false
   | THandle _ _ i impls b -> uses_unroll i || uses_unroll_impls impls
                            || uses_unroll b
   | TSpecialize b         -> uses_unroll b
@@ -367,7 +391,7 @@ let rec mentions_word (w:word_id) (t:term)
   match t with
   | TWord w'              -> w' = w
   | TSeq a b              -> mentions_word w a || mentions_word w b
-  | TCase _ bs            -> mentions_word_list w bs
+  | TDispatch _ _         -> false
   | THandle _ _ i impls b -> mentions_word w i || mentions_word_impls w impls
                            || mentions_word w b
   | TSpecialize b         -> mentions_word w b

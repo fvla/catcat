@@ -38,6 +38,9 @@ open M03_Signatures
 open M04_Effects
 open M05_Terms
 open M06_Typing
+/// For `eff_case`, the effect a `case` dispatches through (D-68). P03 already
+/// depends on P02 -- `E05` opens `R01_Runtime` -- so this adds no new edge.
+open R03_Prelude
 open E02_Ast
 
 (* ------------------------------------------------------------------------ *)
@@ -162,6 +165,13 @@ let rec anon_slots (ds:list dtype) : Tot shape (decreases ds) =
   | []     -> []
   | d :: r -> { sl_name = None; sl_ty = d } :: anon_slots r
 
+/// The inverse: a modelled shape as a plain segment. Needed since D-68, because
+/// a `case` now declares operations at the shape either side of it.
+let rec slot_tys (sh:shape) : Tot (list dtype) (decreases sh) =
+  match sh with
+  | []     -> []
+  | s :: r -> s.sl_ty :: slot_tys r
+
 /// Entry shape for a body: the signature's inputs, already reversed by
 /// `elab_sig`, re-paired with their surface names.
 let rec entry_shape (ps:list sparam) (ds:list dtype) : Tot shape (decreases ps) =
@@ -277,31 +287,32 @@ let elab_lit (n:int) : Tot (either string term) =
 /// `E02.sterm_lists_size` charges one per branch. The ranks are therefore
 /// documentation of the intended ordering rather than load-bearing — unlike
 /// M01's and M05's, where an empty sub-list makes them necessary.
-let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
-                   (ts:list sterm)
-  : Tot (either string (shape & list term))
+let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
+                   (dacc:list (op_id & op_decl)) (ts:list sterm)
+  : Tot (either string (shape & list term & list (op_id & op_decl)))
         (decreases %[sterms_size ts; 0]) =
   match ts with
-  | [] -> Inr (sh, rev acc)
+  | [] -> Inr (sh, rev acc, dacc)
   | t :: rest ->
     (match t with
      | StInt n ->
        (match elab_lit n with
         | Inl e   -> Inl e
-        | Inr trm -> elab_terms env cs
+        | Inr trm -> elab_terms env cs (base + sterm_size t)
                        ({ sl_name = None; sl_ty = TPrim PI64 } :: sh)
-                       (trm :: acc) rest)
+                       (trm :: acc) dacc rest)
 
      /// No range check and no failure case, unlike `StInt`: `E01` has already
      /// decoded the escapes, so every `StStr` is a valid `str` (D-65).
      | StStr s ->
-       elab_terms env cs ({ sl_name = None; sl_ty = TPrim PStr } :: sh)
-         (TPrimOp (PLit (LPrim PStr s)) :: acc) rest
+       elab_terms env cs (base + sterm_size t)
+         ({ sl_name = None; sl_ty = TPrim PStr } :: sh)
+         (TPrimOp (PLit (LPrim PStr s)) :: acc) dacc rest
 
      | StVar x ->
        (match elab_var cs sh x with
         | Inl e            -> Inl e
-        | Inr (sh', trm)   -> elab_terms env cs sh' (trm :: acc) rest)
+        | Inr (sh2, trm)   -> elab_terms env cs (base + sterm_size t) sh2 (trm :: acc) dacc rest)
 
      /// The stack shuffles are polymorphic in the surface language but
      /// monomorphic in the core (D02 §5), so the elaborator instantiates them
@@ -314,8 +325,9 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
         | s :: _ ->
           if not (copyable s.sl_ty)
           then Inl "dup: this value's type is not Copy"
-          else elab_terms env cs ({ sl_name = None; sl_ty = s.sl_ty } :: sh)
-                 (TPrimOp (PStack (SDup s.sl_ty)) :: acc) rest)
+          else elab_terms env cs (base + sterm_size t)
+                 ({ sl_name = None; sl_ty = s.sl_ty } :: sh)
+                 (TPrimOp (PStack (SDup s.sl_ty)) :: acc) dacc rest)
 
      | StWord "pop" ->
        (match sh with
@@ -323,13 +335,14 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
         | s :: sr ->
           if not (droppable s.sl_ty)
           then Inl "pop: this value's type is not Drop; consume it explicitly"
-          else elab_terms env cs sr (TPrimOp (PStack (SPop s.sl_ty)) :: acc) rest)
+          else elab_terms env cs (base + sterm_size t) sr
+                 (TPrimOp (PStack (SPop s.sl_ty)) :: acc) dacc rest)
 
      | StWord "swap" ->
        (match sh with
         | a :: b :: sr ->
-          elab_terms env cs (b :: a :: sr)
-            (TPrimOp (PStack (SSwap a.sl_ty b.sl_ty)) :: acc) rest
+          elab_terms env cs (base + sterm_size t) (b :: a :: sr)
+            (TPrimOp (PStack (SSwap a.sl_ty b.sl_ty)) :: acc) dacc rest
         | _ -> Inl "swap: needs two values on the stack")
 
      | StWord w ->
@@ -341,8 +354,8 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
              Inl ("stack underflow calling " ^ w ^ ": it needs "
                   ^ string_of_int (length n.n_sig.pre) ^ " inputs")
            | Some sh' ->
-             elab_terms env cs (anon_slots n.n_sig.post @ sh')
-               (TWord n.n_id :: acc) rest))
+             elab_terms env cs (base + sterm_size t) (anon_slots n.n_sig.post @ sh')
+               (TWord n.n_id :: acc) dacc rest))
 
      | StBlock _ ->
        Inl "a { } block is only meaningful as a definition body or a branch"
@@ -355,6 +368,25 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
      ///
      /// When sum syntax lands this case grows a `TSum variants` arm; the shape
      /// of the code does not otherwise change.
+     /// A CASE IS A HANDLER (D-68). The branches become the implementations of
+     /// two freshly declared operations, and what runs in the handler's body is
+     /// a single `TDispatch` that performs whichever one the tag selects.
+     ///
+     /// IDS COME FROM A POSITIONAL BUDGET, not from a threaded counter. Each
+     /// term gets `base` and passes `base + sterm_size t` to its successor, so
+     /// distinct sites get distinct ranges without the elaborator carrying
+     /// mutable state — and `sterm_size (StCase bs)` is `1 + length bs + …`,
+     /// which is exactly the `1 + n` ids a case needs for itself. The effect id
+     /// is shared by every case site (`eff_case`) and does not need to be
+     /// fresh: an inner handler that does not implement an outer case's
+     /// operation forwards it outward, which is `M04.fwd_impl` and
+     /// `R02.find_handler` doing what they already do.
+     ///
+     /// The declarations are at the FULL modelled shape either side, which is
+     /// deeper than necessary — the tightest declaration would strip the common
+     /// suffix `sr` and `sh'` share. Over-specifying is sound because
+     /// `M06.impl_frame` frames each branch to it, and the case's own signature
+     /// is then composed row-polymorphically like anything else.
      | StCase bs ->
        (match sh with
         | [] -> Inl "if: the stack is empty; the condition must leave a bool"
@@ -363,11 +395,26 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
           then Inl "if: the condition must leave a bool on top of the stack"
           else if length bs <> 2
           then Inl "if: a bool has exactly two branches"
-          else (match elab_branches env cs sr None [] bs with
+          else (match elab_branches env cs (base + 3) sr None [] [] bs with
                 | Inl e -> Inl e
-                | Inr (sh', bts) ->
-                  elab_terms env cs sh'
-                    (TCase bool_variants bts :: TPrimOp PBoolSum :: acc) rest))
+                | Inr (sh', bts, dacc') ->
+                  (match bts with
+                   /// Matched rather than indexed: `length bs = 2` was checked
+                   /// above but does not travel in `elab_branches`' type, and a
+                   /// refinement there would be carried for one caller.
+                   | [b0; b1] ->
+                     let o0 : op_id = base + 1 in
+                     let o1 : op_id = base + 2 in
+                     let odecl : op_decl =
+                       { od_eff = eff_case; od_stage = SStatic;
+                         od_sig = { op_pre  = slot_tys sr
+                                  ; op_post = slot_tys sh' } } in
+                     elab_terms env cs (base + sterm_size t) sh'
+                       (THandle eff_case [] TNil [(o0, b0); (o1, b1)]
+                          (TDispatch [o0; o1] bool_variants)
+                        :: TPrimOp PBoolSum :: acc)
+                       ((o0, odecl) :: (o1, odecl) :: (dacc' @ dacc)) rest
+                   | _ -> Inl "if: expected exactly two branches")))
 
      /// The handler's own parts are elaborated against stacks that are fully
      /// known before the body is looked at — the state comes from `over ( … )`
@@ -378,14 +425,14 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
      /// The exit shape is the state ON TOP of whatever the body left (D-46,
      /// D-47), mirroring `M06`'s rule, which re-derives it independently.
      | StHandle ename sttys init impls body ->
-       (match elab_handle_parts env ename sttys init impls with
+       (match elab_handle_parts env (base + 1) ename sttys init impls with
         | Inl e -> Inl e
-        | Inr (eid, st, it, ims) ->
-          (match elab_terms env cs sh [] body with
+        | Inr (eid, st, it, ims, d1) ->
+          (match elab_terms env cs (base + 1 + sterms_size init) sh [] [] body with
            | Inl e -> Inl e
-           | Inr (shb, bts) ->
-             elab_terms env cs (anon_slots st @ shb)
-               (THandle eid st it ims (seq_of bts) :: acc) rest))
+           | Inr (shb, bts, d2) ->
+             elab_terms env cs (base + sterm_size t) (anon_slots st @ shb)
+               (THandle eid st it ims (seq_of bts) :: acc) (d1 @ d2 @ dacc) rest))
 
      /// STATIC `with`: D-02's first running witness.
      ///
@@ -404,11 +451,11 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
        (match resolve_rebinds env su with
         | Inl e -> Inl e
         | Inr ids ->
-          (match elab_terms env cs sh [] body with
+          (match elab_terms env cs (base + 1) sh [] [] body with
            | Inl e -> Inl e
-           | Inr (shb, bts) ->
-             elab_terms env cs shb
-               (subst_words ids (seq_of bts) :: acc) rest)))
+           | Inr (shb, bts, d1) ->
+             elab_terms env cs (base + sterm_size t) shb
+               (subst_words ids (seq_of bts) :: acc) (d1 @ dacc) rest)))
 
 /// Elaborate each branch against the SAME entry shape and require them to
 /// agree on the exit shape.
@@ -418,22 +465,24 @@ let rec elab_terms (env:nenv) (cs:counts) (sh:shape) (acc:list term)
 /// stack, so a branch reaching further beneath it simply leaves a shorter
 /// list, and two branches agree exactly when those lists coincide. M06 then
 /// re-derives the same fact row-polymorphically and independently.
-and elab_branches (env:nenv) (cs:counts) (sh0:shape)
-                  (expect:option shape) (acc:list term) (bs:list (list sterm))
-  : Tot (either string (shape & list term))
+and elab_branches (env:nenv) (cs:counts) (base:nat) (sh0:shape)
+                  (expect:option shape) (acc:list term)
+                  (dacc:list (op_id & op_decl)) (bs:list (list sterm))
+  : Tot (either string (shape & list term & list (op_id & op_decl)))
         (decreases %[sterm_lists_size bs; 1]) =
   match bs with
   | [] -> (match expect with
            | None    -> Inl "if: no branches"
-           | Some sh -> Inr (sh, rev acc))
+           | Some sh -> Inr (sh, rev acc, dacc))
   | b :: r ->
-    (match elab_terms env cs sh0 [] b with
+    (match elab_terms env cs base sh0 [] [] b with
      | Inl e -> Inl e
-     | Inr (sh1, ts) ->
+     | Inr (sh1, ts, d1) ->
        let ok = (match expect with None -> true | Some ex -> ex = sh1) in
        if not ok
        then Inl "the branches of an if leave the stack in different states"
-       else elab_branches env cs sh0 (Some sh1) (seq_of ts :: acc) r)
+       else elab_branches env cs (base + sterms_size b) sh0 (Some sh1)
+              (seq_of ts :: acc) (d1 @ dacc) r)
 
 /// Resolve a `handle`'s effect, state, initialiser and implementations.
 ///
@@ -445,9 +494,10 @@ and elab_branches (env:nenv) (cs:counts) (sh0:shape)
 /// — they run on the handler's stacks, not the definition's — which falls out
 /// of passing an empty shape and empty counts, and is why `E02.count_var` does
 /// not look inside either.
-and elab_handle_parts (env:nenv) (ename:string) (sttys:list sty)
+and elab_handle_parts (env:nenv) (base:nat) (ename:string) (sttys:list sty)
                       (init:list sterm) (impls:list (string & list sterm))
-  : Tot (either string (eff_id & seg & term & list (op_id & term)))
+  : Tot (either string (eff_id & seg & term & list (op_id & term)
+                        & list (op_id & op_decl)))
         (decreases %[(sterms_size init + simpls_size impls <: nat); 2]) =
   match lookup_eff env ename with
   | None -> Inl ("unknown effect: " ^ ename)
@@ -458,15 +508,15 @@ and elab_handle_parts (env:nenv) (ename:string) (sttys:list sty)
      /// head = top.
      | Inr ds ->
        let st = rev ds in
-       (match elab_terms env [] [] [] init with
+       (match elab_terms env [] base [] [] [] init with
         | Inl e -> Inl e
-        | Inr (shi, its) ->
+        | Inr (shi, its, d1) ->
           if shi <> anon_slots st
           then Inl ("handle " ^ ename
                     ^ ": init must leave exactly the state declared by over ( … )")
-          else (match elab_impls env eid st [] impls with
+          else (match elab_impls env (base + sterms_size init) eid st [] [] impls with
                 | Inl e   -> Inl e
-                | Inr ims -> Inr (eid, st, seq_of its, ims))))
+                | Inr (ims, d2) -> Inr (eid, st, seq_of its, ims, d1 @ d2))))
 
 /// One implementation per operation, each checked at `st @ op_pre -- st @
 /// op_post` — the operation's declared signature with the state framed on top.
@@ -475,12 +525,12 @@ and elab_handle_parts (env:nenv) (ename:string) (sttys:list sty)
 /// forwards to the next handler outward, which is what makes partial overriding
 /// of a Dictionary possible (D04). What is an error is implementing something
 /// that is not an operation of this effect.
-and elab_impls (env:nenv) (eid:eff_id) (st:seg) (acc:list (op_id & term))
-               (im:list (string & list sterm))
-  : Tot (either string (list (op_id & term)))
+and elab_impls (env:nenv) (base:nat) (eid:eff_id) (st:seg) (acc:list (op_id & term))
+               (dacc:list (op_id & op_decl)) (im:list (string & list sterm))
+  : Tot (either string (list (op_id & term) & list (op_id & op_decl)))
         (decreases %[simpls_size im; 1]) =
   match im with
-  | [] -> Inr (rev acc)
+  | [] -> Inr (rev acc, dacc)
   | (opname, blk) :: r ->
     (match lookup_name env opname with
      | None -> Inl ("unknown operation: " ^ opname)
@@ -494,13 +544,14 @@ and elab_impls (env:nenv) (eid:eff_id) (st:seg) (acc:list (op_id & term))
           else
             let entry = anon_slots st @ anon_slots n.n_sig.pre in
             let ex    = anon_slots st @ anon_slots n.n_sig.post in
-            (match elab_terms env [] entry [] blk with
+            (match elab_terms env [] base entry [] [] blk with
              | Inl e -> Inl e
-             | Inr (sh', ts) ->
-               if sh' <> ex
+             | Inr (sh2, ts, d1) ->
+               if sh2 <> ex
                then Inl (opname ^ ": an implementation must leave the handler's \
                                    state on top of the operation's results")
-               else elab_impls env eid st ((n.n_id, seq_of ts) :: acc) r)))
+               else elab_impls env (base + sterms_size blk) eid st
+                      ((n.n_id, seq_of ts) :: acc) (d1 @ dacc) r)))
 
 /// Roll each surviving named slot to the top and pop it. Runs once, after the
 /// body, and is the counterpart to the pick-based read strategy above.
@@ -742,9 +793,9 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
      /// it is what keeps the two passes independent rather than one threading
      /// half-built output through the other.
      | StHandle ename sttys init impls body ->
-       (match elab_handle_parts env ename sttys init impls with
+       (match elab_handle_parts env 0 ename sttys init impls with
         | Inl e -> Inl e
-        | Inr (_, stseg, _, _) ->
+        | Inr (_, stseg, _, _, _) ->
           (match infer_terms env cs st body with
            | Inl e    -> Inl e
            | Inr stb  -> infer_terms env cs (ipush_post stseg stb) rest))
@@ -829,36 +880,36 @@ let infer_sig (env:nenv) (body:list sterm) : Tot (either string srow) =
 (* ------------------------------------------------------------------------ *)
 
 /// Elaborate a definition body against its declared signature.
-let elab_define (env:nenv) (sg:ssig) (body:list sterm)
-  : Tot (either string (srow & term)) =
+let elab_define (env:nenv) (base:nat) (sg:ssig) (body:list sterm)
+  : Tot (either string (srow & term & list (op_id & op_decl))) =
   match elab_sig sg with
   | Inl e -> Inl e
   | Inr row ->
     let sh0 = entry_shape (rev sg.ss_in) row.pre in
     let cs  = build_counts sg.ss_in body in
-    (match elab_terms env cs sh0 [] body with
+    (match elab_terms env cs base sh0 [] [] body with
      | Inl e -> Inl e
-     | Inr (sh1, ts1) ->
+     | Inr (sh1, ts1, ds) ->
        (match drop_named (length sh1) sh1 [] with
         | Inl e -> Inl e
-        | Inr (_, ts2) -> Inr (row, seq_of (ts1 @ ts2))))
+        | Inr (_, ts2) -> Inr (row, seq_of (ts1 @ ts2), ds)))
 
 /// Elaborate a definition with no written signature: infer one, then elaborate
 /// the body against it with the ordinary concrete pass. There are no named
 /// parameters in this form — naming happens in a signature — so the entry shape
 /// is anonymous and no end-of-body drop is needed.
-let elab_define_infer (env:nenv) (body:list sterm)
-  : Tot (either string (srow & term)) =
+let elab_define_infer (env:nenv) (base:nat) (body:list sterm)
+  : Tot (either string (srow & term & list (op_id & op_decl))) =
   match infer_sig env body with
   | Inl e -> Inl e
   | Inr row ->
-    (match elab_terms env [] (anon_slots row.pre) [] body with
-     | Inl e       -> Inl e
-     | Inr (_, ts) -> Inr (row, seq_of ts))
+    (match elab_terms env [] base (anon_slots row.pre) [] [] body with
+     | Inl e           -> Inl e
+     | Inr (_, ts, ds) -> Inr (row, seq_of ts, ds))
 
 /// Elaborate a bare expression against a known incoming stack shape.
-let elab_expr (env:nenv) (incoming:list dtype) (body:list sterm)
-  : Tot (either string term) =
-  match elab_terms env [] (anon_slots incoming) [] body with
-  | Inl e          -> Inl e
-  | Inr (_, ts)    -> Inr (seq_of ts)
+let elab_expr (env:nenv) (base:nat) (incoming:list dtype) (body:list sterm)
+  : Tot (either string (term & list (op_id & op_decl))) =
+  match elab_terms env [] base (anon_slots incoming) [] [] body with
+  | Inl e            -> Inl e
+  | Inr (_, ts, ds)  -> Inr (seq_of ts, ds)
