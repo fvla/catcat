@@ -364,9 +364,23 @@ so nothing it does is visible at runtime.
 functions the block parser uses, so a macro that runs out of tokens inside its
 production reports an error rather than reaching past the brace.
 
-**Nothing is hygienic.** A `$x` in a template naming no slot is an ordinary
-local read, resolved in whatever encloses the expansion. This is a real gap, not
-a subtlety — see §9.
+**A template cannot read a local it did not capture.** A `$x` naming no slot of
+the production is refused when the macro is declared:
+
+```
+catcat> macro bad ( { $b } ) { $b $tmp + }
+error: 'bad' reads $tmp, which names no slot of the production; a macro body
+cannot bind a local, so this would read the caller's $tmp. Add a slot for it, or
+correct the spelling
+```
+
+That is the whole of hygiene here, and it is a check rather than a renaming pass
+because **no term binds a local**: `$x` is a read, and the only binder in the
+language is a signature parameter, which appears in a declaration and not in a
+term. So a template `$x` naming no slot cannot be a temporary its author
+introduced — there is no way to introduce one — and rejecting it at the
+declaration names the macro instead of the call site. When `let` arrives this
+premise changes and real renaming will be needed.
 
 **A macro takes effect where it is written.** The parser and the evaluator
 interleave, one declaration at a time, so `macro sqm ( ) { dup * } 7 sqm` works
@@ -374,8 +388,11 @@ on a single line. The price: a parse error part-way through a line no longer
 leaves the session untouched, because what came before it has already run. Only
 a *lexing* error is free.
 
-**`if` is the one built-in macro**, and cannot be written as a declaration: it
-expands to a `case`, which has no surface spelling. `locate if` says so.
+**Every shipped macro is an ordinary template**, `if` included — `locate if`
+prints its expansion like any other. What a user still could not do is DECLARE
+it, because it expands to a `case` and `case` has no surface spelling. That is a
+gap in the surface grammar, not in the macro system, and it closes with surface
+sums (§9).
 
 ### `locate`
 
@@ -927,7 +944,8 @@ is otherwise invisible.
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
 | quotation `'…'`, backtick | not lexed. Strings ARE lexed (§2) |
-| macro hygiene | absent (§5): a `$x` naming no slot is captured by whatever encloses the expansion |
+| a `case` a user can write | `if` is an ordinary macro, but its expansion has no surface spelling, so a user cannot declare the same production (§5). Closes with surface sums |
+| macro hygiene beyond the declaration check | §5's check is complete while no term binds a local. `let` will change that premise and need real renaming |
 | macros as words | a macro is a template, not a program; the eventual design is an ordinary word with an effect that consumes code, which needs the elaboration-time interpreter |
 | `Box`/`Rc` construction | types exist; no surface word builds one |
 | source positions in errors | absent — errors are messages without spans |
@@ -940,12 +958,15 @@ is otherwise invisible.
 | a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
 | a `try` block that reads the enclosing stack | the block runs on a fresh stack (§6); the core does not restrict this, the elaborator does |
 
-Three entries left this table recently and are worth naming, because a reader of
+Five entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and
 silently dropped** — the misleading gap — and is now resolved and checked (§6).
-Effects and handlers used to be absent entirely. And user-defined macros used to
-be listed here as needing the elaboration-time interpreter; the template form
-(§5) turned out to need nothing.
+Effects and handlers used to be absent entirely. User-defined macros used to be
+listed here as needing the elaboration-time interpreter; the template form (§5)
+turned out to need nothing. **Mutual recursion** used to be undetected and is
+now impossible without being marked (§6). And **macro hygiene** used to be listed
+flatly as absent; it turned out to be a check rather than a renaming pass, for
+the reason §5 gives, and the entry above records only what is left of it.
 
 **Handler state aliasing is checked at runtime**, not statically (§6). That is a
 gap in a different sense: the language is safe, but the check is dynamic where

@@ -409,8 +409,19 @@ Three differences from the design above:
    than scan to a terminator — survives intact and is what keeps the grammar
    LL(1); only its spelling differs. `ll1_extend` decides the property before
    accepting a production, so a session's grammar is LL(1) at every point.
-3. **Nothing is hygienic.** A `$x` in a template naming no slot is an ordinary
-   local read in whatever encloses the expansion.
+3. **Hygiene is a well-formedness check, not a renaming pass** (D-73). A `$x` in
+   a template naming no slot is refused when the macro is declared, and that is
+   complete rather than approximate: **no term binds a local.** `$x` is a read,
+   the only binder is a signature parameter, and a signature appears in a
+   declaration while a macro body is a term list — so a template `$x` naming no
+   slot cannot be a temporary its author introduced, and can only read the
+   caller's. Rejecting it names the macro instead of the call.
+
+   This premise is exactly what `let` (§3.3) will break. Once a template can
+   bind, the two classic capture directions both become reachable and real
+   renaming is needed. The check is the whole of hygiene *only while the
+   language has no term-level binder*, and that dependency is worth carrying
+   forward rather than rediscovering.
 
 The target shape the language is aiming at is different again, and neither this
 section nor the implementation reaches it: a macro should be **an ordinary word
