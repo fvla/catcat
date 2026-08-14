@@ -700,6 +700,30 @@ The two blocks must leave the **same stack**, for the reason two branches of an
 `if` must: one of them runs and the code afterwards cannot know which. `catch`
 takes **no inputs** — there is nothing left for it to consume.
 
+**Code after a `fail` is checked as live and never runs.** `fail` is `( -- )`,
+so the words after it compose exactly as if it had returned, and they have to
+typecheck; what they *do* is nothing, because the `try` that catches the `fail`
+discards them along with the rest of the block. That is why the `"b" print`
+above is checked and silent. `!Fail` reaching the enclosing word is the same
+rule doing its ordinary job: a word that calls a `!Fail` word is a `!Fail` word.
+
+```
+catcat> define risky ( -- i64 !Fail ) { fail 1 }
+defined risky ( -- i64 !Fail )
+catcat> define chain ( -- i64 !Fail ) { risky 2 * }
+defined chain ( -- i64 !Fail )
+catcat> try { chain } catch { 99 }
+ok  99
+```
+
+`chain` had to declare `!Fail` although it never writes `fail`, and the `2 *` is
+typechecked although it can never run.
+
+The reference interpreter builds those dead steps and then drops them, which
+costs a walk; a compiler may delete them instead. See D-72 in
+[N01](../NOTES/N01_Decisions.md) for why that is licensed and what the pass
+needs to know.
+
 `try` discharges `!Fail`, so a word that catches its own failures is pure:
 
 ```

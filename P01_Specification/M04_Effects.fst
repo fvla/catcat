@@ -351,6 +351,25 @@ let rec handle (#env:sig_env) (#eff:eff_id) (#st:seg) (#a:seg)
 ///
 /// EVERY operation of `eff` aborts. `Fail` has one, but nothing here depends on
 /// that, so a `Break`/`Continue` pair is the same construction.
+///
+/// WHERE THE MULTIPLICITY OF `k` LIVES (D-72). A handler decides how many times
+/// the rest of the program runs, and the three answers are three different
+/// things to build:
+///
+///   * ONCE  -- `handle`. The implementation returns and the fold continues
+///             into `k res`. Every effect before `Fail` is this one.
+///   * ZERO  -- `handle_abort`. `k` is dropped. Nothing is stored, so D-36
+///             holds; but a `catch` produces the result of the whole handled
+///             computation, which no `op_impl` can, so it needs its own fold.
+///   * MANY  -- the free LIST monad, nondeterminism, `choose`. `k` has to be
+///             kept and re-entered, which is continuation capture, which D-36
+///             excludes. It is available only with the multiplicity reified as
+///             a value: an operation returning a list, or one whose
+///             alternatives are delimited blocks the handler schedules.
+///
+/// So `Fail` and the free list monad ARE the same family, and `Fail` is the
+/// other member of it that survives D-36 -- which is exactly why the boundary
+/// falls where it does.
 let rec handle_abort (#env:sig_env) (#a:seg)
                      (eff:eff_id) (catch:free env a) (m:free env a)
   : Tot (free env a) (decreases m) =
@@ -360,6 +379,77 @@ let rec handle_abort (#env:sig_env) (#a:seg)
     if eff_of env op = eff
     then catch
     else Op op arg (on _ (fun res -> handle_abort eff catch (k res)))
+
+/// NOTHING SPECIAL HAPPENS AT THE BIND (D-72), and the two lemmas below are
+/// what says so.
+///
+/// It is tempting to describe `fail` as needing composition to behave
+/// differently: the code after it should become dead, so the sequel must
+/// somehow be lifted into a failure monad and bound there. That description
+/// gets the right answer for the wrong reason. `fbind` ALREADY puts the sequel
+/// inside the operation's continuation -- that is what a free monad's bind is,
+/// and `M07` defines juxtaposition to be exactly `kcomp`, so `fail w` denotes
+/// `Op fail arg (fun r -> fbind (k r) (denote w))` with no special case. The
+/// row is likewise already right: `M06.infer`'s `TSeq` rule takes the
+/// `row_union`, so the composite of a `!Fail` word and a pure one carries
+/// `!Fail`.
+///
+/// What varies between effects is not the bind. It is the FOLD. The deadness of
+/// the sequel is a property of `handle_abort`, contributed entirely by the
+/// clause that drops `k`, and it belongs to the `try` that discharges the
+/// effect rather than to `fail`.
+
+/// The sequel after an abort is dead. `f` is arbitrary and does not appear on
+/// the right, which is the precise statement that code following a `fail`
+/// cannot affect the result -- and the licence for a backend to delete it.
+///
+/// By conversion: `fbind` reduces on a literal `Op` node, `handle_abort` then
+/// matches it, and the guard is the hypothesis. No extensionality is needed
+/// because the continuation `fbind` built is discarded rather than compared.
+let lemma_abort_kills_sequel (#env:sig_env) (#a #b:seg)
+      (eff:eff_id) (catch:free env b) (op:op_id)
+      (arg:vstack (op_of env op).op_pre)
+      (k:(vstack (op_of env op).op_post ^-> free env a))
+      (f:(vstack a -> free env b))
+  : Lemma (requires eff_of env op == eff)
+          (ensures  handle_abort eff catch (fbind (Op op arg k) f) == catch) = ()
+
+/// The same fact in the form the language composes in: juxtaposition is
+/// `kcomp` (`M07.dcompose`), so this is "whatever follows a word that aborts is
+/// not part of the meaning".
+let lemma_abort_kills_kcomp (#env:sig_env) (#a #b #c:seg)
+      (eff:eff_id) (catch:free env c) (op:op_id)
+      (arg:vstack (op_of env op).op_pre)
+      (k:(vstack (op_of env op).op_post ^-> free env b))
+      (f:(vstack a -> free env b)) (g:(vstack b -> free env c))
+      (s:vstack a)
+  : Lemma (requires eff_of env op == eff /\ f s == Op op arg k)
+          (ensures  handle_abort eff catch (kcomp f g s) == catch) = ()
+
+/// THE OTHER HALF IS NOT MECHANIZED HERE, and the reason is a wall this project
+/// already has a name for rather than an omission.
+///
+/// The statement wanted is that everything BEFORE the abort runs normally: for
+/// `eff_of env op <> eff`,
+///
+///     handle_abort eff catch (Op op arg k)
+///       == Op op arg (on _ (fun res -> handle_abort eff catch (k res)))
+///
+/// so the walk rebuilds an unrelated operation untouched and continues into its
+/// continuation. With `Pure`, which is returned as it stands, that is the whole
+/// behaviour: pass through, pass through, then stop.
+///
+/// It cannot be proved the way `lemma_abort_kills_sequel` is. The right-hand
+/// side names a lambda, and a lambda written here is a different closure from
+/// the one `handle_abort` built, so only `extensionality` can bridge them --
+/// which needs the continuation by PROJECTION, `Op?.okont` of the result. That
+/// projection does not typecheck, because its type mentions `Op?.op` of a term
+/// whose head is `if eff_of env op = eff then ... else ...`, and conversion
+/// cannot decide that guard. This is exactly the obstruction M10's H2 and H3
+/// describe, met here in the abort fold; discharging it needs the same missing
+/// piece, an `Op` congruence stated over projected continuations. The previous
+/// lemma escapes it only because the continuation `fbind` built is DISCARDED
+/// rather than compared.
 
 /// The handler that changes nothing: no state, every implementation
 /// re-performing its own operation. M10's H3 is the statement that handling with

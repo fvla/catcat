@@ -237,6 +237,16 @@ noeq type term =
   /// EVERY operation of `eff` aborts; there is no per-operation flag. An
   /// aborting effect is one whose operations all mean "stop", which is what
   /// `Fail` is, and a handler for a non-aborting effect is still a `THandle`.
+  ///
+  /// CODE AFTER AN ABORT IS TYPECHECKED AS LIVE AND IS SEMANTICALLY DEAD
+  /// (D-72), and the two are not in tension. `fail` is declared `( -- )`, so
+  /// `M06.infer`'s `TSeq` rule composes the sequel exactly as if it returned,
+  /// and the row it computes is the `row_union` -- which is how `!Fail`
+  /// propagates outward through ordinary code. The deadness is not a fact about
+  /// the term at all: `M04.lemma_abort_kills_sequel` shows the sequel's
+  /// denotation does not appear in the result, and it is `handle_abort` that
+  /// makes that so. Nothing about `fail`, and nothing about sequencing, is
+  /// special-cased for it.
   | TTry     : eff:eff_id -> pre:seg -> body:term -> catch:term -> term
   /// Resolve the static effects of the body against the ambient dictionary,
   /// producing a residual program. Invoked at elaboration time this is

@@ -1401,3 +1401,87 @@ semantics: a backend may turn `TTry` into a `TDispatch` on an `option`-shaped
 sum by CPS-ing the body at each `fail` site. That is the same division D-69
 found for E3, where the zero-cost claim turned out to be a backend peephole on a
 recognisable shape rather than a theorem about `specialize`.
+
+---
+
+## D-72. `Fail` is a monad in the ordinary way. The variable is the fold, not the bind.
+
+A refinement of D-71, prompted by the observation that `Fail` is a monad in the
+same sense the free list monad is, and that the effects built so far do not
+affect the execution of the pure code around them while this one must.
+
+The second half is right about the behaviour and worth being exact about where
+it comes from, because the natural description of it is subtly misleading.
+
+### Nothing is added at the bind
+
+The description that suggests itself: once a word carries `!Fail`, the sequel has
+to be lifted into a failure monad and monadically bound with the `fail`, so that
+it becomes a no-op. Right conclusion, wrong mechanism — because **that bind
+already exists and is not specific to `Fail`.**
+
+`M04.fbind` puts the sequel inside the operation's continuation; that is what a
+free monad's bind IS, and `M07` defines juxtaposition to be `kcomp`, so `fail w`
+denotes `Op fail arg (fun r -> fbind (k r) (denote w))` with no special case
+anywhere. The row is already right too: `M06.infer`'s `TSeq` rule takes the
+`row_union`, so composing a `!Fail` word with a pure one yields a `!Fail` word.
+That is the "the following word gets converted to a `!Fail` word" step, and it
+is the ordinary rule doing it.
+
+So the sequel is not typechecked as dead, and should not be. `fail` is `( -- )`,
+the composition proceeds as if it returned, and `!Fail` propagates outward
+through ordinary code by the ordinary rules.
+
+### The deadness belongs to the handler
+
+This was the right instinct and it is what is implemented. `handle_abort`'s one
+distinguishing clause drops `k`, and
+
+    M04.lemma_abort_kills_sequel :
+      eff_of env op == eff ==>
+      handle_abort eff catch (fbind (Op op arg k) f) == catch
+
+says it exactly: `f` is arbitrary and does not appear on the right, so the code
+after a `fail` cannot affect the result. Proved by conversion, since the
+continuation `fbind` built is discarded rather than compared — which is why this
+one escapes the wall that stops M10's H2 and H3. `lemma_abort_kills_kcomp` is
+the same fact in the form the language composes in.
+
+The converse half — that an operation of another effect passes through untouched
+— is stated in prose in `M04` and NOT mechanized. It needs `extensionality`,
+hence the continuation by projection, hence `Op?.op` of a term headed by the
+guard `eff_of env op = eff`, which conversion cannot decide. That is H2/H3's
+obstruction met in the abort fold, so it is one missing piece and not three.
+
+### Where the multiplicity of `k` lives
+
+Stated as a table because it is the whole design in one place:
+
+| Times the rest of the program runs | Fold | Capture? |
+|---|---|---|
+| once | `handle` — implementation returns, fold continues into `k res` | no |
+| zero | `handle_abort` — `k` dropped | no |
+| many | free *list* monad, `choose` | **yes**, excluded by D-36 |
+
+`Fail` and nondeterminism are the same family, and `Fail` is the other member of
+it that survives the no-continuations rule. That is why the boundary falls where
+it does, and it makes D-36's cost precise: what is given up is many-shot, not
+zero-shot. Many-shot stays available with the multiplicity reified as a value —
+an operation returning a list, or alternatives as delimited blocks the handler
+schedules — because then there is nothing to capture.
+
+### What a compiler would do, and what the interpreter does instead
+
+`R02` discards the dead frames when the abort fires: `find_try` returns the tail
+of the continuation at the boundary, so everything between is dropped. It is
+built first and dropped after, which costs a walk.
+
+A backend should not do that, and the lemma is the licence not to. The pass is
+decidable and scoped: inside `TTry eff pre body catch`, any `TWord w` with
+`eff_of w = eff` certainly aborts, so in `TSeq a b` with `a` certainly aborting,
+`b` is unreachable and may be deleted. Note it is decidable only *inside* a
+`TTry` — nothing marks an effect as always-aborting, since aborting is a
+property of who handles it (D-71), so the analysis has the enclosing `try` as
+its context rather than the effect declaration. That is another entry on the
+list D-69 started: things that look like theorems about `specialize` and are
+really backend passes over a recognisable shape.

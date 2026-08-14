@@ -330,7 +330,15 @@ let step (d:rdict) (s:mstate) : Tot sresult =
              in which case every frame up to it is DISCARDED, the stack is cut
              back to what the frame saved, and `catch` runs in its place -- or
              the operation escapes to the host. Nothing is captured on the way
-             out: the discarded frames are dropped by taking the tail. *)
+             out: the discarded frames are dropped by taking the tail.
+
+             THIS IS WHERE THE DEAD CODE GOES (D-72). The sequel of an abort
+             lives in the continuation, so `find_try` returning the tail at the
+             boundary is the machine's form of `M04.lemma_abort_kills_sequel`.
+             Note it is discarded HERE, when the abort happens, and not deleted
+             earlier: the reference interpreter builds the frames and then drops
+             them, which costs a walk and is not meant to. Skipping the work
+             instead is a compiler's job, licensed by that lemma. *)
           | None ->
             (match find_try k e with
              | Some (catch, saved, k') ->

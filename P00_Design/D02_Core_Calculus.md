@@ -287,6 +287,36 @@ drops `k`.
 Exceptions being the odd one out in an effect system is not news. What the core
 records is *which* property they cost and where it is cheapest to pay for it.
 
+**The variable is the fold, not the bind** (D-72). It is natural to describe
+`fail` as needing composition to behave differently — the sequel should become
+dead, so it must be lifted into a failure monad and bound there. That reaches
+the right answer by the wrong route. `M04.fbind` *already* puts the sequel inside
+the operation's continuation, because that is what a free monad's bind is, and
+juxtaposition is defined to be `kcomp`; the row is already right too, since
+`TSeq` takes the `row_union`. Nothing has to be added for `!Fail` to propagate
+through ordinary code.
+
+What varies between effects is how the fold treats `k` — that is, **how many
+times the rest of the program runs**:
+
+| Multiplicity | Fold | Needs capture? |
+|---|---|---|
+| once | `M04.handle` — the implementation returns, the fold continues into `k res` | no |
+| zero | `M04.handle_abort` — `k` is dropped | no |
+| many | the free *list* monad, `choose` — `k` is kept and re-entered | **yes**, so D-36 excludes it |
+
+`Fail` and nondeterminism are the same family; `Fail` is the other member of it
+that survives the no-continuations rule, which is exactly why the boundary falls
+where it does. Many-shot remains available with the multiplicity **reified as a
+value** — an operation returning a list, or alternatives as delimited blocks the
+handler schedules — because then there is nothing to capture.
+
+`M04.lemma_abort_kills_sequel` states the zero case: for `f` arbitrary,
+`handle_abort eff catch (fbind (Op op arg k) f) == catch`. `f` does not appear
+on the right, which is the whole of "the code after a `fail` cannot affect the
+result", and it is the licence a backend needs to delete that code rather than
+build and discard it.
+
 ### Branch agreement
 
 Branches do **not** need equal signatures. Each is row-polymorphic, so they agree
