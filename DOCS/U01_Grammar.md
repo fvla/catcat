@@ -576,7 +576,7 @@ no program can bring a new host-serviced effect into existence:
 
 | Id | Effect | Discharged by | Operations |
 |---|---|---|---|
-| 0 | `Dict` | elaboration — every word carries it, and it is never printed | every word |
+| 0 | `Dict` | elaboration, or a `handle Dict` frame at runtime. Never printed | every word |
 | 1 | `IO` | the REPL, which performs it | `print`, `read` |
 | 2 | `Unsafe` | you, with `unsafe { … }` | **none** |
 | 3 | `C` | the REPL, which calls libc | each `extern` |
@@ -897,7 +897,40 @@ catcat> define bad2 { with { slow not } { 1 } }
 error: with: not cannot replace slow; their signatures differ
 ```
 
-There is no dynamic form yet: every `with` is resolved at elaboration time.
+**`with` does not reach through a definition**, and the dynamic form does. The
+rebinding rewrites the block's *own* terms, so a call made by a word the block
+calls is untouched:
+
+```
+catcat> define greet ( -- str ) { "hello" }
+catcat> define bye   ( -- str ) { "goodbye" }
+catcat> define shout ( -- str ) { greet "!" cat }
+catcat> with { greet bye } { shout }
+ok  "hello!"
+```
+
+The block is just `shout`, so there is no `greet` in it to rewrite. To rebind
+where the word actually *runs*, handle the `Dict` effect (§6):
+
+```
+catcat> handle Dict over ( ) init { } { greet { bye } } { shout }
+ok  "goodbye!"
+```
+
+That is the same distinction the rest of §6 draws between a static and a dynamic
+effect, applied to the one effect every word carries. `with` is resolved at
+elaboration and costs nothing; `handle Dict` is a frame consulted at the call and
+costs a lookup. Both are type-checked — the dynamic form checks the override
+against the word's declared signature, using the ordinary handler rule rather
+than a special test.
+
+A `Dict` handler may carry state, so it is a class over a word:
+
+```
+catcat> define twice ( -- str ) { greet greet cat }
+catcat> handle Dict over ( i64 ) init { 0 } { greet { 1 + dup show swap } } { twice }
+ok  "12" 2
+```
 
 ---
 
@@ -940,7 +973,6 @@ is otherwise invisible.
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
 | `#T` generics | parses, elaborator rejects |
 | `let` and `let (…)` | not parsed |
-| dynamic `with` / `!Dict` | every rebinding is resolved at elaboration (§7); there is no runtime dictionary lookup |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
 | quotation `'…'`, backtick | not lexed. Strings ARE lexed (§2) |
@@ -958,15 +990,17 @@ is otherwise invisible.
 | a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
 | a `try` block that reads the enclosing stack | the block runs on a fresh stack (§6); the core does not restrict this, the elaborator does |
 
-Five entries left this table recently and are worth naming, because a reader of
+Six entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and
 silently dropped** — the misleading gap — and is now resolved and checked (§6).
 Effects and handlers used to be absent entirely. User-defined macros used to be
 listed here as needing the elaboration-time interpreter; the template form (§5)
 turned out to need nothing. **Mutual recursion** used to be undetected and is
-now impossible without being marked (§6). And **macro hygiene** used to be listed
+now impossible without being marked (§6). **Macro hygiene** used to be listed
 flatly as absent; it turned out to be a check rather than a renaming pass, for
-the reason §5 gives, and the entry above records only what is left of it.
+the reason §5 gives, and the entry above records only what is left of it. And
+**dynamic `with`** used to say there was no runtime dictionary lookup; there is,
+spelled `handle Dict` (§7).
 
 **Handler state aliasing is checked at runtime**, not statically (§6). That is a
 gap in a different sense: the language is safe, but the check is dynamic where
