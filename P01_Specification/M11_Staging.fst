@@ -23,8 +23,11 @@ module M11_Staging
 /// which treats a tower of interpreters staged so the levels cost nothing;
 /// D04 records what catcat takes from it and where it diverges.
 ///
-/// STATUS: skeleton. Types and the reflective-tower interface are real;
-/// `specialize` is declared, not defined.
+/// STATUS: `specialize` is DEFINED (D-74) -- one downward pass over the id
+/// space, inlining every statically resolvable word. What remains assumed is
+/// `specialize_typed`, and E1-E7 remain obligations. The reflective-tower
+/// interface is real; two of `stage_req`'s four answers are unreachable and say
+/// so.
 
 open FStar.List.Tot
 open M01_Kinds
@@ -40,30 +43,153 @@ open M10_Handlers
 (* Specialization                                                           *)
 (* ------------------------------------------------------------------------ *)
 
+/// One downward pass over the id space: resolve word `n-1`, then `n-2`, and so
+/// on to 0.
+///
+/// THE ORDERING IS THE ALGORITHM (D-70). A word calls only words defined before
+/// it, so a body spliced in at step `w` mentions only words `< w` — every one of
+/// which a later step still has to visit. Descending is therefore enough; no
+/// worklist, no fixpoint, and no check that the substitution settled.
+///
+/// TERMINATION IS ON THE FUEL, NOT ON THE TERM, and that is a choice worth
+/// naming. Recursing on `M05.word_bound` of the residual would be tighter and
+/// would need a lemma — that inlining the highest word strictly lowers the
+/// bound — which is true only when `dict_ordered d`. Counting down instead makes
+/// the function total for ANY dictionary, and turns a disordered one from a
+/// divergence into an incompleteness: inlining a self-referential body at step
+/// `w` leaves the inner `TWord w` behind, because the pass has already gone past
+/// `w` and never returns. A specializer that quietly leaves a call is a residual
+/// that still runs; one that loops is not.
+///
+/// The cost is a pass per id rather than per call. This is a specification: the
+/// implementation walks the term once with the table in hand, and agreeing with
+/// this is its obligation.
+let rec resolve_below (d:dict) (n:nat) (t:term) : Tot term (decreases n) =
+  if n = 0 then t
+  else
+    let w : word_id = n - 1 in
+    let t' = (match lookup_def d.d_defs w with
+              | None      -> t
+              | Some body -> inline_word w body t) in
+    resolve_below d (n - 1) t'
+
 /// Resolve every statically-staged effect of `t` against `d`, producing a
 /// residual program.
 ///
-/// NOT DEFINED. The definition is a partial evaluator over `M05.term`:
-/// inline statically resolved words, fold `TCase` on known tags, erase
-/// `PPack`/`PUnpack` (sound by M10's H4), and leave dynamic operations alone.
-/// It is the single largest piece of unwritten work in the specification.
+/// DEFINED, at last, and the reason it could not be before is worth keeping in
+/// view: it needed a dictionary with bodies (D-69) and a termination measure
+/// (D-70), and neither was a proof difficulty. `M05.word_bound t` bounds the
+/// words `t` can call, so that many steps suffice.
 ///
-/// The precondition for attempting it is now met: `M07.denote_static` exists, so
-/// E2 has something to be stated against. It also has a sharper shape than it did
-/// when `denote` was assumed. `denote_static` gives `TWord w` the denotation
-/// `Op w` (D-60), so inlining a statically resolved word is not a special case of
-/// partial evaluation at all -- it IS `M04.handle` applied to the Dictionary
-/// frame, run at elaboration time. That collapses most of the first clause above
-/// into machinery that already exists and is already verified.
-assume val specialize (env:wenv) (d:dict) (t:term { well_typed env t })
-  : Tot term
+/// WHAT IT DOES: inline every statically resolvable word. That is less than the
+/// partial evaluator this comment used to promise and it is the whole of the
+/// first clause, which is the one that matters — `denote_static` gives `TWord w`
+/// the denotation `Op w` (D-60), so inlining a resolved word IS `M04.handle`
+/// applied to the Dictionary frame, run at elaboration time. Which words are
+/// resolvable is entirely `d`'s business: a recursive word is marked `!Rec` and
+/// left out of `d_defs` (D-67, D-70), a dynamic effect's operation was never in
+/// it, and a prelude primitive has no body to inline.
+///
+/// WHAT IT DOES NOT DO, each for a stated reason rather than for want of effort:
+///
+///   * Fold a dispatch on a known tag. `TDispatch` selects on a runtime value;
+///     folding it needs the scrutinee to be a literal `PInj`, which is a
+///     constant-propagation pass over `TSeq` and is genuinely separate work.
+///   * Erase `PPack`/`PUnpack`. Sound by M10's H4, which is not proved.
+///   * DISCHARGE A `TSpecialize` NODE. E2's domain constraint says it must, and
+///     it does not, and the dependency is real rather than an oversight:
+///     stripping the marker is honest only when the body has no static effect
+///     left, which is a question about `infer` of the RESIDUAL, and knowing the
+///     residual is even well typed is E1. So E1 comes first, and until then a
+///     `TSpecialize` is passed through — visible in the output rather than
+///     silently discarded, which is the failure mode to prefer.
+///
+/// The `well_typed` refinement is not consumed. It is kept because E1, E2 and E3
+/// are all stated at it and a signature change here would ripple through three
+/// obligation types for no gain.
+let specialize (env:wenv) (d:dict) (t:term { well_typed env t }) : Tot term =
+  resolve_below d (word_bound t) t
+
+/// A dictionary with nothing in it changes nothing. The sanity check that the
+/// pass is doing lookup rather than rewriting, and the one property of
+/// `resolve_below` that needs no ordering hypothesis.
+let rec lemma_resolve_below_empty (d:dict { Nil? d.d_defs }) (n:nat) (t:term)
+  : Lemma (ensures resolve_below d n t == t) (decreases n) =
+  if n = 0 then () else lemma_resolve_below_empty d (n - 1) t
+
+let lemma_specialize_empty (env:wenv) (t:term { well_typed env t })
+  : Lemma (specialize env empty_dict t == t) =
+  lemma_resolve_below_empty empty_dict (word_bound t) t
+
+(* --- non-vacuity: the pass computes --------------------------------------- *)
+
+/// An ordered dictionary: word 7 is `3 4`, word 5 is `2`. Both bodies call only
+/// words below their own id, which is `M05.ordered_at` and hence
+/// `M10.dict_ordered`.
+let ex_defs : dict =
+  { d_defs = [ (7, TSeq (TWord 3) (TWord 4))
+             ; (5, TWord 2) ];
+    d_stages = [] }
+
+let lemma_ex_defs_ordered () : Lemma (dict_ordered ex_defs) =
+  assert_norm (dict_ordered ex_defs)
+
+/// A word is replaced by its body; a word with no definition is left alone.
+let lemma_specialize_inlines ()
+  : Lemma (resolve_below ex_defs 8 (TSeq (TWord 7) (TWord 1))
+           == TSeq (TSeq (TWord 3) (TWord 4)) (TWord 1)) =
+  assert_norm (resolve_below ex_defs 8 (TSeq (TWord 7) (TWord 1))
+               == TSeq (TSeq (TWord 3) (TWord 4)) (TWord 1))
+
+/// ONE PASS RESOLVES A CHAIN, which is the whole content of D-70 as an
+/// algorithm. Word 7 is `6`, word 6 is `5`, word 5 is `2`, so the chain runs
+/// DOWNWARD in id — which is not a convenience of the example but what
+/// `dict_ordered` forces. Descending meets each link after the one that
+/// introduces it, so `7` resolves all the way to `2` in a single sweep, with no
+/// worklist and no test that the substitution settled.
+let ex_chain : dict =
+  { d_defs = [(7, TWord 6); (6, TWord 5); (5, TWord 2)]; d_stages = [] }
+
+let lemma_ex_chain_ordered () : Lemma (dict_ordered ex_chain) =
+  assert_norm (dict_ordered ex_chain)
+
+let lemma_specialize_chain ()
+  : Lemma (resolve_below ex_chain 8 (TWord 7) == TWord 2) =
+  assert_norm (resolve_below ex_chain 8 (TWord 7) == TWord 2)
+
+/// AND THE CONVERSE, kept because it is the property that makes the fuel
+/// formulation the right one. Reverse the chain so word 5 calls word 7 — which
+/// `dict_ordered` refuses — and the pass terminates anyway, leaving a call
+/// behind: step 7 runs before anything introduces `TWord 7`, so nothing resolves
+/// it. Incompleteness, not divergence.
+let ex_unordered : dict =
+  { d_defs = [(5, TWord 7); (7, TWord 2)]; d_stages = [] }
+
+let lemma_ex_unordered_is_unordered () : Lemma (not (dict_ordered ex_unordered)) =
+  assert_norm (not (dict_ordered ex_unordered))
+
+let lemma_specialize_unordered_leaves_a_call ()
+  : Lemma (resolve_below ex_unordered 8 (TWord 5) == TWord 7) =
+  assert_norm (resolve_below ex_unordered 8 (TWord 5) == TWord 7)
 
 /// The residual is still well typed, with the static effects gone. Stated
 /// separately from E2 because the compiler needs it long before anyone proves
 /// semantic preservation, and because M06's `lemma_static_specializes_to_pure`
 /// already establishes the type-level half.
+///
+/// STILL ASSUMED, and the hypothesis it needs is now writable where it was not.
+/// Discharging it requires `M10.dict_agrees env d` — every body in `d` has the
+/// signature `env` records for its word — and then an induction over
+/// `resolve_below`: each step replaces `TWord w`, whose signature `infer` reads
+/// as `w_sig env w`, by a body of that same signature, so `M06.compose` sees the
+/// same operands at every enclosing `TSeq`. The `THandle` case additionally
+/// needs `op_of env.w_ops` unchanged, which holds because `inline_word_impls`
+/// does not rewrite an implementation's key — the same fact E7 relies on for
+/// `subst_words`. Nothing here is deep; it is a mutual induction over `infer`
+/// that has not been written.
 assume val specialize_typed (env:wenv) (d:dict) (t:term { well_typed env t })
-  : Lemma (well_typed env (specialize env d t))
+  : Lemma (requires dict_agrees env d)
+          (ensures  well_typed env (specialize env d t))
 
 (* ------------------------------------------------------------------------ *)
 (* Word rebinding: specialization in its first useful form                  *)
@@ -152,11 +278,18 @@ let lemma_no_specialize_needs_nothing (env:wenv) (t:term { well_typed env t })
 /// that is not a proof difficulty.
 
 /// E1. Specialization changes a program's cost, never its interface.
+///
+/// `dict_agrees` is the hypothesis D-69 said was missing and D-74 could finally
+/// write: without it `d` may bind a word to a body of some other signature, and
+/// the residual is a different program rather than a cheaper one. It is NOT a
+/// deficiency of `specialize` that the hypothesis is needed — it is what makes
+/// the dictionary a dictionary.
 let e1_type : Type =
     (env:wenv) -> (d:dict) -> (t:term { well_typed env t })
-  -> Lemma (well_typed env (specialize env d t) /\
-            fst (Some?.v (infer env (specialize env d t)))
-            == fst (Some?.v (infer env t)))
+  -> Lemma (requires dict_agrees env d)
+           (ensures  well_typed env (specialize env d t) /\
+                     fst (Some?.v (infer env (specialize env d t)))
+                     == fst (Some?.v (infer env t)))
 
 /// E3. A fully static, fully resolved row leaves nothing behind.
 ///
@@ -178,10 +311,18 @@ let e1_type : Type =
 /// is a syntactically recognisable shape (it is exactly what `E05.locate`
 /// matches) which a backend compiles to a branch. That is a compiler pass, not
 /// a theorem about `specialize`, and D04 §4 should say so.
+/// THREE HYPOTHESES NOW, and each earns its place against the definition D-74
+/// gave `specialize`. `dict_agrees` is E1's, since a residual that is not well
+/// typed has no row to be empty. `dict_ordered` is the completeness condition:
+/// the pass descends once through the id space, so a body that calls a word
+/// already passed keeps its call, and a disordered dictionary leaves static
+/// effects behind without diverging. `resolvable` is the original — `d` has to
+/// carry the effects at all.
 let e3_type : Type =
     (env:wenv) -> (d:dict) -> (t:term { well_typed env t })
   -> Lemma (requires all_static (snd (Some?.v (infer env t))) /\
-                     resolvable d (snd (Some?.v (infer env t))))
+                     resolvable d (snd (Some?.v (infer env t))) /\
+                     dict_agrees env d /\ dict_ordered d)
            (ensures  is_pure env (specialize env d t))
 
 (* ------------------------------------------------------------------------ *)

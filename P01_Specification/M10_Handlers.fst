@@ -133,6 +133,34 @@ let rec lookup_stage_of (ss:list (eff_id & stage)) (e:eff_id)
 let dict_ordered (d:dict) : bool =
   for_all (fun (w, t) -> ordered_at w t) d.d_defs
 
+/// A dictionary AGREES with an environment when every definition it carries has
+/// the signature the environment records for that word.
+///
+/// This is D-69's second blocker written down. `M11.specialize` replaces a
+/// `TWord w` — whose signature `M06.w_sig` reads out of `env` — by the body `d`
+/// supplies, and E1 says the residual has the signature the original had. That
+/// holds only if the body's own inferred signature IS `w_sig env w`; nothing
+/// stated it, and nothing could, because `dict` had no bodies to state it about.
+///
+/// It is a hypothesis rather than a refinement on `dict` deliberately. A `dict`
+/// is meaningful without an environment — it is a table of what words mean — and
+/// tying the two together in the type would make every construction of one carry
+/// a proof about the other. The environment is what a dictionary is CHECKED
+/// against, so the check belongs where E1 is stated.
+///
+/// The ROW is not required to agree, and must not be: inlining a body brings its
+/// effects with it, which is exactly what makes a static Dictionary word cost
+/// nothing at runtime. Only the stack signature is invariant. That asymmetry is
+/// the same one E7 records for `subst_words`.
+let rec defs_agree (env:wenv) (ds:list (word_id & term)) : Tot bool (decreases ds) =
+  match ds with
+  | []           -> true
+  | (w, t) :: r  -> (match infer env t with
+                     | Some (s, _) -> s = w_sig env w && defs_agree env r
+                     | None        -> false)
+
+let dict_agrees (env:wenv) (d:dict) : bool = defs_agree env d.d_defs
+
 /// Whether every effect in a row is resolvable in `d`, and at which stage.
 /// The two-tier design of D04 lives in this one function: a `SStatic` effect
 /// must be resolvable here at elaboration time, and a `SDynamic` one is

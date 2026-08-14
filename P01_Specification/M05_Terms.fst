@@ -475,3 +475,43 @@ and word_bound_impls (is:list (op_id & term))
 /// `t` may be the body of the word defined at `w`: it calls nothing defined at
 /// or after `w`. The negation is what `E06` reads as "this word is recursive".
 let ordered_at (w:word_id) (t:term) : Tot bool = word_bound t <= w
+
+/// Replace every call to `w` by `body`. This is what `M11.specialize` does, and
+/// it is the reason `word_bound` is the measure it runs on.
+///
+/// `subst_words` NEXT DOOR IS A DIFFERENT OPERATION. That one renames a call to
+/// another call, which cannot change how deep the term reaches; this one splices
+/// a whole body in, so it can. The two exist side by side because `with` is
+/// rebinding and `specialize` is resolving, and only the second needs a
+/// termination argument.
+///
+/// `TDispatch` IS DELIBERATELY UNTOUCHED, and the same reason applies to a
+/// `THandle`'s implementation keys. A dispatch target is selected by a runtime
+/// tag, so there is no single body to splice in; an implementation key says
+/// which operation is being implemented, so rewriting it would change which
+/// handler answers. Both hold ids rather than `TWord` nodes, which is what makes
+/// "inline every `TWord w`" the right description of this function rather than
+/// an approximation of it.
+let rec inline_word (w:word_id) (body:term) (t:term)
+  : Tot term (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TWord w'            -> if w' = w then body else t
+  | TSeq a b            -> TSeq (inline_word w body a) (inline_word w body b)
+  | THandle e st i im b -> THandle e st (inline_word w body i)
+                                   (inline_word_impls w body im)
+                                   (inline_word w body b)
+  | TTry e p b c        -> TTry e p (inline_word w body b) (inline_word w body c)
+  | TSpecialize b       -> TSpecialize (inline_word w body b)
+  | _                   -> t
+
+and inline_word_list (w:word_id) (body:term) (ts:list term)
+  : Tot (list term) (decreases %[terms_size ts; 1]) =
+  match ts with
+  | []     -> []
+  | t :: r -> inline_word w body t :: inline_word_list w body r
+
+and inline_word_impls (w:word_id) (body:term) (im:list (op_id & term))
+  : Tot (list (op_id & term)) (decreases %[impls_size im; 1]) =
+  match im with
+  | []          -> []
+  | (o, t) :: r -> (o, inline_word w body t) :: inline_word_impls w body r

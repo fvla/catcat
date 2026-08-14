@@ -1559,3 +1559,91 @@ fresh operation ids each `case` site needs, and that macros would need gensym to
 allocate them. That was wrong: `E04` allocates those ids from its positional
 budget when it elaborates `StCase`, whatever produced the node. The blocker was
 only ever the surface spelling.
+
+---
+
+## D-74. `specialize` is defined. The ordering is the algorithm.
+
+D-69 said E3 was blocked on `specialize`, which was blocked on a dictionary with
+bodies (fixed there) and a termination measure (fixed by D-70). Both were
+prerequisites rather than difficulties, and with them in place the function is
+eight lines.
+
+    let rec resolve_below (d:dict) (n:nat) (t:term) : Tot term (decreases n) =
+      if n = 0 then t
+      else let w = n - 1 in
+           let t' = match lookup_def d.d_defs w with
+                    | None      -> t
+                    | Some body -> inline_word w body t in
+           resolve_below d (n - 1) t'
+
+    let specialize env d t = resolve_below d (word_bound t) t
+
+**One downward pass over the id space.** A word calls only words defined before
+it, so a body spliced in at step `w` mentions only words `< w`, every one of
+which a later step still has to visit. Descending is therefore enough: no
+worklist, no fixpoint, no test that the substitution settled. `M11`'s
+`lemma_specialize_chain` checks it on a three-link chain by `assert_norm`.
+
+*The chain runs downward in id, and that is forced rather than convenient.* My
+first attempt at that example had word 6 calling word 7 and asserted it resolved;
+it does not, and F* said so. `dict_ordered` is exactly what rules that dictionary
+out, so the failure was the design working.
+
+### Fuel rather than the term, deliberately
+
+Recursing on `word_bound` of the residual would be tighter and needs a lemma —
+inlining the highest word strictly lowers the bound — which holds only under
+`dict_ordered`. Counting down instead makes the function **total for any
+dictionary**, and turns a disordered one from a divergence into an
+incompleteness: inlining a self-referential body at step `w` leaves the inner
+call, because the pass has gone past `w` and never returns.
+`lemma_specialize_unordered_leaves_a_call` states that as a fact rather than a
+hope. A specializer that quietly leaves a call still produces a residual that
+runs; one that loops does not.
+
+The cost is a pass per id rather than per call. This is a specification; an
+implementation walks the term once with the table in hand, and agreeing with
+this is its obligation.
+
+### `inline_word` is not `subst_words`
+
+`M05` now has both, and the difference is why only one needed a termination
+argument. `subst_words` renames a call to another call, which cannot change how
+deep a term reaches; `inline_word` splices a body in, which can. `TDispatch` and
+a `THandle`'s implementation keys are untouched by both — they hold ids rather
+than `TWord` nodes, a dispatch target is chosen by a runtime tag so there is no
+single body to splice, and rewriting an implementation key would change which
+handler answers.
+
+### `dict_agrees`, which is D-69's other blocker written down
+
+    let dict_agrees env d = every (w, t) in d.d_defs has infer env t == Some (w_sig env w, _)
+
+Inlining `w` replaces a term whose signature `infer` reads as `w_sig env w` by a
+body; E1 holds only if the body has that signature. It is a hypothesis on E1 and
+E3 rather than a refinement on `dict`, because a dictionary is meaningful without
+an environment and tying them in the type would make every construction carry a
+proof about the other.
+
+**The row is deliberately not required to agree.** Inlining brings the body's
+effects with it, which is precisely what makes a static Dictionary word cost
+nothing at runtime. Only the stack signature is invariant — the same asymmetry
+E7 records for `subst_words`.
+
+### What it does not do, each for a stated reason
+
+* Fold a dispatch on a known tag: needs the scrutinee to be a literal `PInj`,
+  which is constant propagation over `TSeq` and separate work.
+* Erase `PPack`/`PUnpack`: sound by M10's H4, which is not proved.
+* **Discharge a `TSpecialize` node.** E2's domain constraint requires it, and the
+  dependency is real: stripping the marker is honest only when the body has no
+  static effect left, which is a question about `infer` of the RESIDUAL, and
+  knowing the residual is well typed at all is E1. E1 comes first. Until then a
+  `TSpecialize` passes through, visible in the output rather than silently
+  discarded.
+
+E3 now carries three hypotheses — `dict_agrees` for typing, `dict_ordered` for
+completeness, `resolvable` for coverage — and each answers to something in the
+definition rather than to caution. `specialize_typed` remains assumed;
+`make admits` is down from five to four.
