@@ -52,11 +52,13 @@ term       = integer
            | word
            | "$" name
            | conditional
+           | try
            | handle
            | with
            | "{" term* "}" ;
 
 conditional = "if" block "then" block [ "else" block ] "endif" ;
+try         = "try" block "catch" block ;
 
 handle      = "handle" word "over" "(" type* ")"                (* see §6 *)
               "init" block "{" impl* "}" block ;
@@ -89,9 +91,9 @@ error: expected a name after 'macro'
 The word exists and is callable inside a body; it is only unreachable as the
 first token of a declaration.
 
-**Four words are effectively taken**, not by the grammar but by being dispatched
-on wherever a term may start: `if` and `unsafe` (both macro-table entries),
-`handle` and `with`. Each is still *definable* — `define if { 9 }` is accepted —
+**Five words are effectively taken**, not by the grammar but by being dispatched
+on wherever a term may start: `if`, `unsafe` and `try` (all three macro-table
+entries), `handle` and `with`. Each is still *definable* — `define if { 9 }` is accepted —
 but every later use is read as the construct, so the definition can never be
 called.
 
@@ -552,7 +554,7 @@ These are **ordinary operations of an ordinary effect**. Nothing about the
 effect system is special-cased for them, and the only asymmetry is over who may
 *declare* one.
 
-**The reserved block** is effects 0–5, and `effect` allocates from 6 upward, so
+**The reserved block** is effects 0–6, and `effect` allocates from 7 upward, so
 no program can bring a new host-serviced effect into existence:
 
 | Id | Effect | Discharged by | Operations |
@@ -563,6 +565,7 @@ no program can bring a new host-serviced effect into existence:
 | 3 | `C` | the REPL, which calls libc | each `extern` |
 | 4 | `Rec` | you, with `handle Rec` — usually nobody | **none** |
 | 5 | `Case` | the handler an `if` elaborates to | one per branch |
+| 6 | `Fail` | you, with `try { … } catch { … }` | `fail` |
 
 That is what "suppliable only by the compiler or interpreter" means — a fact
 about who owns the identifier, not a restriction the effect system had to grow.
@@ -665,10 +668,89 @@ catcat> 1 spin
 out of fuel
 ```
 
-Mutual recursion between two words is **not** detected — the check is syntactic
-and looks only for self-reference, so two words that call each other get neither
-`!Rec` nor a diagnostic. Anonymous loops are also absent: a macro expands to
-terms and cannot create the declaration a self-reference needs to name.
+**Mutual recursion cannot happen without being marked.** The Dictionary is
+ordered: a word may call only words defined before it, and `recurse` is the one
+way to name a word that is not yet finished. For two words to call each other,
+one of them would have to name a word defined after it, which breaks the
+ordering and takes the same `!Rec` mark a self-call does. There is nothing to
+detect, because forward references have no spelling.
+
+Anonymous loops are still absent: a macro expands to terms and cannot create the
+declaration a self-reference needs to name.
+
+### `Fail`: aborting, and `try` / `catch`
+
+```
+try { … } catch { … }
+```
+
+`fail` is `( -- !Fail )`. Performing it abandons the rest of the enclosing `try`
+block and runs the `catch` block instead. Everything the try block had built is
+discarded first, so `catch` starts from the stack that was there before the
+`try`:
+
+```
+catcat> try { "a" print fail "b" print } catch { }
+a
+catcat> try { fail "boom" } catch { "recovered" }
+ok  "recovered"
+```
+
+The two blocks must leave the **same stack**, for the reason two branches of an
+`if` must: one of them runs and the code afterwards cannot know which. `catch`
+takes **no inputs** — there is nothing left for it to consume.
+
+`try` discharges `!Fail`, so a word that catches its own failures is pure:
+
+```
+catcat> define safediv ( i64 i64 -- i64 !Fail ) { dup 0 = if { } then { fail } else { } endif / }
+defined safediv ( i64 i64 -- i64 !Fail )
+catcat> define try_div ( -- i64 ) { try { 10 0 safediv } catch { 0 1 - } }
+defined try_div ( -- i64 )
+catcat> try_div
+ok  -1
+```
+
+`!Fail` propagates like any other effect, so a word that can fail says so, and
+forgetting to write it is an error rather than an omission:
+
+```
+catcat> define bad ( i64 -- i64 ) { dup 0 = if { } then { fail } else { } endif }
+error: bad declares no effects but its body has !Fail
+```
+
+An uncaught `fail` reaches the REPL like any unhandled operation:
+
+```
+catcat> fail
+unhandled: fail escaped with no handler in scope
+```
+
+**`try` and `catch` are not reserved words.** They are keywords only inside this
+production, the same way `then` and `endif` are (§8), so both are still
+definable as word names.
+
+**Two limits**, both of which want generics:
+
+* **`fail` is `( -- )`, so it cannot stand where a value is expected.**
+  `dup 0 = if { } then { fail } else { } endif` works, because both branches
+  leave the stack alone. `if { } then { 1 } else { fail } endif` does not: the
+  branches disagree, and the `fail` arm would have to be typed at the empty
+  type for it to be accepted.
+* **The try block runs on a fresh stack.** It may not consume anything that was
+  on the stack before it:
+
+  ```
+  catcat> 5 try { dup } catch { 0 }
+  error: dup: the stack is empty
+  ```
+
+  Put what the block needs inside it. This is an elaborator limit and not a
+  core one — the core records how deep the block reached, and the elaborator's
+  stack model cannot compute that number.
+
+Later, `catch` will be able to take an error value rather than nothing. That is
+the same missing feature as the first limit above.
 
 ### `extern`: calling C
 
@@ -813,7 +895,7 @@ is otherwise invisible.
 
 | Feature | State |
 |---|---|
-| mutual recursion | undetected: the `!Rec` check is syntactic self-reference only (§6) |
+| mutual recursion | impossible without being marked, since the Dictionary is ordered and there are no forward references (§6) |
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
 | `#T` generics | parses, elaborator rejects |
 | `let` and `let (…)` | not parsed |
@@ -827,6 +909,12 @@ is otherwise invisible.
 | source positions in errors | absent — errors are messages without spans |
 | arbitrary C symbols | `extern` reaches a fixed table of six libc functions ([U02](U02_Word_Reference.md) §7a); `dlsym` plus libffi would lift it, and nothing on the catcat side would change |
 | C types beyond `i64` and `str` | refused at the `extern`, not at the call |
+| `fail` at a value type | `fail` is `( -- )`, so it cannot stand where a value is expected (§6); it wants the empty type, which wants generics |
+| a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
+| a `try` block reading the enclosing stack | the block runs on a fresh stack (§6). The core does not restrict this — the elaborator's stack model cannot compute how deep a block reached |
+| `fail` at a value type | `fail` is `( -- )`, so it cannot stand where a value is expected (§6); it wants the empty type, which wants generics |
+| a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
+| a `try` block that reads the enclosing stack | the block runs on a fresh stack (§6); the core does not restrict this, the elaborator does |
 
 Three entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and
@@ -838,6 +926,20 @@ be listed here as needing the elaboration-time interpreter; the template form
 **Handler state aliasing is checked at runtime**, not statically (§6). That is a
 gap in a different sense: the language is safe, but the check is dynamic where
 everything else about linearity is static.
+
+**A handler that implements none of its effect's operations still discharges the
+effect from the row.** The typing rule removes the effect unconditionally, while
+the machine forwards an unimplemented operation to the next handler out — so
+
+```
+catcat> handle IO over ( ) init { } { } { "x" print }
+x
+```
+
+reports a pure signature and still prints. Nothing about `try` introduced this;
+it is why `unsafe { … }` and `handle Rec` work, since those effects have no
+operations to leave unimplemented. It is tracked as Q-16 in
+[N02](../NOTES/N02_Open_Questions.md).
 
 **A macro shadows a word silently.** Declaring `macro foo …` makes every later
 `foo` a macro invocation, whatever `foo` was bound to. `locate` reports the macro

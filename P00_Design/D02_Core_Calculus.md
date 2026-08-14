@@ -209,7 +209,7 @@ associativity stated. *(Associativity is currently admitted — see §8.)*
 
 ## 5. Terms
 
-**Seven constructors.**
+**Eight constructors.**
 
 ```
 term ::= TNil                             -- identity
@@ -218,11 +218,12 @@ term ::= TNil                             -- identity
        | TWord word_id                     -- named word OR interface operation
        | TDispatch [op_id] [seg]           -- sum elimination: perform op #tag
        | THandle eff_id seg term [(op_id, term)] term
+       | TTry eff_id seg term term         -- abort: run body, catch aborts of eff
        | TSpecialize term                  -- staging; see D04
 ```
 
 That is the whole of the core's *structure*: identity, composition, naming,
-elimination, handling, staging. Its *vocabulary* is a separate, flat table
+elimination, handling, aborting, staging. Its *vocabulary* is a separate, flat table
 (D-55), every entry of which is pure and monomorphic:
 
 ```
@@ -260,6 +261,31 @@ have needed a second copy of the branch-agreement rule.
 the operation the scrutinee's tag selects; the branches are the implementations an
 enclosing `THandle` supplies. So `case` is not a branching construct either — the
 core has no branching construct at all, only dispatch and handling.
+
+### Why `TTry` is a constructor and not a handler
+
+`TTry` is the one place the collapse of D-01 does not hold, and the reason is
+worth stating rather than leaving as an exception (D-71).
+
+An aborting operation — `fail` — means "do not run the rest of the body", and
+the rest of the body exists only as the continuation `M04.handle` is holding
+when it reaches the operation. Handling one means **discarding** that
+continuation. Discarding is not capture: nothing is stored, resumed or run
+twice, so D-36 is untouched. But an `M04.op_impl` cannot express it. An
+implementation receives `st @ op_pre` and produces `st @ op_post`, while a
+`catch` block produces the result of the **whole handled computation** — a type
+the operation's declaration has no way to mention.
+
+Making `handler` able to express it means indexing that record by the result
+type of the code it handles. That would break D03's identification rather than
+extend it: a method table, a typeclass dictionary and a module implementation
+are none of them parameterised by their caller's result type. So the abort gets
+its own constructor and the identification stays exact. `M04.handle_abort` is
+the second fold over `free`, differing from `handle` in exactly the clause that
+drops `k`.
+
+Exceptions being the odd one out in an effect system is not news. What the core
+records is *which* property they cost and where it is cheapest to pay for it.
 
 ### Branch agreement
 
@@ -382,7 +408,7 @@ any word as a black box given only its signature and effect row — which is in
 turn what makes the optimizer's DAG view sound and incremental re-checking
 correct.
 
-`M07.denote_static` is the denotation, defined for six of the seven
+`M07.denote_static` is the denotation, defined for seven of the eight
 constructors. `TSpecialize` is excluded, because its meaning is
 [D04](D04_Staging_JIT_and_Dictionary.md)'s E2 and E2 is stated against this
 function. The excluded fragment is exactly `M05.needs_compiler`, the same

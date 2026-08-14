@@ -38,9 +38,8 @@ A **handler** supplies implementations. One record type
 ([M10](../P01_Specification/M10_Handlers.fst)) serves every role:
 
 ```fstar
-noeq type handler (env:sig_env) (eff:eff_id) (a:seg) = {
-  h_ops : op:op_id -> op_impl env (op_of env op) a;
-  h_ret : vstack a -> free env a;
+noeq type handler (env:sig_env) (eff:eff_id) (st:seg) = {
+  h_ops : op:op_id -> op_impl env st (op_of env op);
 }
 ```
 
@@ -62,6 +61,16 @@ once, or many times. That is rejected: continuations must not be a runtime
 construct in the compiled language. Everything a resume-exactly-once handler
 can do is expressible by returning, and the object model is what the design
 already wanted for classes anyway.
+
+**Resume-zero-times is the exception, and it is a separate construct** (D-71).
+An operation that means "abandon the rest of the body" cannot be an
+implementation that returns, because the block replacing the body produces the
+result of the *whole handled computation* — a type the operation's declaration
+cannot mention. Expressing it here would mean indexing `handler` by the result
+type of the code it handles, which is precisely what would stop this record
+being a method table, a class and a module at once. So the core gets `TTry` and
+`M04.handle_abort` instead, `handler` is left exact, and nothing is captured:
+discarding a continuation stores nothing. See D02 §5.
 
 **Reentrancy survives the correction, and gets cheaper.** The draft's
 requirement that "every effect is reentrant" is not a consequence of deep

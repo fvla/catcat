@@ -257,6 +257,35 @@ it is.
 
 ---
 
+## 7b. Failure
+
+| Word | Signature | Meaning |
+|---|---|---|
+| `fail` | `( -- !Fail )` | abandon the enclosing `try` block |
+
+`fail` is the only operation of the `Fail` effect. `try { … } catch { … }` is
+what catches it and discharges `!Fail` from the row; the syntax, the rules the
+two blocks must satisfy and the two current limits are in
+[U01](U01_Grammar.md) §6.
+
+```
+catcat> try { fail "boom" } catch { "recovered" }
+ok  "recovered"
+catcat> fail
+unhandled: fail escaped with no handler in scope
+```
+
+Everything the try block built is discarded before `catch` runs, so `catch`
+takes no inputs and must leave the same stack the try block would have.
+
+This is what `parse` and `getenv` want and cannot yet use. Their honest
+signatures are `( str -- i64 !Fail )` and `( str -- str !Fail )`, and the reason
+they still return sentinels is not that failure is unavailable — it is that a
+caller who *wants* the sentinel would have no way to ask for it back. That needs
+`catch` to receive the error, which needs generics.
+
+---
+
 ## 8. Inspecting: `locate`
 
 ```
