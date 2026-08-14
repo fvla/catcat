@@ -264,10 +264,19 @@ let lemma_srow_join_sym (s1 s2:srow)
   lemma_unify_sym s1.pre s2.pre;
   lemma_unify_common s1.pre s2.pre
 
+/// NOTHING CALLS `srow_join` SINCE D-68, and that should be resolved rather
+/// than left. The join moved into the operations' DECLARATIONS, and `E04`
+/// currently writes those at the full modelled shape either side — sound,
+/// because `M06.impl_frame` frames each branch back down, but deeper than
+/// necessary. `srow_join` is exactly the tool that would tighten them, so this
+/// is either the one caller it is waiting for or it is dead spec surface. See
+/// N02 Q-18.
+///
 /// OBLIGATION, stated rather than stubbed (see the note at the foot of
 /// `M07_Denotation.fst` for why a `Lemma True` placeholder is worse than an
 /// honest gap): the fold of `srow_join` over a branch list is associative, so
-/// `M06.infer_branches` computes the same answer whatever the branch order.
+/// the answer does not depend on the branch order. (It used to say
+/// `M06.infer_branches` computes it; that function was deleted by D-68.)
 /// Symmetry above is the two-branch case. The general statement needs the
 /// framed segments to compose, which is the same transport reasoning as
 /// `lemma_compose_assoc`, and is best discharged alongside it rather than

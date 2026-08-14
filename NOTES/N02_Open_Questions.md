@@ -194,3 +194,65 @@ it. The right answer is likely the same one that gives `catch` an error value.
 *Cost of leaving open:* linearity is not yet enforced on the abort path, so a
 `Box` in flight when a `fail` fires leaks.
 *Closes when:* generics arrive and `catch` can take a typed payload.
+
+**Q-18. `!Dict` or generics first, and what leaves the core when each lands.**
+Both are specified in D03/D04/D05 and neither exists. They are not independent:
+generic instantiation and a capability bound are *Dictionary lookups*, so the
+order decides whether generics arrive as a client of existing machinery or as a
+second resolution mechanism that later has to be deleted.
+
+*What each removes from the core, which is the criterion that should decide it.*
+
+`!Dict` made dynamic removes duplication rather than constructors:
+
+  * `R02.step`'s two `TWord` paths become one. A `WDef` is inlined straight out
+    of the `rdict` today, so a Dictionary frame cannot override a defined word
+    at runtime; a `WOp` walks the handler chain. Unifying them is D-60 made
+    operational, and it is what `handle Dict { … }` would need.
+  * `E04.StWith`'s static substitution pass becomes `THandle eff_dict` followed
+    by `TSpecialize` — a derived form instead of a bespoke elaborator case, and
+    D-02's claim demonstrated instead of asserted. `M05.subst_words` stays,
+    because `specialize` is what uses it.
+  * `M10.dict` and `M04.handler` stop being two types for one idea — except
+    they cannot actually merge, because `handler.h_ops` is a function field
+    (barred from extraction, D-20) and `dict` was de-closured for exactly that
+    reason. Merging needs the dependently-typed per-operation table de-closured,
+    which D-45 could not do without an existential. **That obstacle should be
+    settled before either feature, since both make it worse.**
+
+Generics remove constructors, and rather more of them:
+
+  * **D-56's two-level table.** `PBoxNew`, `PBoxOpen`, `PRcNew`, `PRcClone`,
+    `PRcDrop`, `PRcRead` — six of `prim_op`'s fourteen rows — move to a native
+    library the moment a library can state `∀T. ( T -- Box[T] )`. This is the
+    single largest reduction available anywhere in the spec.
+  * With generic NOMINAL types, `TBox` and `TRc` follow their operations out:
+    both become `TSeal` declarations carrying their own capabilities, and
+    `dtype` drops from six constructors to four. `TSeal` already carries
+    `list cap`, so the machinery exists; what is missing is type arguments.
+  * `PBoolSum` and `prim.PBool` go when `bool` becomes a declared two-variant
+    sum. Strictly this needs surface sums rather than generics, but nobody
+    wants sums without `Option[T]`.
+  * D-71's two limits close: `catch` takes a typed payload, and `fail` gets
+    `∀a. ( -- a )`. Note the core already HAS a bottom type — `TSum []` is
+    uninhabited — and its eliminator is already spelled: `absurd` is
+    `TDispatch [] []`, which `M06.infer` currently rejects with `Nil? variants`.
+    What is missing is not the type but a free result, i.e. exactly generics.
+
+*The conflict to settle first.* D-31 says the language needs no unifier, and
+`M03.unify` is prefix matching on concrete segments. Type variables need real
+unification. The claim probably narrows to "no unifier for stack rows" with a
+separate one over `dtype`, but that is a decision, not a detail, and it should
+be made before generics rather than discovered during them.
+
+*Recommendation: `!Dict` first*, on the ground that generic instantiation is
+Dictionary lookup and building it first means building a second mechanism to
+throw away. The cost of that order is that the big core reduction waits. The
+sequence is: `M11.specialize` (D-70 unblocked its termination), then the runtime
+Dictionary path, then `with` as a derived form, then settle D-31, then generics.
+
+*Loose end, independent of both.* **`M03.srow_join` is called by nothing** since
+D-68 — it survives with two proved lemmas and a stated obligation. It is either
+dead spec surface to delete, or the tool `E04` should use to tighten a `case`'s
+operation declarations, which it currently writes at the full modelled shape.
+One or the other; leaving it is the only wrong answer.

@@ -460,8 +460,16 @@ let show_macro (p:mprod) : Tot string =
      then "\n  " ^ p.mp_name ^ show_slots p.mp_pre
           ^ (if bodies then "\n    -> " ^ braces (show_sterms p.mp_body) else "")
      else show_macro_alts bodies p.mp_name p.mp_pre p.mp_branches)
+  /// SAY WHAT IT BECOMES, not that it has no spelling. The old text was "expands
+  /// to a case, which has no surface spelling", which since D-68 describes
+  /// nothing: there is no case in the core, and `if` elaborates to a handler
+  /// around a dispatch. What genuinely has no surface spelling is `E02.StCase`,
+  /// the intermediate node — and the reason `if` cannot be an ordinary `macro`
+  /// declaration is not that node but the fresh operation ids each site needs,
+  /// which a template cannot allocate (see the header).
   ^ (if p.mp_builtin
-     then "\n  \\ built in: expands to a case, which has no surface spelling"
+     then "\n  \\ built in: expands to a handler over a dispatch (D-68); a \
+           template\n  \\ cannot allocate the fresh operation ids each site needs"
      else "")
 
 (* ------------------------------------------------------------------------ *)
