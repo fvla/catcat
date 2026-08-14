@@ -117,6 +117,22 @@ let rec lookup_stage_of (ss:list (eff_id & stage)) (e:eff_id)
   | []            -> None
   | (e', s) :: r  -> if e' = e then Some s else lookup_stage_of r e
 
+/// A dictionary is ORDERED when every definition calls only words defined
+/// before it (D-70).
+///
+/// This is the well-foundedness `M11.specialize` runs on, and it is why that
+/// function can exist at all. Inlining is `subst_words` over the whole term at
+/// once, so a pass that resolves every call to the HIGHEST word in `t` produces
+/// a term of strictly smaller `M05.word_bound` — each body substituted in is
+/// ordered strictly below the word it defines — and the recursion is on that
+/// measure. Nothing about the call graph has to be computed.
+///
+/// A word that would break the ordering is not banned; it is marked `!Rec` and
+/// left out of `d_defs`, so it is resolved at runtime by frame lookup instead
+/// (D-67, D-70). `resolvable` below is what then refuses to call it static.
+let dict_ordered (d:dict) : bool =
+  for_all (fun (w, t) -> ordered_at w t) d.d_defs
+
 /// Whether every effect in a row is resolvable in `d`, and at which stage.
 /// The two-tier design of D04 lives in this one function: a `SStatic` effect
 /// must be resolvable here at elaboration time, and a `SDynamic` one is

@@ -374,37 +374,63 @@ and uses_unroll_impls (is:list (op_id & term))
   | []          -> false
   | (_, t) :: r -> uses_unroll t || uses_unroll_impls r
 
-/// Whether `w` is called anywhere in `t`.
+let mx (a b:nat) : Tot nat = if a > b then a else b
+
+let rec ops_bound (ops:list op_id) : Tot nat (decreases ops) =
+  match ops with
+  | []      -> 0
+  | o :: r  -> mx (o + 1) (ops_bound r)
+
+/// One past the highest word id `t` calls: every `TWord w` and every dispatch
+/// target in `t` has `w < word_bound t`, and `word_bound t = 0` exactly when `t`
+/// calls nothing.
 ///
-/// One use, and it is the whole of recursion (D-67): a `define` whose body calls
-/// itself is a word the Dictionary must resolve AT RUNTIME rather than by
-/// inlining, because inlining it does not terminate. `E06.install_def` asks this
-/// question and gives such a word the `Rec` effect, so "may not terminate" is
-/// visible in a signature instead of being a property a reader has to derive.
+/// THE DICTIONARY IS ORDERED (D-70). A word may call only words defined BEFORE
+/// it, and since ids are handed out in definition order that is precisely
+/// `word_bound body <= id`. Two things follow, and they are the reason this
+/// replaced D-67's `mentions_word`:
 ///
-/// Deliberately syntactic and deliberately not transitive. Mutual recursion
-/// between two words is invisible to it, which is honest rather than adequate:
-/// closing that needs the call-graph reachability over `w_defs` that M11's E5
-/// also wants, and neither exists yet.
-let rec mentions_word (w:word_id) (t:term)
-  : Tot bool (decreases %[(term_size t <: nat); 0]) =
+///   * Recursion is detected without a call graph. `E06.install_def` marks a
+///     word `!Rec` — resolved at runtime by frame lookup rather than by
+///     inlining — exactly when its body breaks the ordering. Self-reference
+///     breaks it, so D-67's case is still caught.
+///   * MUTUAL RECURSION NEEDS NO DETECTION, because it cannot arise. For `f`
+///     and `g` to call each other one of them must name a word defined after
+///     it, which breaks the ordering and gets the same `!Rec` mark. The
+///     transitive call-graph reachability that `mentions_word`'s header
+///     admitted it was missing is not needed: the ordering is the invariant
+///     that reachability would have had to establish.
+///
+/// It is also the termination measure `M11.specialize` needs. Inlining every
+/// call to the highest word in `t` yields a term of strictly smaller
+/// `word_bound`, because the body substituted in is ordered below it — see
+/// `M10.dict_ordered`.
+let rec word_bound (t:term) : Tot nat (decreases %[(term_size t <: nat); 0]) =
   match t with
-  | TWord w'              -> w' = w
-  | TSeq a b              -> mentions_word w a || mentions_word w b
-  | TDispatch _ _         -> false
-  | THandle _ _ i impls b -> mentions_word w i || mentions_word_impls w impls
-                           || mentions_word w b
-  | TSpecialize b         -> mentions_word w b
-  | _                     -> false
+  | TWord w               -> w + 1
+  | TSeq a b              -> mx (word_bound a) (word_bound b)
+  /// The dispatch targets are CALLS (D-68), so they count. This is the one
+  /// place `mentions_word` was wrong as well as incomplete: it returned `false`
+  /// here, which was harmless only because `E04` allocated case operation ids
+  /// above the word being defined, where nothing could collide with them.
+  | TDispatch ops _       -> ops_bound ops
+  | THandle _ _ i impls b -> mx (word_bound i) (mx (word_bound_impls impls)
+                                                   (word_bound b))
+  | TSpecialize b         -> word_bound b
+  | _                     -> 0
 
-and mentions_word_list (w:word_id) (ts:list term)
-  : Tot bool (decreases %[terms_size ts; 1]) =
+and word_bound_list (ts:list term)
+  : Tot nat (decreases %[terms_size ts; 1]) =
   match ts with
-  | []     -> false
-  | t :: r -> mentions_word w t || mentions_word_list w r
+  | []     -> 0
+  | t :: r -> mx (word_bound t) (word_bound_list r)
 
-and mentions_word_impls (w:word_id) (is:list (op_id & term))
-  : Tot bool (decreases %[impls_size is; 1]) =
+and word_bound_impls (is:list (op_id & term))
+  : Tot nat (decreases %[impls_size is; 1]) =
   match is with
-  | []          -> false
-  | (_, t) :: r -> mentions_word w t || mentions_word_impls w r
+  | []          -> 0
+  | (o, t) :: r -> mx (o + 1) (mx (word_bound t) (word_bound_impls r))
+
+/// `t` may be the body of the word defined at `w`: it calls nothing defined at
+/// or after `w`. The negation is what `E06` reads as "this word is recursive".
+let ordered_at (w:word_id) (t:term) : Tot bool = word_bound t <= w

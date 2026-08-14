@@ -343,8 +343,8 @@ and count_var_lists (x:string) (bs:list (list sterm))
 /// Asked only to produce a better message: `define f { recurse }` has no
 /// signature to check a self-call against, and "unknown word: recurse" would
 /// send a reader looking for a missing import rather than a missing signature.
-/// The elaborated form of the same question is `M05.mentions_word`, which is
-/// what decides the `Rec` effect; this one runs earlier and decides nothing.
+/// The elaborated form of the same question is `M05.ordered_at` (D-70), which
+/// is what decides the `Rec` effect; this one runs earlier and decides nothing.
 let rec mentions_recurse (t:sterm)
   : Tot bool (decreases %[(sterm_size t <: nat); 0]) =
   match t with

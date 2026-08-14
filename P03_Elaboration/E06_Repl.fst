@@ -228,11 +228,18 @@ let subset_effs (a b:list eff_id) : Tot bool = for_all (fun i -> mem i b) a
 
 /// Where `E04` starts allocating operation ids for `case` sites (D-68).
 ///
-/// One past the word being defined, since `install_def` takes `se_next` for the
-/// word itself. `E04` then hands each term `base` and its successor
-/// `base + sterm_size t`, so the ranges cannot overlap without a counter being
-/// threaded through the elaborator.
-let case_base (s:session) : Tot nat = s.se_next + 1
+/// BELOW the word being defined, not above it (D-70). `E04` hands each term
+/// `base` and its successor `base + sterm_size t`, so the case sites of a body
+/// occupy `[se_next, se_next + sterms_size body)` and the word itself takes the
+/// id just past them.
+///
+/// The order matters now that the Dictionary is ordered. A body containing an
+/// `if` calls the operations its `TDispatch` selects, so with the old
+/// allocation — the word first, its case operations after — every conditional
+/// body called ids above its own and `M05.ordered_at` would have marked every
+/// such word `!Rec`. Putting the word last is what makes the ordering test
+/// mean "calls itself" rather than "contains a branch".
+let case_base (s:session) : Tot nat = s.se_next
 
 /// Register the operations `E04` allocated, and reserve their ids.
 ///
@@ -258,18 +265,24 @@ let rec add_case_dict (d:rdict) (ds:list (word_id & op_decl))
   | []          -> d
   | (i, _) :: r -> add_case_dict (dict_extend d i (WOp eff_case)) r
 
+/// The id the word being defined will get: one past its body's case-operation
+/// budget (D-70).
+///
+/// Both this module and the elaborator have to agree on it BEFORE the body is
+/// elaborated, because `recurse` inside the body compiles to a call to it
+/// (D-67). One expression, referred to from both places.
+let self_id (s:session) (body:list sterm) : Tot word_id =
+  case_base s + sterms_size body
+
+/// `se_next` advances past the case budget AND past the word's own id, so a
+/// later declaration cannot be handed either. The `expr` path reserves a word
+/// id it never installs, which costs an integer and keeps one rule.
 let with_case_ops (s:session) (ds:list (word_id & op_decl)) (body:list sterm)
   : Tot session =
   { s with
       se_wenv = { s.se_wenv with w_ops = add_case_ops s.se_wenv.w_ops ds };
       se_dict = add_case_dict s.se_dict ds;
-      se_next = case_base s + sterms_size body }
-
-/// The id the word being defined will get. Both this module and the elaborator
-/// have to agree on it BEFORE the body is elaborated, because `recurse` inside
-/// the body compiles to a call to it (D-67). One expression, referred to from
-/// both places, rather than two copies of `s.se_next`.
-let self_id (s:session) : Tot word_id = s.se_next
+      se_next = self_id s body + 1 }
 
 /// The environment a recursive body is checked in: the word itself, at its
 /// DECLARED signature, under the `Rec` effect.
@@ -295,9 +308,9 @@ let self_wenv (s:session) (wid:word_id) (row:srow) : Tot wenv =
 /// meaning the outer one — and a program that already parsed would quietly do
 /// something else. `recurse` cannot collide with anything, and it is in scope
 /// only where it means something.
-let self_nenv (s:session) (row:srow) : Tot nenv =
+let self_nenv (s:session) (body:list sterm) (row:srow) : Tot nenv =
   { s.se_nenv with
-      ne_words = ({ n_name = "recurse"; n_id = self_id s;
+      ne_words = ({ n_name = "recurse"; n_id = self_id s body;
                     n_sig = row; n_op = None })
                  :: s.se_nenv.ne_words }
 
@@ -347,7 +360,16 @@ let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
         /// So `!Rec` is not a new mechanism bolted on for recursion. It is the
         /// existing annotation saying WHEN this word's meaning is supplied, at
         /// the one value where the answer has to be "later".
-        let is_rec = mentions_word id t in
+        ///
+        /// THE TEST IS THE DICTIONARY ORDERING (D-70), not self-reference. A
+        /// word may call only words defined before it, and `M05.ordered_at`
+        /// asks exactly that of the elaborated body. `recurse` compiles to
+        /// `TWord id`, which breaks the ordering, so D-67's case is caught as
+        /// it was — but so is any forward reference, which is what mutual
+        /// recursion would have to be. `mentions_word` needed a transitive
+        /// call graph it did not have; this needs nothing, because the
+        /// ordering is the invariant that graph would have established.
+        let is_rec = not (ordered_at id t) in
         let s' = { s with
           se_nenv = { s.se_nenv with
                         ne_words = ({ n_name = name; n_id = id;
@@ -549,10 +571,10 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
        (match elab_sig sg with
         | Inl e -> DDone s ("error: " ^ e)
         | Inr row0 ->
-          (match elab_define (self_nenv s row0) (case_base s) sg body with
+          (match elab_define (self_nenv s body row0) (case_base s) sg body with
            | Inl e -> DDone s ("error: " ^ e)
            | Inr (row, t, ds) ->
-             let (s2, m) = install_def (with_case_ops s ds body) (self_id s) name
+             let (s2, m) = install_def (with_case_ops s ds body) (self_id s body) name
                                        (Some row) (Some es) row t in
              DDone s2 m)))
 
@@ -573,7 +595,7 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
       (match elab_define_infer s.se_nenv (case_base s) body with
        | Inl e -> DDone s ("error: " ^ e)
        | Inr (row, t, ds) ->
-         let (s2, m) = install_def (with_case_ops s ds body) (self_id s) name
+         let (s2, m) = install_def (with_case_ops s ds body) (self_id s body) name
                                    None None row t in
          DDone s2 m)
 

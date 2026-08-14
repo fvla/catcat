@@ -1252,8 +1252,64 @@ theorem about `specialize`.
    is neither marked nor excluded. `all_static` is not currently sufficient for
    the inliner to terminate, and closing that needs the call-graph reachability
    over `w_defs` that M11's E5 also wants.
+   **Closed by D-70**, and not by computing that reachability: the Dictionary is
+   ordered, so `M05.word_bound` is the measure and mutual recursion cannot arise
+   unmarked.
 2. **Agreement between `d` and `env`.** Inlining `w` replaces a term of signature
    `w_sig w` by a body; E1 holds only if the body's inferred signature IS
    `w_sig w`. Nothing states that today, and it is the same shape of obligation
    D-63 removed by deleting `wenv`'s second signature table — which suggests the
    fix is again structural rather than a side condition.
+
+---
+
+## D-70. The Dictionary is ordered. `!Rec` is the opt-out, and mutual recursion needs no detection.
+
+D-69 left `specialize` blocked on termination: inlining a self-referencing word
+does not terminate, D-67's `!Rec` marked the direct case, and MUTUAL recursion
+was neither marked nor excluded. The fix proposed there was transitive
+reachability over the call graph. That is the wrong fix — it detects a condition
+that should not be able to arise.
+
+**A word may call only words defined before it.** Ids are handed out in
+definition order, so the rule is `M05.word_bound body <= id`: one past the
+highest word id the body calls, at most the word's own. `M05.ordered_at` is that
+test and `M10.dict_ordered` lifts it to a whole dictionary.
+
+Three consequences, and the third is the one that matters:
+
+1. **`specialize` gets its measure for free.** Resolve every call to the highest
+   word in `t` at once (`subst_words` is already a simultaneous substitution) and
+   the result has strictly smaller `word_bound`, because each body substituted in
+   is ordered strictly below the word it defines. The recursion is on that
+   measure and no call graph is computed.
+2. **D-67's detector is replaced, not kept.** `M05.mentions_word` is gone.
+   `E06.install_def` now asks `not (ordered_at id t)`, which catches `recurse`
+   for the same reason it always did — `recurse` compiles to `TWord id`, which
+   is not below `id`.
+3. **MUTUAL RECURSION CANNOT ARISE, so nothing has to detect it.** For `f` and
+   `g` to call each other, one of them must name a word defined after it, which
+   breaks the ordering and takes the same `!Rec` mark as a self-call. The
+   transitive reachability D-69 asked for was the machinery needed to establish
+   an invariant that is now simply true by construction.
+
+`!Rec` is the opt-out, exactly as before: a word that breaks the ordering is not
+rejected, it is resolved at runtime by frame lookup instead of by inlining, and
+says so in its signature. Since a declared effect list is checked against the
+inferred one, writing `!Rec` is mandatory once a signature is written —
+`define fact ( i64 -- i64 ) { … recurse … }` is refused with "declares no
+effects but its body has !Rec".
+
+**Case operation ids moved BELOW the word being defined.** `E06.case_base` was
+`se_next + 1`, putting a body's `case` operations above the word's own id; a
+`TDispatch` is a call (D-68), so under the ordering test every conditional body
+would have been marked `!Rec`. `case_base` is now `se_next` and `self_id` is
+`case_base + sterms_size body`, so the word takes the id just past its own
+budget. This is also why `word_bound` counts dispatch targets where
+`mentions_word` returned `false` for them: that was wrong as well as incomplete,
+and harmless only because of the allocation order it has now replaced.
+
+*What this does NOT close.* Forward declaration — naming a word before defining
+it — would reintroduce genuine mutual recursion, and it would arrive marked
+`!Rec` rather than undetected, which is the point. Anonymous recursion (a block
+that calls itself) still has no spelling.
