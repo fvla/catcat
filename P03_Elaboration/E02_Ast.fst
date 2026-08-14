@@ -196,12 +196,102 @@ type mprod = {
   /// `mp_body` is the template.
   mp_branches : list mbranch;
   mp_body     : list sterm;
-  /// `if` alone. Its expansion is `StCase`, which has no surface spelling, so
-  /// no template could express it. Everything else in the table is a template
-  /// and this is the flag that says so honestly rather than dispatching on the
-  /// name behind the reader's back.
-  mp_builtin  : bool;
 }
+
+(* --- hygiene -------------------------------------------------------------- *)
+
+/// MACRO HYGIENE IS A WELL-FORMEDNESS CHECK, NOT A RENAMING PASS (D-73).
+///
+/// The usual hygiene problem is that a template's own temporaries capture, or
+/// are captured by, names at the use site, and the usual fix is to rename them
+/// apart. Neither applies here, and the reason is a property of the surface
+/// language worth stating: **no `sterm` binds a local.** `$x` is a READ; the
+/// only binder in the language is a signature parameter, and a signature
+/// appears in a declaration, while a macro body is a term list.
+///
+/// So a `$x` in a template naming no slot of the production cannot be a
+/// temporary the author introduced — there is no way to introduce one. It can
+/// only be a read of whatever local encloses the expansion, which the author of
+/// a macro is in no position to have meant. Renaming it apart would produce a
+/// read of nothing, failing later and further away.
+///
+/// Hygiene therefore reduces to rejecting it at DECLARATION time, which is
+/// strictly better than gensym: the error names the macro rather than the call.
+/// When `let` arrives (D05 §3.3) a template will be able to bind, and this
+/// becomes a genuine renaming problem; until then the check is the whole of it.
+let slot_name (s:mslot) : Tot (option string) =
+  match s with
+  | MsBlock n   -> Some n
+  | MsWord n    -> Some n
+  | MsKeyword _ -> None
+
+let rec slot_names (ss:list mslot) : Tot (list string) (decreases ss) =
+  match ss with
+  | []     -> []
+  | s :: r -> (match slot_name s with
+               | Some n -> n :: slot_names r
+               | None   -> slot_names r)
+
+/// The first `$x` in a template that names no slot, or `None`. Returns the name
+/// rather than a boolean so the diagnostic can quote it — "the grammar would be
+/// ambiguous" is a verdict, and so is "this macro is unhygienic".
+let rec stray_var (ok:list string) (t:sterm)
+  : Tot (option string) (decreases %[(sterm_size t <: nat); 0]) =
+  match t with
+  | StVar x    -> if mem x ok then None else Some x
+  | StBlock ts -> stray_var_list ok ts
+  | StCase bs  -> stray_var_lists ok bs
+  | StHandle _ _ i im b ->
+    (match stray_var_list ok i with
+     | Some x -> Some x
+     | None   -> (match stray_var_impls ok im with
+                  | Some x -> Some x
+                  | None   -> stray_var_list ok b))
+  | StWith _ b -> stray_var_list ok b
+  | StTry b c  -> (match stray_var_list ok b with
+                   | Some x -> Some x
+                   | None   -> stray_var_list ok c)
+  | _          -> None
+
+and stray_var_list (ok:list string) (ts:list sterm)
+  : Tot (option string) (decreases %[sterms_size ts; 1]) =
+  match ts with
+  | []     -> None
+  | t :: r -> (match stray_var ok t with
+               | Some x -> Some x
+               | None   -> stray_var_list ok r)
+
+and stray_var_lists (ok:list string) (bs:list (list sterm))
+  : Tot (option string) (decreases %[sterm_lists_size bs; 1]) =
+  match bs with
+  | []     -> None
+  | b :: r -> (match stray_var_list ok b with
+               | Some x -> Some x
+               | None   -> stray_var_lists ok r)
+
+and stray_var_impls (ok:list string) (im:list (string & list sterm))
+  : Tot (option string) (decreases %[simpls_size im; 1]) =
+  match im with
+  | []          -> None
+  | (_, b) :: r -> (match stray_var_list ok b with
+                    | Some x -> Some x
+                    | None   -> stray_var_impls ok r)
+
+/// A branch's template may read the production's leading slots as well as its
+/// own, since both are in scope by the time it expands.
+let rec stray_in_branches (pre:list string) (bs:list mbranch)
+  : Tot (option string) (decreases bs) =
+  match bs with
+  | []     -> None
+  | b :: r -> (match stray_var_list (slot_names b.mb_slots @ pre) b.mb_body with
+               | Some x -> Some x
+               | None   -> stray_in_branches pre r)
+
+let mprod_stray (p:mprod) : Tot (option string) =
+  let pre = slot_names p.mp_pre in
+  match stray_var_list pre p.mp_body with
+  | Some x -> Some x
+  | None   -> stray_in_branches pre p.mp_branches
 
 (* --- template substitution ----------------------------------------------- *)
 
@@ -216,10 +306,12 @@ let rec cap_of (caps:list mcap) (x:string) : Tot (option mcap) (decreases caps) 
 /// splices its contents rather than nesting them — `{ $b $b }` with `$b` bound
 /// to `1 +` gives `1 + 1 +`, not two blocks.
 ///
-/// A `$x` naming no slot is left alone: it is an ordinary local read, and a
-/// macro whose template genuinely wants one is writing about the stack of
-/// whatever encloses the expansion. Nothing here is hygienic, and that is
-/// stated rather than hidden — see D-53.
+/// A `$x` naming no slot is left alone HERE, and cannot arrive: `mprod_stray`
+/// above rejects such a template when the macro is declared (D-73). This
+/// function is therefore total on well-formed input in a stronger sense than
+/// its type says, and the fallthrough is retained rather than refined because
+/// the refinement would have to travel through `subst_terms`, `subst_lists` and
+/// `subst_impls` for one caller.
 let rec subst_term (caps:list mcap) (t:sterm)
   : Tot (list sterm) (decreases %[(sterm_size t <: nat); 0]) =
   match t with

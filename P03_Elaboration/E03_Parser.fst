@@ -180,15 +180,25 @@ let parse_sig_body (ts:list token)
 /// keeps `then`, `else` and `endif` ordinary word names outside this
 /// production (D-34). Verified: they are all still definable.
 ///
-/// Two productions ship with the session, and they are built in for opposite
-/// reasons.
+/// EVERY PRODUCTION IN THIS TABLE IS A TEMPLATE (D-73). `if` used to be the one
+/// exception: it carried `mp_builtin = true`, empty templates, and a
+/// hand-written `expand_if` that `expand` dispatched to by name.
 ///
-/// `if` COULD NOT be written as a `macro` declaration: it expands to `StCase`,
-/// which has no surface spelling. Its templates are empty and unused, and
-/// `mp_builtin` says so rather than leaving a reader to infer it.
+/// That was never necessary. A template is a `list sterm` — an F* value, not
+/// source text — so it can mention `StCase` perfectly well; what `StCase` lacks
+/// is a way for a USER to type it, which is a fact about the surface grammar and
+/// not about the macro system. Writing `if`'s two templates out deletes the
+/// flag, the expander and the branch of `expand` that chose between them, and
+/// leaves one code path where there were two.
 ///
-/// `unsafe` COULD be, and its template below is exactly what a user would type
-/// (D-66):
+/// What is still true, and is what `locate if` now says: a user could not
+/// declare this macro, because there is no way to write `StCase` in source.
+/// Giving `case` a surface spelling is the remaining step and it belongs with
+/// surface sums, since a two-branch `case` on a `bool` is all `if` needs and a
+/// spelling fixed at two branches would have to be redesigned the moment a sum
+/// has three.
+///
+/// `unsafe`'s template is exactly what a user would type (D-66):
 ///
 ///     macro unsafe ( { $b } ) { handle Unsafe over ( ) init { } { } { $b } }
 ///
@@ -201,23 +211,25 @@ let parse_sig_body (ts:list token)
 /// usual job. `locate unsafe` prints the expansion, so the sugar is inspectable
 /// rather than magic.
 let builtin_macros : list mprod = [
+  /// The condition's terms are spliced first — `StVar "c"` is a block slot, so
+  /// it expands to its CONTENTS — and then the case. Branches in TAG order,
+  /// FALSE first (D-33), so `else` precedes `then`; an absent `else` is the
+  /// empty branch, which is why "the `then` branch must not change the stack"
+  /// needs no rule of its own.
   { mp_name     = "if";
     mp_pre      = [MsBlock "c"; MsKeyword "then"; MsBlock "t"];
-    mp_branches = [ { mb_key = "endif"; mb_slots = []; mb_body = [] };
-                    { mb_key = "else";
+    mp_branches = [ { mb_key   = "endif"; mb_slots = [];
+                      mb_body  = [StVar "c"; StCase [[]; [StVar "t"]]] };
+                    { mb_key   = "else";
                       mb_slots = [MsBlock "e"; MsKeyword "endif"];
-                      mb_body  = [] } ];
-    mp_body     = [];
-    mp_builtin  = true };
+                      mb_body  = [StVar "c"; StCase [[StVar "e"]; [StVar "t"]]] } ];
+    mp_body     = [] };
   { mp_name     = "unsafe";
     mp_pre      = [MsBlock "b"];
     mp_branches = [];
-    mp_body     = [StHandle "Unsafe" [] [] [] [StVar "b"]];
-    mp_builtin  = false };
-  /// `try { … } catch { … }` (D-71). Like `if`, it cannot be a user `macro`
-  /// declaration, because `StTry` has no surface spelling either — but unlike
-  /// `if` its template IS used, since the expansion is one term with two block
-  /// slots and needs no hand-written expander.
+    mp_body     = [StHandle "Unsafe" [] [] [] [StVar "b"]] };
+  /// `try { … } catch { … }` (D-71). Like `if`, a user could not declare it,
+  /// because `StTry` has no surface spelling either.
   ///
   /// NO TERMINATOR, and none is needed. `catch` is mandatory and the production
   /// ends after its block, so there is no alternation point and no ε-branch —
@@ -227,13 +239,19 @@ let builtin_macros : list mprod = [
   { mp_name     = "try";
     mp_pre      = [MsBlock "b"; MsKeyword "catch"; MsBlock "c"];
     mp_branches = [];
-    mp_body     = [StTry [StVar "b"] [StVar "c"]];
-    mp_builtin  = false }
+    mp_body     = [StTry [StVar "b"] [StVar "c"]] }
 ]
 
 /// The built-in table really is LL(1), checked rather than asserted in prose.
 let lemma_table_ll1 () : Lemma (ll1_ok builtin_macros) =
   assert_norm (ll1_ok builtin_macros)
+
+/// And it satisfies the rule it imposes on user declarations (D-73). Worth
+/// checking rather than assuming: `if`'s templates were empty until this
+/// change, so the table had never been asked the question.
+let lemma_table_hygienic ()
+  : Lemma (for_all (fun p -> None? (mprod_stray p)) builtin_macros) =
+  assert_norm (for_all (fun p -> None? (mprod_stray p)) builtin_macros)
 
 let rec lookup_macro (ps:list mprod) (w:string)
   : Tot (option mprod) (decreases ps) =
@@ -268,7 +286,18 @@ let ll1_extend (mt:list mprod) (p:mprod) : Tot (either string (list mprod)) =
              that selects between them does not")
   else if not (ll1_ok (p :: mt))
   then Inl ("adding '" ^ p.mp_name ^ "' would make the macro grammar ambiguous")
-  else Inr (p :: mt)
+  /// HYGIENE, checked here because here is where a template first exists
+  /// (D-73). A `$x` naming no slot cannot be a temporary the author
+  /// introduced — nothing in a macro body binds a local — so it can only read
+  /// whatever local encloses the expansion, which is capture. The message
+  /// quotes the name and says which of the two mistakes it is likely to be.
+  else (match mprod_stray p with
+        | Some x ->
+          Inl ("'" ^ p.mp_name ^ "' reads $" ^ x ^ ", which names no slot of \
+                the production; a macro body cannot bind a local, so this \
+                would read the caller's $" ^ x ^ ". Add a slot for it, or \
+                correct the spelling")
+        | None -> Inr (p :: mt))
 
 /// Every table a session ever parses against is LL(1). Not a vacuous statement
 /// dressed as a lemma: it holds because `ll1_extend` decides the property
@@ -352,21 +381,6 @@ let lemma_ll1_lookup_forced (ps:list mprod) (p:mprod)
 
 (* --- expansion ----------------------------------------------------------- *)
 
-/// `if` expands by hand, because `StCase` is not writable in surface syntax.
-/// Everything else expands by substituting captures into a template, which is
-/// what a `macro` declaration supplies.
-///
-/// Branches are emitted in TAG order, FALSE first (D-33), so `else` precedes
-/// `then`. An absent `else` is `[]` — the empty branch — which is why "the
-/// `then` branch must not change the stack" needs no rule of its own.
-let expand_if (caps:list mcap) : Tot (either string (list sterm)) =
-  match caps with
-  | [McBlock _ cond; McBlock _ conseq; McKey "endif"] ->
-    Inr (cond @ [StCase [[]; conseq]])
-  | [McBlock _ cond; McBlock _ conseq; McKey "else"; McBlock _ alt] ->
-    Inr (cond @ [StCase [alt; conseq]])
-  | _ -> Inl "if: malformed expansion"
-
 /// Which template a set of captures selects: the production's own when it has
 /// no alternatives, otherwise the one belonging to the branch whose key was
 /// consumed. `McKey` is the only reason the key is recorded at all.
@@ -384,13 +398,13 @@ let template_of (p:mprod) (caps:list mcap) : Tot (either string (list sterm)) =
                     | None   -> Inl (p.mp_name ^ ": no alternative keyed '" ^ k ^ "'")
                     | Some b -> Inr b.mb_body)
 
+/// ONE PATH (D-73). This used to branch on `mp_builtin` and dispatch to
+/// `expand_if` by name; `if` now carries its templates like everything else,
+/// so there is nothing to choose between.
 let expand (p:mprod) (caps:list mcap) : Tot (either string (list sterm)) =
-  if p.mp_builtin
-  then (if p.mp_name = "if" then expand_if caps
-        else Inl ("no expander for built-in macro '" ^ p.mp_name ^ "'"))
-  else match template_of p caps with
-       | Inl e    -> Inl e
-       | Inr body -> Inr (subst_terms caps body)
+  match template_of p caps with
+  | Inl e    -> Inl e
+  | Inr body -> Inr (subst_terms caps body)
 
 (* ------------------------------------------------------------------------ *)
 (* Terms                                                                    *)
@@ -772,13 +786,13 @@ let parse_macro_decl (mt:list mprod) (ts:list token)
            | PErr e -> PErr e
            | POk body r4 ->
              POk (SdMacro ({ mp_name = name; mp_pre = pre; mp_branches = [];
-                             mp_body = body; mp_builtin = false })) r4)
+                             mp_body = body })) r4)
         | TkWord "alt" :: _ ->
           (match parse_malts mt [] r2 with
            | PErr e -> PErr e
            | POk bs r4 ->
              POk (SdMacro ({ mp_name = name; mp_pre = pre; mp_branches = bs;
-                             mp_body = []; mp_builtin = false })) r4)
+                             mp_body = [] })) r4)
         | _ -> PErr ("expected '{' or 'alt' after the slots of macro " ^ name)))
   | TkWord name :: _ ->
     PErr ("expected '(' after 'macro " ^ name ^ "'; a macro taking nothing \

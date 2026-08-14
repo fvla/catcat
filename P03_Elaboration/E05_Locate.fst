@@ -439,38 +439,31 @@ let rec show_slots (ss:list E02_Ast.mslot) : Tot string (decreases ss) =
 /// alternatives is just the list of sentences it accepts, each followed by what
 /// it turns into.
 ///
-/// `bodies` is false for the built-in `if`, whose expansion is a `case` and has
-/// no surface spelling to print — showing `->` followed by nothing would be a
-/// worse lie than omitting it.
-let rec show_macro_alts (bodies:bool) (name:string) (pre:list E02_Ast.mslot)
+/// EVERY PRODUCTION HAS A BODY NOW (D-73). The `bodies` flag existed for the
+/// built-in `if`, whose templates were empty, and printing `->` followed by
+/// nothing would have been a worse lie than omitting it. `if` carries real
+/// templates, so there is nothing to suppress and the flag is gone with the
+/// `mp_builtin` field it read.
+///
+/// What `locate if` prints is therefore its actual expansion, and it re-parses:
+/// `show_sterm` renders a two-branch `StCase` back as an `if`, which is the
+/// same round trip every other macro gets.
+let rec show_macro_alts (name:string) (pre:list E02_Ast.mslot)
                         (bs:list mbranch)
   : Tot string (decreases bs) =
   match bs with
   | []     -> ""
   | b :: r -> "\n  " ^ name ^ show_slots pre ^ " " ^ b.mb_key
               ^ show_slots b.mb_slots
-              ^ (if bodies then "\n    -> " ^ braces (show_sterms b.mb_body)
-                 else "")
-              ^ show_macro_alts bodies name pre r
+              ^ "\n    -> " ^ braces (show_sterms b.mb_body)
+              ^ show_macro_alts name pre r
 
 let show_macro (p:mprod) : Tot string =
-  let bodies = not p.mp_builtin in
   "macro " ^ p.mp_name
   ^ (if Nil? p.mp_branches
      then "\n  " ^ p.mp_name ^ show_slots p.mp_pre
-          ^ (if bodies then "\n    -> " ^ braces (show_sterms p.mp_body) else "")
-     else show_macro_alts bodies p.mp_name p.mp_pre p.mp_branches)
-  /// SAY WHAT IT BECOMES, not that it has no spelling. The old text was "expands
-  /// to a case, which has no surface spelling", which since D-68 describes
-  /// nothing: there is no case in the core, and `if` elaborates to a handler
-  /// around a dispatch. What genuinely has no surface spelling is `E02.StCase`,
-  /// the intermediate node — and the reason `if` cannot be an ordinary `macro`
-  /// declaration is not that node but the fresh operation ids each site needs,
-  /// which a template cannot allocate (see the header).
-  ^ (if p.mp_builtin
-     then "\n  \\ built in: expands to a handler over a dispatch (D-68); a \
-           template\n  \\ cannot allocate the fresh operation ids each site needs"
-     else "")
+          ^ "\n    -> " ^ braces (show_sterms p.mp_body)
+     else show_macro_alts p.mp_name p.mp_pre p.mp_branches)
 
 (* ------------------------------------------------------------------------ *)
 (* locate                                                                   *)

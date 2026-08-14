@@ -1485,3 +1485,77 @@ property of who handles it (D-71), so the analysis has the enclosing `try` as
 its context rather than the effect declaration. That is another entry on the
 list D-69 started: things that look like theorems about `specialize` and are
 really backend passes over a recognisable shape.
+
+---
+
+## D-73. Macro hygiene is a well-formedness check. `if` is an ordinary macro.
+
+Two things asked together, and they turned out to be independent of `!Dict` and
+of each other. Both are done.
+
+### Hygiene needs no renaming, because no `sterm` binds a local
+
+The standard hygiene problem is a template's temporaries colliding with names at
+the use site, and the standard fix is to rename them apart. Neither applies, and
+the reason is a property of the surface language that had not been written down:
+
+**`$x` is a READ. The only binder in the language is a signature parameter, and
+a signature appears in a declaration, while a macro body is a term list.**
+
+So a `$x` in a template naming no slot of its production cannot be a temporary
+the author introduced — there is no way to introduce one. It can only read
+whatever local encloses the expansion, which the author of a macro is in no
+position to have meant. Renaming it apart would produce a read of nothing,
+failing later and further from the mistake.
+
+Hygiene is therefore `E02.mprod_stray`, checked in `ll1_extend` where a template
+first exists, and the diagnostic quotes the name:
+
+    catcat> macro bad ( { $b } ) { $b $tmp + }
+    error: 'bad' reads $tmp, which names no slot of the production; a macro
+    body cannot bind a local, so this would read the caller's $tmp. Add a slot
+    for it, or correct the spelling
+
+This is strictly better than gensym for the language as it stands: the error
+names the macro rather than the call. **When `let` arrives (D05 §3.3) a template
+will be able to bind and this becomes a genuine renaming problem** — the check
+is the whole of hygiene only while the premise holds, and the premise is exactly
+what will change.
+
+### `if` was never blocked on anything
+
+`if` carried `mp_builtin = true`, empty templates, and a hand-written
+`expand_if` that `expand` dispatched to by name. The stated reason was that its
+expansion is `StCase`, which has no surface spelling.
+
+That confused two different things. **A template is a `list sterm` — an F*
+value, not source text — so it can mention `StCase` perfectly well.** What
+`StCase` lacks is a way for a *user* to type it, which is a fact about the
+surface grammar and says nothing about whether the macro machinery can express
+the expansion. Writing the two templates out:
+
+    mb_body = [StVar "c"; StCase [[]; [StVar "t"]]]
+    mb_body = [StVar "c"; StCase [[StVar "e"]; [StVar "t"]]]
+
+reproduces `expand_if` exactly — `StVar "c"` is a block slot, so it splices the
+condition's terms, and `subst_lists` fills the branches — and deletes:
+
+  * `mprod.mp_builtin`, a field,
+  * `expand_if`, a function,
+  * the branch of `expand` that chose between the two paths,
+  * `show_macro`'s `bodies` flag and the caveat line it printed.
+
+`locate if` now shows its actual expansion, and it re-parses, because
+`show_sterm` renders a two-branch `StCase` back as an `if`.
+
+*What is still true:* a user could not declare this macro, because there is no
+way to write `StCase` in source. Giving `case` a surface spelling is the
+remaining step and it belongs with surface sums — a spelling fixed at two
+branches would have to be redesigned the moment a sum has three, and a
+two-branch `case` on a `bool` is all `if` needs.
+
+*Correction to the assessment that preceded this.* I said the blocker was the
+fresh operation ids each `case` site needs, and that macros would need gensym to
+allocate them. That was wrong: `E04` allocates those ids from its positional
+budget when it elaborates `StCase`, whatever produced the node. The blocker was
+only ever the surface spelling.
