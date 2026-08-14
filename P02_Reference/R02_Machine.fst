@@ -61,10 +61,26 @@ let rec find_handler (k:kont) (e:eff_id) (op:op_id)
        | Some body -> Some (body, st)
        | None      -> find_handler rest e op)
     else find_handler rest e op
+  /// The innermost frame for `e` wins, and a `try` is one (D-71). See the
+  /// `.fsti`: `step` falls through to `find_try`, so this `None` means "the
+  /// nearest frame is a try", not "unhandled".
+  | KTry e' _ _ :: rest -> if e' = e then None else find_handler rest e op
   | _ :: rest -> find_handler rest e op
+
+let rec find_try (k:kont) (e:eff_id)
+  : Tot (option (term & rstack & kont)) (decreases k) =
+  match k with
+  | []                          -> None
+  | KTry e' catch saved :: rest -> if e' = e then Some (catch, saved, rest)
+                                   else find_try rest e
+  | _ :: rest                   -> find_try rest e
 
 /// Deliberately written as the mirror image of `find_handler`, clause for
 /// clause, because the two must select the same frame.
+///
+/// It needs no `KTry` clause even though `find_handler` has one: it is called
+/// only after `find_handler` returned a handler, so no `try` for that effect
+/// lies between here and the frame, and the catch-all cannot walk past one.
 let rec set_handler_state (k:kont) (e:eff_id) (op:op_id) (st:option rstack)
   : Tot kont (decreases k) =
   match k with
@@ -256,6 +272,11 @@ let step (d:rdict) (s:mstate) : Tot sresult =
   | KHandler _ _ None :: k ->
     SStuck "handle: the handler's state was never given back"
 
+  (* The body of a `try` completed without aborting: drop the boundary and
+     with it the saved stack. Nothing is pushed -- a `try` that succeeds is
+     invisible, which is why its signature is the body's (D-71). *)
+  | KTry _ _ _ :: k -> SNext ({ code = k; stk = s.stk })
+
   (* The initialiser has finished; move its results into a fresh frame. *)
   | KInit e n impls body :: k ->
     (match take n s.stk with
@@ -305,7 +326,16 @@ let step (d:rdict) (s:mstate) : Tot sresult =
             it back. Pushing on TOP is forced: splicing it underneath would
             need the operation's arity, which the dictionary does not record. *)
          (match find_handler k e w with
-          | None -> SEffect w s.stk k
+          (* No handler frame. Either an enclosing `try` catches this (D-71) --
+             in which case every frame up to it is DISCARDED, the stack is cut
+             back to what the frame saved, and `catch` runs in its place -- or
+             the operation escapes to the host. Nothing is captured on the way
+             out: the discarded frames are dropped by taking the tail. *)
+          | None ->
+            (match find_try k e with
+             | Some (catch, saved, k') ->
+               SNext ({ code = KTerm catch :: k'; stk = saved })
+             | None -> SEffect w s.stk k)
           | Some (_, None) ->
             (* The frame is mid-call. Serving a stale copy would silently fork
                the state, so this is reported instead. See the note in
@@ -337,6 +367,17 @@ let step (d:rdict) (s:mstate) : Tot sresult =
     | THandle e st init impls body ->
       SNext ({ code = KTerm init :: KInit e (length st) impls body :: k;
                stk = s.stk })
+
+    (* Install a `try` boundary and run the body (D-71). One step, not two:
+       unlike `THandle` there is no state to compute first, so the frame can be
+       built immediately. What it records is `drop (length pre) stk` -- the
+       stack BELOW the body's inputs -- which is the runtime image of the
+       residual `M07`'s clause gets for free from `M02.vsplit`. *)
+    | TTry e pre body catch ->
+      (match take (length pre) s.stk with
+       | None -> SStuck "try: the body's inputs are not on the stack"
+       | Some (_, below) ->
+         SNext ({ code = KTerm body :: KTry e catch below :: k; stk = s.stk }))
 
     (* Specialization is semantics-preserving (M11 E2), so the reference
        interpreter may ignore it and run the body directly. This is not a

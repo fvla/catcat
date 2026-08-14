@@ -302,6 +302,14 @@ let rec show_items (e:nenv) (ts:list term)
              ^ " {" ^ show_impls e impls ^ " } "
              ^ braces (show_items e [body]))
             (show_items e rest)
+  /// `pre` is not printed. It is always `[]` for anything the elaborator emits
+  /// (see `E02.StTry`), so printing it would show a field that is never
+  /// anything else and hide the fact that it is the surface, not the core, that
+  /// restricts it.
+  | TTry _ _ body catch :: rest ->
+    cons_sp ("try " ^ braces (show_items e [body])
+             ^ " catch " ^ braces (show_items e [catch]))
+            (show_items e rest)
   | TSpecialize body :: rest ->
     cons_sp ("specialize " ^ braces (show_items e [body])) (show_items e rest)
 
@@ -392,6 +400,8 @@ let rec show_sterm (t:sterm) : Tot string (decreases %[(sterm_size t <: nat); 0]
     ^ braces (show_sterms i) ^ " {" ^ show_simpls im ^ " } "
     ^ braces (show_sterms b)
   | StWith su b -> "with { " ^ show_spairs su ^ " } " ^ braces (show_sterms b)
+  | StTry b c   -> "try " ^ braces (show_sterms b)
+                   ^ " catch " ^ braces (show_sterms c)
 
 and show_sterms (ts:list sterm) : Tot string (decreases %[sterms_size ts; 1]) =
   match ts with

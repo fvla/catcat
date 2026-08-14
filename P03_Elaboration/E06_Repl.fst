@@ -132,12 +132,19 @@ let prelude_words : list nentry = [
     n_sig = { pre = [str_t]; post = [] };  n_op = Some eff_io };
   { n_name = "read";  n_id = w_read;
     n_sig = { pre = []; post = [str_t] };  n_op = Some eff_io };
+  /// `fail`: the only operation of the aborting effect (D-71). Its signature
+  /// is `( -- )`, which is a real limitation and not a simplification — a
+  /// `fail` that could stand where a value is expected needs to be typed at
+  /// the empty type, and the core is monomorphic. See `DOCS/U01`.
+  { n_name = "fail"; n_id = w_fail;
+    n_sig = { pre = []; post = [] };       n_op = Some eff_fail };
 ]
 
 /// `IO` is in scope from the first line, so `( -- i64 !IO )` resolves without
 /// anyone declaring it.
 let prelude_effs : list (string & eff_id) =
-  [("IO", eff_io); ("Unsafe", eff_unsafe); ("C", eff_c); ("Rec", eff_rec)]
+  [("IO", eff_io); ("Unsafe", eff_unsafe); ("C", eff_c); ("Rec", eff_rec);
+   ("Fail", eff_fail)]
 
 /// EVERY WORD GETS AN OPERATION DECLARATION, not just the ones an `effect`
 /// declared (D-63). `M06.w_sig` reads a word's signature out of `w_ops`, so a

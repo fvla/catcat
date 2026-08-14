@@ -455,7 +455,38 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
            | Inl e -> Inl e
            | Inr (shb, bts, d1) ->
              elab_terms env cs (base + sterm_size t) shb
-               (subst_words ids (seq_of bts) :: acc) (d1 @ dacc) rest)))
+               (subst_words ids (seq_of bts) :: acc) (d1 @ dacc) rest))
+
+     /// `try { … } catch { … }` (D-71).
+     ///
+     /// BOTH BLOCKS ARE ELABORATED AGAINST `[]`, and that is the one place this
+     /// case makes a choice. `M05.TTry` records the body's `pre` so `R02` knows
+     /// how far to cut the stack back on an abort, and the shape model cannot
+     /// supply it: the model is one concrete stack, so it says what the body
+     /// LEFT and not how deep the body reached. `StCase` over-approximates its
+     /// declarations to the full modelled shape and is safe doing so because
+     /// `M06.impl_frame` frames the branches back down; here the same
+     /// over-approximation would mean an abort discards the caller's whole
+     /// stack and `catch` has to rebuild it. Giving the body an empty entry
+     /// shape instead makes `pre = []` true by construction, and a body that
+     /// reaches out gets "the stack is empty" rather than a wrong answer.
+     ///
+     /// The two blocks must agree on their exit shape, for the same reason two
+     /// branches of a `case` must: one of them runs and the following code
+     /// cannot know which. `M06.infer` re-derives the agreement independently.
+     | StTry btry bcatch ->
+       (match elab_terms env cs (base + 1) [] [] [] btry with
+        | Inl e -> Inl e
+        | Inr (shb, bts, d1) ->
+          (match elab_terms env cs (base + 1 + sterms_size btry) [] [] [] bcatch with
+           | Inl e -> Inl e
+           | Inr (shc, cts, d2) ->
+             if slot_tys shc <> slot_tys shb
+             then Inl "try: the catch block must leave the same stack as the \
+                       try block"
+             else elab_terms env cs (base + sterm_size t) (shb @ sh)
+                    (TTry eff_fail [] (seq_of bts) (seq_of cts) :: acc)
+                    (d1 @ d2 @ dacc) rest)))
 
 /// Elaborate each branch against the SAME entry shape and require them to
 /// agree on the exit shape.
@@ -811,7 +842,25 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
         | Inr _ ->
           (match infer_terms env cs st body with
            | Inl e   -> Inl e
-           | Inr st' -> infer_terms env cs st' rest)))
+           | Inr st' -> infer_terms env cs st' rest))
+
+     /// NO METAVARIABLE CAN ESCAPE A `try` (D-71), because neither block runs
+     /// on the enclosing stack — the same reason a handler's initialiser and
+     /// implementations are checked by the concrete pass here rather than
+     /// modelled. So both blocks go through `elab_terms` at an empty entry
+     /// shape, exactly as pass 2 will run them, and all this pass takes back is
+     /// what they leave behind.
+     | StTry btry bcatch ->
+       (match elab_terms env cs 0 [] [] [] btry with
+        | Inl e -> Inl e
+        | Inr (shb, _, _) ->
+          (match elab_terms env cs 0 [] [] [] bcatch with
+           | Inl e -> Inl e
+           | Inr (shc, _, _) ->
+             if slot_tys shc <> slot_tys shb
+             then Inl "try: the catch block must leave the same stack as the \
+                       try block"
+             else infer_terms env cs (ipush_post (slot_tys shb) st) rest)))
 
 /// Run each branch from the same entry stack, threading the accumulated
 /// substitution and pulled inputs forward, and require the branches to agree.

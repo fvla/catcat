@@ -11,7 +11,7 @@ module M05_Terms
 /// One structural decision, from D02: quotations are NOT values. Code is
 /// first-class at elaboration time, but there are no runtime function values,
 /// so a `{}` block never appears on the value stack. It appears only as a
-/// syntactic argument to a construct that consumes it -- `TCase`, `THandle`,
+/// syntactic argument to a construct that consumes it -- `THandle`, `TTry`,
 /// `TSpecialize`. This is what lets every block be inlined and keeps closures
 /// out of the core entirely.
 ///
@@ -78,9 +78,9 @@ type word_id = nat
 /// functions and every induction over `term` in M07 and M09 grows a case.
 /// Spelled as a table, adding one is a row, and each induction has a single
 /// uniform primitive case discharged once. The core drops from nineteen
-/// constructors to seven, and the seven that remain are exactly the
-/// language's structure: identity, composition, naming, elimination,
-/// handling, staging.
+/// constructors to seven, and the eight that remain (D-71 added the abort) are
+/// exactly the language's structure: identity, composition, naming,
+/// elimination, handling, aborting, staging.
 ///
 /// The invariant that pays for the grouping: EVERY PRIMITIVE IS PURE. There
 /// is no `erow` in `prim_sig`'s result because none of these can perform an
@@ -148,7 +148,7 @@ noeq type prim_op =
 (* Terms                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
-/// Seven constructors. Everything else the language can do is either a table
+/// Eight constructors. Everything else the language can do is either a table
 /// row (`prim_op`) or a word (`TWord`), and that is the whole claim of D-55:
 /// the core is the structure, not the vocabulary.
 noeq type term =
@@ -212,6 +212,32 @@ noeq type term =
   /// the result of the computation the state was accumulating.
   | THandle  : eff:eff_id -> st:seg -> init:term
              -> impls:list (op_id & term) -> body:term -> term
+  /// Handle an ABORTING effect: run `body`, and if it performs any operation of
+  /// `eff`, abandon it and run `catch` instead (D-71).
+  ///
+  /// WHY THIS IS NOT A `THandle` (D-71). An aborting operation's meaning is "do
+  /// not run the rest of the body", and the only place the rest of the body
+  /// exists is the continuation `M04.handle` holds. Handling one therefore means
+  /// DISCARDING that continuation — which is not continuation capture, nothing
+  /// is stored or re-entered, but it is not something an `M04.op_impl` can do
+  /// either: an implementation is handed `st @ op_pre` and must produce
+  /// `st @ op_post`, and `catch` has to produce the result of the WHOLE handled
+  /// computation. Making `M04.handler` able to express that would index it by
+  /// the result type of the code it handles, and a method table indexed by its
+  /// client's result type is not a method table. D03's identification of
+  /// handlers with classes, interfaces and modules is what would break, so the
+  /// abort gets its own eliminator and the identification stays exact.
+  ///
+  /// `pre` is the body's own `pre`, which `M06.infer` checks rather than
+  /// trusts. The denotation does not need it — the stack below the body is in
+  /// scope as `M02.vsplit`'s residual — but `R02` does: the machine's stack is
+  /// flat, so the frame has to record how far down to cut back to when the
+  /// abort discards whatever the body had built.
+  ///
+  /// EVERY operation of `eff` aborts; there is no per-operation flag. An
+  /// aborting effect is one whose operations all mean "stop", which is what
+  /// `Fail` is, and a handler for a non-aborting effect is still a `THandle`.
+  | TTry     : eff:eff_id -> pre:seg -> body:term -> catch:term -> term
   /// Resolve the static effects of the body against the ambient dictionary,
   /// producing a residual program. Invoked at elaboration time this is
   /// specialization; invoked at runtime it is the JIT. One construct, one
@@ -230,6 +256,7 @@ let rec term_size (t:term) : Tot pos =
   | TWord _             -> 1
   | TDispatch _ _       -> 1
   | THandle _ _ i impls b -> 1 + term_size i + impls_size impls + term_size b
+  | TTry _ _ b c          -> 1 + term_size b + term_size c
   | TSpecialize b       -> 1 + term_size b
 
 and terms_size (ts:list term) : Tot nat =
@@ -283,6 +310,7 @@ let rec subst_words (su:list (word_id & word_id)) (t:term)
   | THandle e st i im b  -> THandle e st (subst_words su i)
                                     (subst_words_impls su im)
                                     (subst_words su b)
+  | TTry e p b c         -> TTry e p (subst_words su b) (subst_words su c)
   | TSpecialize b        -> TSpecialize (subst_words su b)
   | _                    -> t
 
@@ -316,6 +344,7 @@ let rec needs_compiler (t:term)
   | TDispatch _ _       -> false
   | THandle _ _ i impls b -> needs_compiler i || needs_compiler_impls impls
                            || needs_compiler b
+  | TTry _ _ b c          -> needs_compiler b || needs_compiler c
   | _                   -> false
 
 and needs_compiler_list (ts:list term)
@@ -359,6 +388,7 @@ let rec uses_unroll (t:term)
   | TDispatch _ _         -> false
   | THandle _ _ i impls b -> uses_unroll i || uses_unroll_impls impls
                            || uses_unroll b
+  | TTry _ _ b c          -> uses_unroll b || uses_unroll c
   | TSpecialize b         -> uses_unroll b
   | _                     -> false
 
@@ -416,6 +446,7 @@ let rec word_bound (t:term) : Tot nat (decreases %[(term_size t <: nat); 0]) =
   | TDispatch ops _       -> ops_bound ops
   | THandle _ _ i impls b -> mx (word_bound i) (mx (word_bound_impls impls)
                                                    (word_bound b))
+  | TTry _ _ b c          -> mx (word_bound b) (word_bound c)
   | TSpecialize b         -> word_bound b
   | _                     -> 0
 

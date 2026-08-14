@@ -47,6 +47,15 @@ let w_false : word_id = 12
 ///     (D-67). Koka spells the same thing `div`. Discharging it with
 ///     `handle Rec` is a claim that this call does terminate, unproved and
 ///     therefore exactly as much of a promise as `unsafe` is.
+///   * `Fail` (6) is the ABORTING effect (D-71), with one operation, `fail`.
+///     It is reserved for a different reason from the rest: nothing about it
+///     needs the host, and a user-declared effect could be aborting just as
+///     well. It is here because `try`/`catch` is a built-in spelling and a
+///     built-in spelling needs a known id — the same reason `Case` (5) is here.
+///
+/// `Case` (5) and `Fail` (6) are the two whose reservation is about the SURFACE
+/// rather than about the host: `if` and `try` compile to them, so the
+/// elaborator has to be able to name them.
 ///
 /// RESERVING AN ID IS THE WHOLE MECHANISM, and it needed no new feature: it is
 /// a fact about who owns the identifier, not a restriction the effect system
@@ -59,11 +68,12 @@ let eff_unsafe  : eff_id = 2
 let eff_c       : eff_id = 3
 let eff_rec     : eff_id = 4
 let eff_case    : eff_id = 5
+let eff_fail    : eff_id = 6
 
 /// The first id available to a surface `effect` declaration. Named so that P03
 /// does not have to track the block above by hand — `se_next_eff` was a literal
 /// `2` that a fifth reserved effect would have silently invalidated.
-let eff_user_base : eff_id = 6
+let eff_user_base : eff_id = 7
 
 /// `print` and `read`: ordinary operations of the ordinary effect `IO`. There is
 /// no second mechanism, and "suppliable only by the compiler or interpreter to
@@ -75,6 +85,9 @@ let w_show  : word_id = 15
 let w_cat   : word_id = 16
 let w_streq : word_id = 17
 let w_parse : word_id = 18
+
+/// `fail`: the sole operation of the aborting effect `Fail` (D-71).
+let w_fail  : word_id = 19
 
 let w_user_base : word_id = 100
 
@@ -101,6 +114,10 @@ let prelude : rdict = [
   (w_cat,   WPrim OCatS);
   (w_streq, WPrim OEqS);
   (w_parse, WPrim OParseI);
+  /// An ORDINARY operation binding. What makes it abort is not this entry but
+  /// the frame that catches it: `R02.find_try` looks for a `KTry` for its
+  /// effect, and `TTry` is the only thing that pushes one.
+  (w_fail,  WOp eff_fail);
 ]
 
 /// `PI64`'s representation is `sint 64`, so the literal must be in range. Out

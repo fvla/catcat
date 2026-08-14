@@ -365,6 +365,33 @@ let rec infer (env:wenv) (t:term)
                   row_union (row_remove eff row) (row_union ei hrow))
      | _ -> None)
 
+  /// Handling an ABORTING effect (D-71). Three conditions, and each is one of
+  /// the constraints try/catch has to satisfy:
+  ///
+  ///   * `pre` is the body's own `pre`. Checked, not trusted — `R02` reads it
+  ///     to know how far to cut the stack back on an abort, and a term that
+  ///     lied about it would restore to the wrong depth.
+  ///   * `catch` consumes NOTHING. On an abort the body's inputs are gone
+  ///     along with everything it had built, so there is nothing for `catch`
+  ///     to consume; the stack it starts from is what was below the body.
+  ///     (When generics arrive this becomes "consumes the error value", and
+  ///     `op_pre` stops being discarded.)
+  ///   * `catch` produces the body's `post`. The two arms leave the same stack
+  ///     or the construct has no signature, which is the same agreement
+  ///     `srow_join` asks of the branches of a `case`.
+  ///
+  /// The composite's signature is the BODY's, unchanged: a try/catch is
+  /// transparent to its context. Its row is the body's minus `eff`, plus
+  /// whatever `catch` itself needs — `catch` runs outside the construct it
+  /// belongs to, so a `fail` inside a `catch` reaches the NEXT `try` out.
+  | TTry eff pre body catch ->
+    (match infer env body, infer env catch with
+     | Some (s, row), Some (sc, ec) ->
+       if s.pre <> pre then None
+       else if sc <> { pre = []; post = s.post } then None
+       else Some (s, row_union (row_remove eff row) ec)
+     | _ -> None)
+
   /// Specialization keeps the signature and drops the static effects. The
   /// same rule serves compile-time specialization and runtime JIT.
   | TSpecialize body ->

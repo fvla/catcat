@@ -458,6 +458,32 @@ let rec denote_static (env:wenv) (t:term) (s:srow) (e:erow)
             (fun state -> handle hdl state
                               (denote_static env body sbody rbody () r stk)))
 
+  /// Aborting (D-71). `M04.handle_abort` does the work, and what this clause
+  /// contributes is the stack the `catch` arm starts from.
+  ///
+  /// THE RESIDUAL IS THE SAVED STACK. `vsplit` cuts `stk` into the body's
+  /// arguments and `below`, everything the body cannot see; `catch` is denoted
+  /// at `below`, so an abort resumes from exactly the stack the construct was
+  /// entered on minus the body's inputs. The body's arguments are dropped along
+  /// with whatever it had built, which is what "the try block discards its
+  /// outputs" means, and it is why `catch` can be required to consume nothing.
+  ///
+  /// `R02`'s `KTry` frame saves the same thing by taking `length pre` off the
+  /// runtime stack. That the machine has to be told `pre` while this does not
+  /// is the whole difference between a flat stack and an indexed one.
+  ///
+  /// Note that `catch` is denoted ONCE, outside the fold, and passed in. It is
+  /// a value of type `free`, not a continuation: nothing about `handle_abort`
+  /// lets it observe where the abort happened.
+  | TTry eff pre body catch ->
+    let Some (sb, rb) = infer env body in
+    let Some (sc, rc) = infer env catch in
+    (fun r stk ->
+      let (_, below) = vsplit sb.pre #r stk in
+      handle_abort eff
+        (denote_static env catch sc rc () r below)
+        (denote_static env body sb rb () r stk))
+
   /// Unreachable: `needs_compiler (TSpecialize _)` is `true`, which the
   /// precondition denies. Stated as `false_elim` rather than `admit` because it
   /// is a genuine impossibility and not a gap -- `make admits` should not list it.

@@ -100,6 +100,19 @@ type sterm =
   /// and leaves nothing in the core term, so it costs exactly nothing. The
   /// pairs are `(replaced, replacement)`, both plain word names.
   | StWith   : list (string & string) -> list sterm -> sterm
+  /// `try { … } catch { … }` — run the first block, and if it aborts, run the
+  /// second instead (D-71).
+  ///
+  /// THE TRY BLOCK RUNS ON A FRESH STACK, like a handler's initialiser and
+  /// unlike its body. `M05.TTry` carries the body's `pre` so the machine knows
+  /// how far to cut back on an abort, and the elaborator's shape model cannot
+  /// compute it: the model is a concrete stack, so it knows what the body LEFT
+  /// but not how deep the body reached. Over-approximating to the whole
+  /// modelled stack — which is what `StCase` does for its declarations, safely
+  /// — would here make `catch` responsible for rebuilding the caller's entire
+  /// stack. So the body gets `pre = []` and E04 elaborates it against `[]`,
+  /// which reports an honest "the stack is empty" for a body that reaches out.
+  | StTry    : list sterm -> list sterm -> sterm
 
 let rec sterm_size (t:sterm) : Tot pos =
   match t with
@@ -111,6 +124,7 @@ let rec sterm_size (t:sterm) : Tot pos =
   | StCase bs  -> 1 + sterm_lists_size bs
   | StHandle _ _ i im b -> 1 + sterms_size i + simpls_size im + sterms_size b
   | StWith _ b -> 1 + sterms_size b
+  | StTry b c  -> 1 + sterms_size b + sterms_size c
 
 and sterms_size (ts:list sterm) : Tot nat =
   match ts with
@@ -218,6 +232,7 @@ let rec subst_term (caps:list mcap) (t:sterm)
   | StHandle e tys i im b -> [StHandle e tys (subst_terms caps i)
                                        (subst_impls caps im) (subst_terms caps b)]
   | StWith su b           -> [StWith su (subst_terms caps b)]
+  | StTry b c             -> [StTry (subst_terms caps b) (subst_terms caps c)]
   | _                     -> [t]
 
 and subst_terms (caps:list mcap) (ts:list sterm)
@@ -319,6 +334,9 @@ let rec count_var (x:string) (t:sterm)
   /// `with` does not change the stack at all, so its body counts exactly as if
   /// it had been written in place — which, after elaboration, it was.
   | StWith _ b -> count_var_list x b
+  /// Neither block is counted: both run on a fresh stack, so an enclosing
+  /// definition's locals are not in scope in either (see `StHandle` above).
+  | StTry _ _  -> 0
   | _          -> 0
 
 and count_var_list (x:string) (ts:list sterm)
@@ -354,6 +372,7 @@ let rec mentions_recurse (t:sterm)
   | StHandle _ _ i im b ->
     mentions_recurse_list i || mentions_recurse_impls im || mentions_recurse_list b
   | StWith _ b  -> mentions_recurse_list b
+  | StTry b c   -> mentions_recurse_list b || mentions_recurse_list c
   | _           -> false
 
 and mentions_recurse_list (ts:list sterm)

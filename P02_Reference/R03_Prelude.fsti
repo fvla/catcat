@@ -55,10 +55,11 @@ val w_false : word_id
 /// `print` and `read` are STRING-TYPED (D-65). They were `i64`-typed while
 /// there was no string type; that was a placeholder, and `w_show` is what keeps
 /// numbers printable now that it is gone.
-/// The reserved block, 0 through 4. See the implementation: all five are host
-/// effects in the sense that no program can DECLARE one; `Unsafe` and `Rec` have
-/// no operations at all and are permissions rather than capabilities; `C` is a
-/// foreign call.
+/// The reserved block, 0 through 6. See the implementation: no program can
+/// DECLARE any of them, because `effect` allocates from `eff_user_base` upward.
+/// `Unsafe` and `Rec` have no operations at all and are permissions rather than
+/// capabilities; `C` is a foreign call; `Case` and `Fail` are reserved because
+/// `if` and `try` are built-in spellings that have to name them.
 val eff_dict_r  : eff_id
 val eff_io      : eff_id
 val eff_unsafe  : eff_id
@@ -69,6 +70,11 @@ val eff_rec     : eff_id
 /// case's operation forwards it outward, which `M04.fwd_impl` and
 /// `R02.find_handler` already do.
 val eff_case    : eff_id
+
+/// The aborting effect (D-71). One operation, `w_fail`; `M05.TTry` is what
+/// catches it. Reserved because `try` is a built-in spelling, not because the
+/// host has to service it.
+val eff_fail    : eff_id
 
 /// The first id a surface `effect` may allocate. P03 reads this rather than
 /// tracking the block above by hand.
@@ -84,6 +90,9 @@ val w_cat   : word_id
 val w_streq : word_id
 /// `( str -- i64 )`, inverse of `show`. Malformed input yields 0.
 val w_parse : word_id
+
+/// `( -- )`, and everything after it in the enclosing `try` body is dead.
+val w_fail  : word_id
 
 val w_user_base : word_id
 

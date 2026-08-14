@@ -145,6 +145,21 @@ let ex_stateful : term =
 let ex_unhandled : term =
   cat [int_lit 1; TWord op_ask]
 
+/// ABORTING (D-71). Two `try` blocks: the first pushes 7 and then performs
+/// `fail`, so the 7 is discarded along with the rest of the block and `catch`
+/// runs on the stack the frame saved; the second never aborts and is invisible.
+///
+/// What this exercises that no other example does is a frame that DISCARDS
+/// continuation frames rather than returning through them. `R02.find_try` takes
+/// the tail of the continuation at the `KTry`, so everything between the abort
+/// and the boundary is dropped -- and nothing is stored, which is why D-36
+/// survives it.
+let ex_try : term =
+  cat [
+    TTry eff_fail [] (cat [int_lit 7; TWord w_fail]) (int_lit 42);
+    TTry eff_fail [] (int_lit 5) (int_lit 0)
+  ]
+
 /// `List[i64]`: variant 0 is `Nil`; variant 1 is `Cons`, carrying an `i64` on
 /// top of a `Box` of the tail. This is the type the project previously could
 /// not express at all -- `dtype` was a finite tree, so nothing could refer to
@@ -178,5 +193,6 @@ let examples : list (string & term) = [
   ("handled",   ex_handled);
   ("stateful",  ex_stateful);
   ("unhandled", ex_unhandled);
+  ("try",       ex_try);
   ("list",      ex_list);
 ]

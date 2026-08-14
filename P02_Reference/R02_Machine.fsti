@@ -50,6 +50,8 @@ open R01_Runtime
 ///                            results can be moved into a fresh handler frame
 ///   `KRestore e op n`     -- waiting for an implementation to finish, so its
 ///                            top `n` values can be moved back into the frame
+///   `KTry e catch saved`  -- an active `try` boundary for the ABORTING effect
+///                            `e`, carrying the stack to cut back to
 ///
 /// The handler frame is what makes the chain searchable at the point an
 /// operation is invoked, which is how D04's Dictionary lookup works at runtime.
@@ -63,11 +65,23 @@ open R01_Runtime
 /// `KHandler`'s state is an OPTION because it is BORROWED while an
 /// implementation runs. See `step`: re-entering a handler whose state is out on
 /// loan is reported rather than served with a stale copy.
+/// `KTry` CARRIES A STACK, AND THAT IS THE WHOLE OF ABORTING (D-71). An
+/// operation of an aborting effect abandons the body, so the machine has to
+/// know what the stack looked like before the body ran: `M05.TTry` records the
+/// body's `pre`, the frame is pushed with `drop (length pre) stk`, and an abort
+/// restores it. Everything the body consumed and everything it built is dropped
+/// together, which is exactly what makes `catch` a program that consumes
+/// nothing.
+///
+/// Note what it does NOT carry: a continuation. The frames between the abort
+/// and the `try` are discarded by the list walk, not saved anywhere, so nothing
+/// here can be resumed — D-36 is untouched.
 noeq type kframe =
   | KTerm    : term -> kframe
   | KHandler : eff_id -> list (op_id & term) -> option rstack -> kframe
   | KInit    : eff_id -> nat -> list (op_id & term) -> term -> kframe
   | KRestore : eff_id -> op_id -> nat -> kframe
+  | KTry     : eff_id -> term -> rstack -> kframe
 
 type kont = list kframe
 
@@ -104,8 +118,20 @@ noeq type sresult =
 /// The implementation runs with the frame STILL INSTALLED, which is the whole
 /// of "every effect is reentrant" (D03 §2) and costs nothing — no continuation
 /// is captured, extracted or resumed.
+///
+/// IT STOPS AT A `KTry` FOR THE SAME EFFECT (D-71). An enclosing `try` is a
+/// frame for `e` too, and the innermost frame has to win; walking past one to
+/// reach an outer `KHandler` would let a handler installed outside a `try`
+/// intercept an operation the `try` should have caught. `step` asks `find_try`
+/// next, so the `None` this returns at a `try` boundary is not "unhandled".
 val find_handler (k:kont) (e:eff_id) (op:op_id)
   : Tot (option (term & option rstack))
+
+/// Walk outward for the nearest `try` boundary for `e`. Returns the `catch`
+/// program, the stack to cut back to, and the continuation BENEATH the frame —
+/// which is what discards every frame the abort unwinds past.
+val find_try (k:kont) (e:eff_id)
+  : Tot (option (term & rstack & kont))
 
 /// Replace the state of the frame `find_handler` would select. The two walk
 /// the chain by the same rule, and must keep doing so: a divergence would put

@@ -1313,3 +1313,91 @@ and harmless only because of the allocation order it has now replaced.
 it — would reintroduce genuine mutual recursion, and it would arrive marked
 `!Rec` rather than undetected, which is the point. Anonymous recursion (a block
 that calls itself) still has no spelling.
+
+---
+
+## D-71. Failure is an aborting effect, and aborting is its own eliminator.
+
+Asked for the effect analogue of `Option`/`Result`: one operation (`fail`), a
+`try`/`catch` structure, the try block's outputs matching the catch block's, the
+try block discarding everything it built on failure, and the catch block taking
+no inputs.
+
+### The one thing that could not be a handler
+
+Every constraint above falls straight out of the existing machinery except the
+central one. `fail` means "do not run the rest of the body", and the rest of the
+body exists in exactly one place: the continuation `M04.handle` is holding when
+it reaches the `Op` node. Handling an abort means DISCARDING that continuation.
+
+Discarding is not capture — nothing is stored, returned, resumed or run twice,
+so D-36 is untouched. But it is not something an `M04.op_impl` can express
+either. An implementation is handed `st @ op_pre` and must produce `st @
+op_post`; a `catch` block has to produce the result of the WHOLE handled
+computation, which is a type the operation's declaration cannot mention.
+
+Making `M04.handler` able to express it means indexing the record by the result
+type of the code it handles. **That would break D03's identification, not
+support it.** A method table, a typeclass dictionary, a module implementation —
+none of them depends on the result type of its caller, and a `handler` that did
+would no longer be the same construct wearing five hats. So the abort gets its
+own eliminator and the identification stays exact:
+
+    TTry : eff:eff_id -> pre:seg -> body:term -> catch:term -> term
+
+with `M04.handle_abort` the second fold over `free`, differing from `handle` in
+one clause. Exceptions being the odd one out in an effect system is a known
+fact; what is worth recording is *which* property they cost, and that paying
+for it in a separate constructor is cheaper than paying for it in `handler`.
+
+An ABORTING EFFECT is one all of whose operations abort — there is no
+per-operation flag. `Fail` (reserved id 6) has one operation; nothing in the
+construction depends on that, so a `Break`/`Continue` pair is the same shape.
+
+### What each piece contributes
+
+* `M06.infer` checks `pre` against the body's own `pre` rather than trusting it,
+  requires `catch` to consume nothing, and requires it to produce the body's
+  `post`. The composite's signature is the body's, so a `try` is transparent to
+  its context, and its row is the body's minus `eff` plus `catch`'s own — a
+  `fail` inside a `catch` reaches the next `try` out.
+* `M07`'s clause gets the saved stack for free: `vsplit` cuts the body's
+  arguments off `stk` and denotes `catch` at the residual. Nothing else.
+* `R02` needs telling. Its stack is flat, so `KTry e catch saved` records
+  `drop (length pre) stk` at push time, and `find_try` takes the TAIL of the
+  continuation at the boundary — which is what discards the frames between.
+  `find_handler` stops at a `KTry` for the same effect so the innermost frame
+  wins.
+* `E03` adds `try { … } catch { … }` as a built-in macro. No terminator, and
+  none is possible to need: `catch` is mandatory, so there is no alternation
+  point and no ε-branch, which is the whole of why `if` needs `endif` (D-34).
+
+### Two restrictions, both real, both stated rather than hidden
+
+**`fail` is `( -- )`.** It composes with anything, so guard-style use works:
+`dup 0 = if { } then { fail } else { } endif /` is `safediv`. What it cannot do
+is stand where a value is expected — `if { } then { 1 } else { fail } endif` is
+rejected, because the branches disagree. A `fail` usable there is one typed at
+the empty type, and the core is monomorphic (D02 §5). This is the same missing
+feature as the typed `catch` block: both arrive with generics.
+
+**The try block runs on a fresh stack.** `M05.TTry` carries the body's `pre` and
+the elaborator cannot compute it: its shape model is one concrete stack, so it
+knows what a block LEFT but not how deep the block reached. `StCase`
+over-approximates its declarations to the full modelled shape and is safe doing
+so because `M06.impl_frame` frames the branches back down; the same
+over-approximation here would make an abort discard the caller's entire stack
+and `catch` responsible for rebuilding it. So `E04` elaborates both blocks at an
+empty entry shape, `pre = []` holds by construction, and a body that reaches out
+gets "the stack is empty" rather than a wrong answer. The CORE is not restricted
+— `pre` is a field — so lifting this is an elaborator change alone.
+
+### Where this leaves the "free Option monad" framing
+
+The user's reading — operations before the `fail` run normally, operations after
+it are inside the monad and need not be resolved — is exactly what `handle_abort`
+does, and the sum-typed reading of it is the COMPILED form rather than the core
+semantics: a backend may turn `TTry` into a `TDispatch` on an `option`-shaped
+sum by CPS-ing the body at each `fail` site. That is the same division D-69
+found for E3, where the zero-cost claim turned out to be a backend peephole on a
+recognisable shape rather than a theorem about `specialize`.

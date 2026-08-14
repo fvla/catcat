@@ -158,3 +158,39 @@ program that duplicates a string, whereas the reverse breaks nothing.
 *Cost of leaving open:* a performance model nobody can state for the one type
 every program touches.
 *Closes when:* there is an allocator, or `Box`/`Rc` get surface construction.
+
+**Q-16. `handle E { }` discharges `E` from the row while the runtime forwards
+the operation outward.** `M06.infer`'s `THandle` rule removes `eff` from the
+body's row unconditionally, and `infer_impls` deliberately does not require
+every operation of `eff` to be implemented — an unimplemented one forwards to
+the next handler out (`M04.fwd_impl`, `R02.find_handler`). So
+
+    handle IO over ( ) init { } { } { "x" print }
+
+typechecks as pure and still prints, and `handle Fail over ( ) init { } { }
+{ fail }` types as pure and still escapes.
+*Found by:* D-71 — an aborting effect makes the discrepancy trivially reachable,
+where before it needed a handler that deliberately omitted an operation. The
+gap predates it; `M10`'s H1 already states the proviso in prose.
+*What closing it needs:* the rule has to remove `eff` only when every operation
+of `eff` is implemented, and to add `eff` back to the row otherwise (the
+forwarding case). That is a small change to `infer` and a real change to what
+typechecks — `unsafe { … }` and `handle Rec` rely on the effect having no
+operations, which stays fine, but a partial handler stops being pure.
+*Cost of leaving open:* a row can claim an effect is discharged when it is not,
+which is precisely what M09's S5 is supposed to rule out.
+
+**Q-17. Abort discards values without consulting their capabilities.** On a
+`fail` the machine cuts the stack back to what `KTry` saved (D-71), dropping the
+try block's inputs and everything it had built. Nothing checks that those values
+have `CDrop`, so an abort can silently discard a linear value.
+*Found by:* implementing `TTry` — the machine's restore is a list truncation and
+has no types to consult.
+*What a rule would need:* the try block's `pre` and `post` would have to be all
+`Drop`, checked in `M06`'s `TTry` rule. That is easy to state and probably too
+strong: the point of a linear value is often that the error path must release
+it, which wants the catch block to receive it rather than the machine to drop
+it. The right answer is likely the same one that gives `catch` an error value.
+*Cost of leaving open:* linearity is not yet enforced on the abort path, so a
+`Box` in flight when a `fail` fires leaks.
+*Closes when:* generics arrive and `catch` can take a typed payload.

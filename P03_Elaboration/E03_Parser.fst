@@ -213,6 +213,21 @@ let builtin_macros : list mprod = [
     mp_pre      = [MsBlock "b"];
     mp_branches = [];
     mp_body     = [StHandle "Unsafe" [] [] [] [StVar "b"]];
+    mp_builtin  = false };
+  /// `try { … } catch { … }` (D-71). Like `if`, it cannot be a user `macro`
+  /// declaration, because `StTry` has no surface spelling either — but unlike
+  /// `if` its template IS used, since the expansion is one term with two block
+  /// slots and needs no hand-written expander.
+  ///
+  /// NO TERMINATOR, and none is needed. `catch` is mandatory and the production
+  /// ends after its block, so there is no alternation point and no ε-branch —
+  /// the reason `if` needs `endif` (D-34) is that its `else` is optional, which
+  /// this has no analogue of. `try` and `catch` stay ordinary word names outside
+  /// this production.
+  { mp_name     = "try";
+    mp_pre      = [MsBlock "b"; MsKeyword "catch"; MsBlock "c"];
+    mp_branches = [];
+    mp_body     = [StTry [StVar "b"] [StVar "c"]];
     mp_builtin  = false }
 ]
 

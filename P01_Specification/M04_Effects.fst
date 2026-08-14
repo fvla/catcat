@@ -329,6 +329,38 @@ let rec handle (#env:sig_env) (#eff:eff_id) (#st:seg) (#a:seg)
                       handle h state' (k res))
     else Op op arg (on _ (fun res -> handle h state (k res)))
 
+/// Interpret away one ABORTING effect (D-71).
+///
+/// The second fold over `free`, and the whole of the difference from `handle`
+/// is the one clause that DROPS `k` instead of continuing into it. That is not
+/// continuation capture: `k` is not stored, not returned, not run twice, not
+/// run later. It is discarded, which is the one thing you can do with a
+/// continuation without having a way to name one — and it is why D-36 survives
+/// intact while exceptions become expressible.
+///
+/// `catch` is a whole computation rather than an `op_impl` because it produces
+/// the result of the HANDLED COMPUTATION, `a`, and not the operation's declared
+/// `op_post`. That difference is exactly why this could not be a `handler`: the
+/// record would need indexing by `a`, and `M10`'s identification of a handler
+/// with a class, an interface and a module would stop being true — a method
+/// table does not depend on the result type of its caller. See `M05.TTry`.
+///
+/// There is no state segment. A handler's state is what makes it an object
+/// (D-36); an aborting handler abandons its body, so there is nothing for it to
+/// have accumulated and nothing to hand back.
+///
+/// EVERY operation of `eff` aborts. `Fail` has one, but nothing here depends on
+/// that, so a `Break`/`Continue` pair is the same construction.
+let rec handle_abort (#env:sig_env) (#a:seg)
+                     (eff:eff_id) (catch:free env a) (m:free env a)
+  : Tot (free env a) (decreases m) =
+  match m with
+  | Pure v      -> Pure v
+  | Op op arg k ->
+    if eff_of env op = eff
+    then catch
+    else Op op arg (on _ (fun res -> handle_abort eff catch (k res)))
+
 /// The handler that changes nothing: no state, every implementation
 /// re-performing its own operation. M10's H3 is the statement that handling with
 /// it is the identity, which is the sanity check that the fold loses nothing --

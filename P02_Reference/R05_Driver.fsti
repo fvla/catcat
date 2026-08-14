@@ -117,6 +117,10 @@ val ex_handled   : term
 val ex_stateful  : term
 val ex_unhandled : term
 
+/// An abort and a non-abort through the same construct (D-71). The first `try`
+/// discards what its body built and runs `catch`; the second is transparent.
+val ex_try : term
+
 /// `List[i64]` built as `[7, 9]`, from the inside out via `PRoll`/`PBoxNew`.
 /// The recursive type this needs -- a sum variant referring to itself -- was
 /// inexpressible before pointer types; it is well-formed now only because the
