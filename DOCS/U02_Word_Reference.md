@@ -1,7 +1,8 @@
 # U02 — Word Reference
 
 Every word the language provides today. That is a short list: fifteen
-primitives, two constants, two IO operations, and three stack shuffles.
+primitives, two constants, two IO operations, one abort, and three stack
+shuffles.
 
 > **Current as of commit `ff76103`.**
 > Source of truth:
@@ -157,10 +158,10 @@ Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`
 the start of a declaration, and so are `effect`, `extern`, `macro` and
 `locate`. `then`,
 `else`, `endif`, `over`, `init`, `declare`, `alt` and `end` are likewise free —
-each is a keyword only inside the construct that introduces it. Four names are
-effectively taken — `if`, `unsafe`, `handle` and `with` — because they are
-dispatched on wherever a term may start: a definition of one is accepted but can
-never be called ([U01](U01_Grammar.md) §1). `recurse` is a fifth inside any
+each is a keyword only inside the construct that introduces it. Five names are
+effectively taken — `if`, `unsafe`, `try`, `handle` and `with` — because they
+are dispatched on wherever a term may start: a definition of one is accepted but
+can never be called ([U01](U01_Grammar.md) §1). `recurse` is a sixth inside any
 signed `define`, where it names the word being defined. **Declaring a macro adds a name to that
 list**, silently.
 

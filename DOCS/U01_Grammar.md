@@ -100,7 +100,7 @@ called.
 Nothing warns about any of this. **Every macro declared adds a word to that
 list**, which is the real cost of the macro system and is not diagnosed.
 
-`recurse` is a fifth taken name, by a different route: inside a `define` with a
+`recurse` is a sixth taken name, by a different route: inside a `define` with a
 written signature it is bound to the word being defined (§6), shadowing any
 other binding of that name for the length of the body.
 
