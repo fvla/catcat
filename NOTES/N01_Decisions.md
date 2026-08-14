@@ -1647,3 +1647,73 @@ E3 now carries three hypotheses — `dict_agrees` for typing, `dict_ordered` for
 completeness, `resolvable` for coverage — and each answers to something in the
 definition rather than to caution. `specialize_typed` remains assumed;
 `make admits` is down from five to four.
+
+---
+
+## D-75. One walk for a word, and the ambient Dictionary is its last frame.
+
+Q-18's second step. `R02.step` had two paths for `TWord`:
+
+    | Some (WDef body) -> SNext ({ code = KTerm body :: k; ... })   (* no walk *)
+    | Some (WOp e)     -> (match find_handler k e w with ...)       (* walks *)
+
+A `WDef` was spliced straight out of the runtime dictionary, so a handler frame
+could override an *operation* but never a *defined word*. That is the runtime
+half of `!Dict` which D-37 described and nothing implemented, and it was the
+duplication Q-18 named.
+
+**A `WDef` is now what the chain finds when it runs out.** A defined word is an
+operation of `Dict` at `SStatic` (D-63), so it takes `M04.eff_dict`, walks like
+anything else, and falls back to its stored body — which is `M04.fwd_impl`
+reaching the end of the chain, spelled in the machine. A `WPrim` is the one entry
+that still does not walk, and for a reason rather than by exception: a primitive
+performs nothing, calls nothing and alters no control flow (`M05.prim_op`), so
+there is no frame that could answer for it.
+
+The elaborator needed the same correction. `E04.elab_impls` read `n_op = None` as
+"a word, not an operation", contradicting the table D-63 built; it now defaults
+to `eff_dict`, and `E06.prelude_effs` names `Dict` so a program can write it.
+
+### What this buys, demonstrated
+
+    catcat> define greet ( -- str ) { "hello" }
+    catcat> define bye   ( -- str ) { "goodbye" }
+    catcat> define shout ( -- str ) { greet "!" cat }
+
+    catcat> with { greet bye } { shout }
+    ok  "hello!"
+    catcat> handle Dict over ( ) init { } { greet { bye } } { shout }
+    ok  "goodbye!"
+
+**That difference is D-37's two tiers, running.** Static `with` is
+`M05.subst_words` over the block's own term — the block is `TWord shout`, so
+there is no `TWord greet` in it to rewrite, and rebinding does not reach through
+a definition. The dynamic frame is consulted where `greet` actually runs, which
+is inside `shout`. Neither is a bug; they are the two answers to "when is this
+word's meaning supplied", and now both are available.
+
+A Dictionary handler may carry state, so it is a class instantiated over a word:
+
+    catcat> define twice ( -- str ) { greet greet cat }
+    catcat> handle Dict over ( i64 ) init { 0 } { greet { 1 + dup show swap } } { twice }
+    ok  "12" 2
+
+### The dynamic form is better specified than the static one
+
+`E04` enforces E7's hypothesis for `with` by CHECKING, at elaboration, that the
+two words have equal signatures — an ad-hoc test standing in for an unproved
+theorem. The dynamic form needs no such check: `M06.infer_impls` types the
+override at `st @ op_pre -- st @ op_post` against `op_of env.w_ops`, which is the
+word's own declared signature. Type-safe rebinding falls out of the handler rule
+that already existed.
+
+### What is not done, and the obstacle is concrete
+
+Q-18's third step was `with` as a derived form — `THandle eff_dict` discharged by
+`M11.specialize` — deleting `E04`'s bespoke substitution case. It is blocked on a
+module boundary rather than on design: `specialize` lives in M11, which opens M07,
+and P03 verifies against M01–M06 plus R0x. The fix is to move the pure-syntax
+half down — `inline_word` is already in M05 and `d_defs` is a plain association
+list, so a `resolve_defs : list (word_id & term) -> nat -> term -> term` in M05
+would let `E04` call it, with M10 and M11 wrapping it in `dict`. Worth doing, not
+done here.

@@ -144,7 +144,12 @@ let prelude_words : list nentry = [
 /// anyone declaring it.
 let prelude_effs : list (string & eff_id) =
   [("IO", eff_io); ("Unsafe", eff_unsafe); ("C", eff_c); ("Rec", eff_rec);
-   ("Fail", eff_fail)]
+   ("Fail", eff_fail);
+   /// NAMEABLE SO IT CAN BE HANDLED (D-75). `Dict` is otherwise invisible —
+   /// `M06.row_visible` drops its static entries when a row is rendered (D-37)
+   /// — but `handle Dict over ( ) init { } { foo { … } } { … }` needs the name,
+   /// and that block is what dynamic rebinding IS.
+   ("Dict", eff_dict_r)]
 
 /// EVERY WORD GETS AN OPERATION DECLARATION, not just the ones an `effect`
 /// declared (D-63). `M06.w_sig` reads a word's signature out of `w_ops`, so a

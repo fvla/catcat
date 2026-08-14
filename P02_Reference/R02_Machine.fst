@@ -313,9 +313,29 @@ let step (d:rdict) (s:mstate) : Tot sresult =
     | TWord w ->
       (match dict_lookup d w with
        | None -> SStuck "unbound word"
-       | Some (WDef body) -> SNext ({ code = KTerm body :: k; stk = s.stk })
-       | Some (WPrim p)   -> apply_prim p k s.stk
-       | Some (WOp e)     ->
+
+       (* A PRIMITIVE IS NOT AN OPERATION (`M05.prim_op`), so it is the one
+          entry that does not walk the chain: it performs nothing, calls
+          nothing, and alters no control flow, so there is no frame that could
+          answer for it and nothing to override. *)
+       | Some (WPrim p) -> apply_prim p k s.stk
+
+       (* ONE WALK, AND THE AMBIENT DICTIONARY IS ITS LAST FRAME (D-75).
+          `WDef` used to be spliced in from `d` without consulting the chain at
+          all, which meant a Dictionary frame could override an operation but
+          never a defined word -- the runtime half of `!Dict` that D-37
+          described and nothing implemented.
+
+          A `WDef` is now what the chain finds when it runs out: a defined word
+          is an operation of `Dict` at `SStatic` (D-63), so it takes `M04.eff_dict`,
+          walks like anything else, and falls back to its stored body. That is
+          `M04.fwd_impl` reaching the end of the chain, spelled in the machine,
+          and it is why `handle Dict over ( ) init { } { foo { … } } { … }`
+          now rebinds `foo` for the extent of a block. *)
+       | Some entry ->
+         let e = (match entry with
+                  | WOp e -> e
+                  | _     -> eff_dict) in
          (* Dictionary lookup at runtime: walk the handler chain outward.
             The implementation runs with the handler still installed, so
             operations it performs itself reach the same handler -- reentrant
@@ -340,10 +360,14 @@ let step (d:rdict) (s:mstate) : Tot sresult =
              them, which costs a walk and is not meant to. Skipping the work
              instead is a compiler's job, licensed by that lemma. *)
           | None ->
-            (match find_try k e with
-             | Some (catch, saved, k') ->
-               SNext ({ code = KTerm catch :: k'; stk = saved })
-             | None -> SEffect w s.stk k)
+            (match entry with
+             (* The chain ran out and the ambient Dictionary answers. *)
+             | WDef body -> SNext ({ code = KTerm body :: k; stk = s.stk })
+             | _ ->
+               (match find_try k e with
+                | Some (catch, saved, k') ->
+                  SNext ({ code = KTerm catch :: k'; stk = saved })
+                | None -> SEffect w s.stk k))
           | Some (_, None) ->
             (* The frame is mid-call. Serving a stale copy would silently fork
                the state, so this is reported instead. See the note in

@@ -566,23 +566,27 @@ and elab_impls (env:nenv) (base:nat) (eid:eff_id) (st:seg) (acc:list (op_id & te
     (match lookup_name env opname with
      | None -> Inl ("unknown operation: " ^ opname)
      | Some n ->
-       (match n.n_op with
-        | None -> Inl (opname ^ " is a word, not an operation; only an \
-                                 operation can be given an implementation")
-        | Some e' ->
-          if e' <> eid
-          then Inl (opname ^ " is not an operation of this effect")
-          else
-            let entry = anon_slots st @ anon_slots n.n_sig.pre in
-            let ex    = anon_slots st @ anon_slots n.n_sig.post in
-            (match elab_terms env [] base entry [] [] blk with
-             | Inl e -> Inl e
-             | Inr (sh2, ts, d1) ->
-               if sh2 <> ex
-               then Inl (opname ^ ": an implementation must leave the handler's \
-                                   state on top of the operation's results")
-               else elab_impls env (base + sterms_size blk) eid st
-                      ((n.n_id, seq_of ts) :: acc) (d1 @ dacc) r)))
+       /// EVERY WORD IS AN OPERATION OF `Dict` (D-63, D-75). `n_op` is `None`
+       /// for an ordinary definition, and that used to be read as "not an
+       /// operation at all" — which contradicted the table D-63 built, where a
+       /// `define` gets an `op_decl` under `eff_dict` exactly as a `declare`
+       /// gets one under its own effect. Defaulting it here is what lets
+       /// `handle Dict { foo { … } } { … }` rebind a word for the extent of a
+       /// block, which is the surface half of the runtime path `R02` now walks.
+       let e' = (match n.n_op with Some e -> e | None -> eff_dict_r) in
+       if e' <> eid
+       then Inl (opname ^ " is not an operation of this effect")
+       else
+         let entry = anon_slots st @ anon_slots n.n_sig.pre in
+         let ex    = anon_slots st @ anon_slots n.n_sig.post in
+         (match elab_terms env [] base entry [] [] blk with
+          | Inl e -> Inl e
+          | Inr (sh2, ts, d1) ->
+            if sh2 <> ex
+            then Inl (opname ^ ": an implementation must leave the handler's \
+                                state on top of the operation's results")
+            else elab_impls env (base + sterms_size blk) eid st
+                   ((n.n_id, seq_of ts) :: acc) (d1 @ dacc) r))
 
 /// Roll each surviving named slot to the top and pop it. Runs once, after the
 /// body, and is the counterpart to the pick-based read strategy above.
