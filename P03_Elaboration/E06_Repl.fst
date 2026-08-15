@@ -339,6 +339,48 @@ let self_nenv (s:session) (body:list sterm) (row:srow) : Tot nenv =
                     n_sig = row; n_op = None })
                  :: s.se_nenv.ne_words }
 
+
+/// Does `t` call a DEFINITION at or above `lim`? (D-81)
+///
+/// This is what `install_def` reads as "this word is recursive", and it is
+/// `M10.defs_bound` computed against the session's runtime dictionary rather
+/// than against a `M10.dict`. Only `WDef` entries count: a `case` site's
+/// operation, a declared effect's operation and a primitive are never inlined,
+/// so where they sit cannot threaten `resolve_defs`.
+///
+/// `lim` ITSELF COUNTS, and has to. The word being defined is not in `se_dict`
+/// yet — `install_def` is what puts it there — so `is_def` says no about the one
+/// id whose self-reference is the whole point of the test. `recurse` compiles to
+/// `TWord lim`, and that is the case that must not slip through.
+let is_def (d:rdict) (w:word_id) : Tot bool =
+  match dict_lookup d w with
+  | Some (WDef _) -> true
+  | _             -> false
+
+let rec calls_later_op (d:rdict) (lim:word_id) (ops:list op_id)
+  : Tot bool (decreases ops) =
+  match ops with
+  | []     -> false
+  | o :: r -> (o >= lim && (o = lim || is_def d o)) || calls_later_op d lim r
+
+let rec calls_later (d:rdict) (lim:word_id) (t:term)
+  : Tot bool (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TWord w            -> w >= lim && (w = lim || is_def d w)
+  | TSeq a b           -> calls_later d lim a || calls_later d lim b
+  | TDispatch ops _    -> calls_later_op d lim ops
+  | THandle _ _ i im b -> calls_later d lim i || calls_later_impls d lim im
+                          || calls_later d lim b
+  | TTry _ _ b c       -> calls_later d lim b || calls_later d lim c
+  | TSpecialize b      -> calls_later d lim b
+  | _                  -> false
+
+and calls_later_impls (d:rdict) (lim:word_id) (im:list (op_id & term))
+  : Tot bool (decreases %[impls_size im; 1]) =
+  match im with
+  | []          -> false
+  | (_, t) :: r -> calls_later d lim t || calls_later_impls d lim r
+
 (* --- discharging static Dictionary frames --------------------------------- *)
 
 /// The session's definitions as a table `M05.resolve_defs` can walk.
@@ -465,7 +507,7 @@ let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
         /// recursion would have to be. `mentions_word` needed a transitive
         /// call graph it did not have; this needs nothing, because the
         /// ordering is the invariant that graph would have established.
-        let is_rec = not (ordered_at id t) in
+        let is_rec = calls_later s.se_dict id t in
         let s' = { s with
           se_nenv = { s.se_nenv with
                         ne_words = ({ n_name = name; n_id = id;
@@ -513,29 +555,43 @@ let show_tparam_block (ps:list string) : Tot string =
 /// generic's name would shadow the template. `locate` prints it as `#id`, which
 /// is what an unnameable word should print.
 ///
-/// PROOF-OF-CONCEPT LIMIT, checked rather than assumed. The instance takes the
-/// call site's one-id budget, so it has no ids of its own to hand out — which
-/// means its body may contain neither a conditional nor another generic call,
-/// since each of those needs ids, and ids allocated from anywhere else would sit
-/// ABOVE the instance and break the Dictionary ordering (D-70). Both cases are
-/// exactly `ds` coming back non-empty, so one test catches them and the message
-/// says which limit was hit rather than reporting a mysterious `!Rec`.
+/// A CONDITIONAL IN A GENERIC BODY WORKS (D-81), and what unblocked it was not
+/// finding ids for it but noticing the ordering rule was stronger than anything
+/// needed it to be. An instance is named from the call site's one-id budget, so
+/// anything its body allocates necessarily sits ABOVE the instance — and that is
+/// only a problem for ids `M11.resolve_defs` would rewrite. A `case` site's
+/// operations are `WOp`, never inlined, so they may sit anywhere at all.
+/// `calls_later` is the test that says so, and the instance's own body budget is
+/// therefore taken from `se_next` like any other fresh allocation.
+///
+/// A NESTED GENERIC CALL still does not work, and now for a reason that is
+/// specific rather than incidental: an instance IS a `WDef`, so an inner one
+/// placed above an outer one is exactly the case the ordering forbids. Lifting
+/// it means installing instances innermost-first with ascending ids and
+/// rewriting the caller's `TWord`, which is a different change.
 let install_instance (s:session) (id:word_id) (gname:string) (su:tsub)
   : Tot (either string session) =
   match lookup_gen_in s.se_nenv.ne_gens gname with
   | None -> Inl ("internal error: no generic named " ^ gname)
   | Some g ->
-    (match elab_define s.se_nenv id (subst_ssig su g.g_sig)
-                       (subst_tys_list su g.g_body) with
+    let body = subst_tys_list su g.g_body in
+    (match elab_define s.se_nenv s.se_next (subst_ssig su g.g_sig) body with
      | Inl e -> Inl (gname ^ ", instantiated: " ^ e)
      | Inr (row, t, ds) ->
-       if not (Nil? ds)
-       then Inl (gname ^ ": a generic body may not contain a conditional or \
-                  another generic call yet")
-       else if not (ordered_at id t)
-       then Inl (gname ^ ": an instance may not call a word defined after it")
+       /// The instance's own `case` operations are registered here, exactly as a
+       /// definition's are, and `se_next` advances past the budget `elab_define`
+       /// reasoned with.
+       let s1 = { s with
+         se_wenv = { s.se_wenv with
+                     w_ops = add_case_ops s.se_wenv.w_ops ds };
+         se_dict = add_case_dict s.se_dict ds;
+         se_next = s.se_next + sterms_size body } in
+       if existsb GInst? ds
+       then Inl (gname ^ ": a generic body may not call another generic yet")
+       else if calls_later s1.se_dict id t
+       then Inl (gname ^ ": an instance may not call a definition made after it")
        else
-         (match infer s.se_wenv t with
+         (match infer s1.se_wenv t with
           | None -> Inl (gname ^ ", instantiated: the body does not typecheck \
                                   at these types")
           | Some (got, grow) ->
@@ -543,15 +599,15 @@ let install_instance (s:session) (id:word_id) (gname:string) (su:tsub)
             then Inl (gname ^ ", instantiated: declares " ^ render_row row
                       ^ " but its body has " ^ render_row got)
             else
-              Inr { s with
-                se_wenv = { w_effs = (id, row_visible grow) :: s.se_wenv.w_effs;
+              Inr { s1 with
+                se_wenv = { w_effs = (id, row_visible grow) :: s1.se_wenv.w_effs;
                             w_ops  = { se_ops =
                               (id, { od_eff   = eff_dict_r;
                                      od_stage = SStatic;
                                      od_sig   = { op_pre = row.pre;
                                                   op_post = row.post } })
-                              :: s.se_wenv.w_ops.se_ops } };
-                se_dict = dict_extend s.se_dict id (WDef t) }))
+                              :: s1.se_wenv.w_ops.se_ops } };
+                se_dict = dict_extend s1.se_dict id (WDef t) }))
 
 /// Fulfil every instantiation request a body produced, before the body itself
 /// is typechecked: `M06.infer` reads the instance's signature out of `w_ops`,

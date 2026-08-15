@@ -2071,3 +2071,72 @@ words is the likelier route to what recursive generics would be wanted for.
 has never been elaborated, and round-trips — including named parameters and the
 bare `!` of D-77. An instance has no name and appears in a caller as `#101`,
 which is the honest rendering of a word no program can write.
+
+---
+
+## D-81. The ordering rule was stronger than anything needed it to be.
+
+D-80 refused a conditional inside a generic body, and the reason given was that
+an instance is named from the call site's one-id budget and so has no ids of its
+own — anything its body allocates sits ABOVE it and breaks the Dictionary
+ordering (D-70). That was an accurate description of the check and a wrong
+description of the problem. **The check was over-strict.**
+
+### What `specialize` actually requires
+
+`M11.resolve_defs` rewrites a call only when `lookup_def` finds it. Completeness
+of one descending pass therefore needs: for every `(w, t)` in `d_defs`, every
+word in `t` **that `d_defs` also defines** is `< w`. A call to something the
+table does not define — a `case` site's operation, a declared effect's
+operation, a primitive — is never rewritten, so where it sits cannot threaten
+completeness, let alone termination, which is on fuel regardless (D-74).
+
+`M10.dict_ordered` said `M05.ordered_at w t`: EVERY call below `w`. It now says
+`defs_bound d.d_defs t <= w`, which is the condition above and nothing more.
+`M05.word_bound` stays as the syntactic over-approximation it always was.
+
+### What it cost
+
+Exactly the thing D-80 could not do. A `case` site's operations are `WOp`, so an
+instance's conditional may sit above the instance and nothing is wrong:
+
+    catcat> define pick0[#T] ( #T #T bool -- #T ) { if { } then { pop }
+                                                    else { swap pop } endif }
+    generic pick0[#T]
+    catcat> 1 2 true pick0
+    ok  1
+    catcat> "a" "b" true pick0
+    ok  "a"
+
+and a generic body may carry effects and abort through them:
+
+    catcat> define safe[#T] ( #T -- #T !Fail ) { 1 1 = if { } then { fail }
+                                                 else { } endif }
+    catcat> try { 9 safe } catch { 0 }
+    ok  0
+
+The instance's own body budget now comes from `se_next` like any other fresh
+allocation, and its `case` operations are registered exactly as a definition's
+are. Nothing else about instantiation changed.
+
+### The session-side test, and the one id it must special-case
+
+`E06.install_def` read `not (ordered_at id t)`; it now reads
+`calls_later s.se_dict id t`, which counts only `WDef` entries. **`id` itself
+counts too, and has to**: the word being defined is not in `se_dict` yet —
+`install_def` is what puts it there — so `is_def` says no about the one id whose
+self-reference is the whole point. `recurse` compiles to `TWord id`, and that is
+the case that must not slip through. Checked:
+
+    catcat> define fact ( i64 -- i64 ) { … recurse … }
+    error: fact declares no effects but its body has !Rec
+
+### What remains refused, now for a specific reason
+
+A generic body may still not call another generic. That is not an artefact of
+the old rule: **an instance IS a `WDef`**, so an inner instance placed above an
+outer one is precisely the case the ordering forbids. Lifting it means
+installing instances innermost-first with ascending ids and rewriting the
+caller's `TWord` — a different change, and one recursion would need too, which
+is why it is not being taken (the user's call: compile-time evaluation of pure
+words is the likelier route to what recursive generics would be wanted for).

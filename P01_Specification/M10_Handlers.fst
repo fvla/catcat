@@ -117,21 +117,63 @@ let rec lookup_stage_of (ss:list (eff_id & stage)) (e:eff_id)
   | []            -> None
   | (e', s) :: r  -> if e' = e then Some s else lookup_stage_of r e
 
-/// A dictionary is ORDERED when every definition calls only words defined
-/// before it (D-70).
+let rec defs_bound_ops (ds:list (word_id & term)) (ops:list op_id)
+  : Tot nat (decreases ops) =
+  match ops with
+  | []      -> 0
+  | o :: r  -> mx (if Some? (lookup_def ds o) then o + 1 else 0)
+                  (defs_bound_ops ds r)
+
+/// One past the highest word `t` calls THAT THIS TABLE DEFINES. A word with no
+/// entry in `ds` contributes nothing.
+///
+/// `M05.word_bound` is the same walk without the lookup, and the difference is
+/// the point (D-81). That one counts every call; this one counts only the calls
+/// `resolve_defs` will actually rewrite.
+let rec defs_bound (ds:list (word_id & term)) (t:term)
+  : Tot nat (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TWord w               -> if Some? (lookup_def ds w) then w + 1 else 0
+  | TSeq a b              -> mx (defs_bound ds a) (defs_bound ds b)
+  | TDispatch ops _       -> defs_bound_ops ds ops
+  | THandle _ _ i im b    -> mx (defs_bound ds i)
+                                (mx (defs_bound_impls ds im) (defs_bound ds b))
+  | TTry _ _ b c          -> mx (defs_bound ds b) (defs_bound ds c)
+  | TSpecialize b         -> defs_bound ds b
+  | _                     -> 0
+
+and defs_bound_impls (ds:list (word_id & term)) (im:list (op_id & term))
+  : Tot nat (decreases %[impls_size im; 1]) =
+  match im with
+  | []          -> 0
+  | (_, t) :: r -> mx (defs_bound ds t) (defs_bound_impls ds r)
+
+
+/// A dictionary is ORDERED when every definition calls only DEFINITIONS made
+/// before it (D-70, weakened by D-81).
 ///
 /// This is the well-foundedness `M11.specialize` runs on, and it is why that
 /// function can exist at all. Inlining is `M05.inline_word` over the whole term
-/// at once, so a pass that resolves every call to the HIGHEST word in `t` produces
-/// a term of strictly smaller `M05.word_bound` — each body substituted in is
-/// ordered strictly below the word it defines — and the recursion is on that
-/// measure. Nothing about the call graph has to be computed.
+/// at once, so a pass that resolves every call to the highest DEFINED word in
+/// `t` produces a term of strictly smaller `defs_bound` — each body substituted
+/// in is ordered strictly below the word it defines — and the recursion is on
+/// that measure. Nothing about the call graph has to be computed.
+///
+/// IT USED TO SAY `ordered_at w t`, i.e. every call, and that was stronger than
+/// anything needed it to be. `resolve_defs` rewrites only what `lookup_def`
+/// finds, so a call to something this table does not define — a `case` site's
+/// operation, a declared effect's operation, a primitive — can sit at any id at
+/// all without threatening completeness, let alone termination. The over-strict
+/// version cost real expressiveness: it is what made a conditional inside a
+/// generic body unrepresentable (D-80), because such a body calls the operations
+/// its dispatch selects and those necessarily sit above an instance that was
+/// named before its own contents existed.
 ///
 /// A word that would break the ordering is not banned; it is marked `!Rec` and
 /// left out of `d_defs`, so it is resolved at runtime by frame lookup instead
 /// (D-67, D-70). `resolvable` below is what then refuses to call it static.
 let dict_ordered (d:dict) : bool =
-  for_all (fun (w, t) -> ordered_at w t) d.d_defs
+  for_all (fun (e:word_id & term) -> defs_bound d.d_defs (snd e) <= fst e) d.d_defs
 
 /// A dictionary AGREES with an environment when every definition it carries has
 /// the signature the environment records for that word.
