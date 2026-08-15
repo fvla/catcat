@@ -2126,10 +2126,15 @@ are. Nothing else about instantiation changed.
 counts too, and has to**: the word being defined is not in `se_dict` yet —
 `install_def` is what puts it there — so `is_def` says no about the one id whose
 self-reference is the whole point. `recurse` compiles to `TWord id`, and that is
-the case that must not slip through. Checked:
+the case that must not slip through. Checked against the binary — with the row
+asserted empty, since a bare stack signature now INFERS it (D-77):
 
-    catcat> define fact ( i64 -- i64 ) { … recurse … }
+    catcat> define fact ( i64 -- i64 ! ) { … recurse … }
     error: fact declares no effects but its body has !Rec
+    catcat> define fact2 ( i64 -- i64 !Rec ) { … recurse … }
+    defined fact2 ( i64 -- i64 !Rec )
+    catcat> 5 fact2
+    ok  120
 
 ### What remains refused, now for a specific reason
 
