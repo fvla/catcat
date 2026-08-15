@@ -308,12 +308,6 @@ let rec needs_compiler (t:term)
   | TTry _ _ b c          -> needs_compiler b || needs_compiler c
   | _                   -> false
 
-and needs_compiler_list (ts:list term)
-  : Tot bool (decreases %[terms_size ts; 1]) =
-  match ts with
-  | []     -> false
-  | t :: r -> needs_compiler t || needs_compiler_list r
-
 and needs_compiler_impls (is:list (op_id & term))
   : Tot bool (decreases %[impls_size is; 1]) =
   match is with
@@ -352,12 +346,6 @@ let rec uses_unroll (t:term)
   | TTry _ _ b c          -> uses_unroll b || uses_unroll c
   | TSpecialize b         -> uses_unroll b
   | _                     -> false
-
-and uses_unroll_list (ts:list term)
-  : Tot bool (decreases %[terms_size ts; 1]) =
-  match ts with
-  | []     -> false
-  | t :: r -> uses_unroll t || uses_unroll_list r
 
 and uses_unroll_impls (is:list (op_id & term))
   : Tot bool (decreases %[impls_size is; 1]) =
@@ -411,12 +399,6 @@ let rec word_bound (t:term) : Tot nat (decreases %[(term_size t <: nat); 0]) =
   | TSpecialize b         -> word_bound b
   | _                     -> 0
 
-and word_bound_list (ts:list term)
-  : Tot nat (decreases %[terms_size ts; 1]) =
-  match ts with
-  | []     -> 0
-  | t :: r -> mx (word_bound t) (word_bound_list r)
-
 and word_bound_impls (is:list (op_id & term))
   : Tot nat (decreases %[impls_size is; 1]) =
   match is with
@@ -455,12 +437,6 @@ let rec inline_word (w:word_id) (body:term) (t:term)
   | TTry e p b c        -> TTry e p (inline_word w body b) (inline_word w body c)
   | TSpecialize b       -> TSpecialize (inline_word w body b)
   | _                   -> t
-
-and inline_word_list (w:word_id) (body:term) (ts:list term)
-  : Tot (list term) (decreases %[terms_size ts; 1]) =
-  match ts with
-  | []     -> []
-  | t :: r -> inline_word w body t :: inline_word_list w body r
 
 and inline_word_impls (w:word_id) (body:term) (im:list (op_id & term))
   : Tot (list (op_id & term)) (decreases %[impls_size im; 1]) =

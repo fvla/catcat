@@ -110,9 +110,9 @@ let lemma_unify_right (x y:seg)
 /// extend to. Extending each side by the other's leftover gives the same
 /// segment, which is the common instantiation of the two implicit rows.
 ///
-/// This is the fact `srow_join` below rests on, and it is worth proving rather
-/// than assuming: it is the precise sense in which `unify` succeeds only when
-/// the two shapes are compatible, as opposed to merely non-contradictory.
+/// It is worth proving rather than assuming: it is the precise sense in which
+/// `unify` succeeds only when the two shapes are compatible, as opposed to
+/// merely non-contradictory. `M06.lemma_impl_frame` is what consumes it.
 let rec lemma_unify_common (b c:seg)
   : Lemma (ensures (match unify b c with
                     | Some (br, cr) -> b @ cr == c @ br
@@ -214,74 +214,25 @@ let lemma_compose_assoc (f g h:srow)
          append_l_nil h.post)
 
 (* ------------------------------------------------------------------------ *)
-(* Joining: agreement between alternative branches                          *)
+(* Joining: removed (D-78)                                                  *)
 (* ------------------------------------------------------------------------ *)
 
-/// When do two ALTERNATIVE programs -- the branches of a `case` -- agree?
+/// `srow_join` lived here, with `lemma_srow_join_refl` and
+/// `lemma_srow_join_sym`: it computed the common instantiation of two branch
+/// signatures, which is what `M06.infer_branches` needed to type a `case`.
 ///
-/// Not when their signatures are equal. Each branch is row-polymorphic, so
-/// they agree when there is a common instantiation of the two rows. Framing
-/// each side by what the other had extra is exactly that instantiation:
+/// D-68 moved that job into the operations DECLARATIONS -- variant `i` declares
+/// `( variants[i] @ j.pre -- j.post )` and `M06.impl_frame` instantiates each
+/// branch to it -- and `infer_branches` was deleted with it. Nothing has called
+/// `srow_join` since, and nothing will: `E04` computes those declarations from
+/// its own shape model, where the branches have already been required to agree,
+/// so there are never two signatures in hand to join. Q-18 left it as "either
+/// the one caller it is waiting for, or dead spec surface"; it is the second.
 ///
-///   `then { }`      is  ( -- )
-///   `else { 1 - }`  is  ( i64 -- i64 )
-///
-/// The first touches nothing and the second consumes a slot from beneath, yet
-/// they leave the stack in the same state, so a `case` over them is well
-/// formed. Framing the first by `[i64]` makes both `( i64 -- i64 )`.
-///
-/// What is rejected is disagreement at the head -- one branch consuming a
-/// `bool` where the other consumes an `i64` -- because `unify` fails there.
-/// So the check is on the resulting stack state, which is the property that
-/// actually matters, rather than on how each branch happened to be written.
-///
-/// Note there are no type variables anywhere in this: joining is prefix
-/// matching, exactly like `compose`. D-31's claim that the language needs no
-/// unifier survives.
-let srow_join (s1 s2:srow) : Tot (option srow) =
-  match unify s1.pre s2.pre with
-  | None          -> None
-  | Some (r1, r2) ->
-    /// `r2` is what `s2` demanded beyond `s1`, so it is what `s1` must be
-    /// framed by, and symmetrically. `lemma_unify_common` says the two framed
-    /// `pre`s coincide; the test is whether the framed `post`s do too.
-    if s1.post @ r2 = s2.post @ r1
-    then Some ({ pre = s1.pre @ r2; post = s1.post @ r2 })
-    else None
-
-/// A branch always agrees with itself.
-let lemma_srow_join_refl (s:srow)
-  : Lemma (srow_join s s == Some s) =
-  lemma_unify_refl s.pre;
-  append_l_nil s.pre;
-  append_l_nil s.post
-
-/// Agreement does not depend on which branch was written first. This is what
-/// makes folding `srow_join` across a `case`'s branches a well-defined notion
-/// of "all these agree" rather than an artefact of the traversal order.
-let lemma_srow_join_sym (s1 s2:srow)
-  : Lemma (srow_join s1 s2 == srow_join s2 s1) =
-  lemma_unify_sym s1.pre s2.pre;
-  lemma_unify_common s1.pre s2.pre
-
-/// NOTHING CALLS `srow_join` SINCE D-68, and that should be resolved rather
-/// than left. The join moved into the operations' DECLARATIONS, and `E04`
-/// currently writes those at the full modelled shape either side — sound,
-/// because `M06.impl_frame` frames each branch back down, but deeper than
-/// necessary. `srow_join` is exactly the tool that would tighten them, so this
-/// is either the one caller it is waiting for or it is dead spec surface. See
-/// N02 Q-18.
-///
-/// OBLIGATION, stated rather than stubbed (see the note at the foot of
-/// `M07_Denotation.fst` for why a `Lemma True` placeholder is worse than an
-/// honest gap): the fold of `srow_join` over a branch list is associative, so
-/// the answer does not depend on the branch order. (It used to say
-/// `M06.infer_branches` computes it; that function was deleted by D-68.)
-/// Symmetry above is the two-branch case. The general statement needs the
-/// framed segments to compose, which is the same transport reasoning as
-/// `lemma_compose_assoc`, and is best discharged alongside it rather than
-/// separately.
-
+/// `lemma_unify_sym` survives in the unification section above and is now only
+/// STATED rather than used. That is deliberate and is not the same case: it is a
+/// law of `unify`, which is live, and M03's laws are this module's content in
+/// the way `compose_laws` and `frame_laws` are.
 (* ------------------------------------------------------------------------ *)
 (* Denotation of a signature                                                *)
 (* ------------------------------------------------------------------------ *)
