@@ -223,6 +223,17 @@ let rec resolve_effs (e:nenv) (ns:list string)
                    | Inl m   -> Inl m
                    | Inr is  -> Inr (i :: is)))
 
+/// The three modes, resolved (D-77). `None` in means `None` out — the signature
+/// named no effects, so there is nothing to resolve and nothing to check, and
+/// `install_def` infers the row.
+let resolve_effs_opt (e:nenv) (ns:option (list string))
+  : Tot (either string (option (list eff_id))) =
+  match ns with
+  | None    -> Inr None
+  | Some xs -> (match resolve_effs e xs with
+                | Inl m  -> Inl m
+                | Inr is -> Inr (Some is))
+
 let subset_effs (a b:list eff_id) : Tot bool = for_all (fun i -> mem i b) a
 
 
@@ -488,6 +499,15 @@ let rec install_ops (s:session) (eid:eff_id) (ds:list (string & ssig))
   match ds with
   | [] -> Inr s
   | (opname, sg) :: r ->
+    /// AN OPERATION'S EFFECT IS THE ENCLOSING `effect`, so writing one on a
+    /// `declare` says nothing and used to be dropped in silence (D-77). That is
+    /// the same defect `!Eff` had before it was resolved and checked, found the
+    /// same way — by asking what the new three-mode rule means here, and
+    /// discovering the region was never read at all.
+    if Some? sg.ss_eff
+    then Inl ("declare " ^ opname ^ ": an operation belongs to the effect that \
+               declares it, so its effects are not written")
+    else
     (match elab_sig sg with
      | Inl e -> Inl ("declare " ^ opname ^ ": " ^ e)
      | Inr row ->
@@ -548,7 +568,10 @@ let install_extern (s:session) (name:string) (sg:ssig)
     (match elab_sig sg with
      | Inl e -> (s, "error: extern " ^ name ^ ": " ^ e)
      | Inr row ->
-       if not (Nil? sg.ss_eff)
+       /// `Some []` — a bare `!` — is refused too, and deliberately: an
+       /// `extern` is never pure, so asserting emptiness is as wrong as naming
+       /// the wrong effect (D-77).
+       if Some? sg.ss_eff
        then (s, "error: extern " ^ name
                 ^ ": the effects are fixed at !C !Unsafe and are not written")
        else if not (c_marshalable_all row.pre && c_marshalable_all row.post)
@@ -648,7 +671,7 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
   /// already produced `row` at this point, which is what makes that possible:
   /// the signature is known before the body is read.
   | SdDefine name sg body ->
-    (match resolve_effs s.se_nenv sg.ss_eff with
+    (match resolve_effs_opt s.se_nenv sg.ss_eff with
      | Inl e -> DDone s ("error: " ^ e)
      | Inr es ->
        (match elab_sig sg with
@@ -658,7 +681,7 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
            | Inl e -> DDone s ("error: " ^ e)
            | Inr (row, t, ds) ->
              let (s2, m) = install_def (with_case_ops s ds body) (self_id s body) name
-                                       (Some row) (Some es) row t in
+                                       (Some row) es row t in
              DDone s2 m)))
 
   /// The inferred form prints the signature it worked out, which is the same

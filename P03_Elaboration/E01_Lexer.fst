@@ -137,10 +137,17 @@ let classify_run (cs:list C.char) : Tot (either string token) =
       (match rest with
        | [] -> Inl "bare '#' with no name"
        | _  -> Inr (TkHash (S.string_of_list rest)))
-    else if c = '!' then
-      (match rest with
-       | [] -> Inl "bare '!' with no name"
-       | _  -> Inr (TkBang (S.string_of_list rest)))
+    /// A BARE `!` IS A TOKEN, not an error (D-77). In a signature's output
+    /// region it asserts that the effect row is empty — the sigil present, its
+    /// name deliberately absent — which is what distinguishes "no effects" from
+    /// "effects not written". Anywhere else the parser rejects it, and that is
+    /// the right layer: the lexer has no way to know which region it is in, so
+    /// refusing here made a legitimate spelling unlexable to give one context a
+    /// better message.
+    ///
+    /// `$` and `#` keep their errors. Neither has a reading with an empty name:
+    /// a local and a type variable are both references BY name.
+    else if c = '!' then Inr (TkBang (S.string_of_list rest))
     else
       (match int_of_run cs with
        | Some n -> Inr (TkInt n)

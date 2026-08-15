@@ -246,7 +246,7 @@ implementation.
 a second token to disambiguate is rejected on these grounds, not debated on
 taste.
 
-**D-31. Signatures are inferred; writing one is an assertion.**
+**D-31. Signatures are inferred; writing one is an assertion.** — the surface rule is superseded by **D-77** (three modes, and a bare `!` for an asserted-empty row); the inference argument below stands, and D-77 extends it to generics.
 `define sq { dup * }` yields `( i64 -- i64 )`. `define sq ( i64 -- i64 ) { … }`
 still works and is checked against the body.
 *Why it is nearly free:* concatenative composition **is** signature composition
@@ -1796,3 +1796,102 @@ descending pass enough (D-70), and it is why `locate t2` still prints
 A `handle Dict` written by hand is left alone — it carries state or a real
 initialiser, or it is meant to be dynamic. Only the shape `with` emits is
 discharged, and `E06.discharge_dict` checks that shape rather than assuming it.
+
+---
+
+## D-77. Three modes of specification. And no, generics do not need a unifier.
+
+Supersedes the surface half of **D-31** and settles the question Q-18 raised
+about it. D-31's core claim survives; what it lacked was a way to write a stack
+signature without also enumerating every effect, and an answer to what generics
+do to "no unifier".
+
+### The three modes
+
+    define f { … }                      infer the stack effect and the row
+    define f ( i64 -- i64 ) { … }       assert the stack effect, infer the row
+    define f ( i64 -- i64 !IO ) { … }   assert both
+
+The middle one did not exist. Writing any signature meant `deceffs = Some []`,
+so a bare `( i64 -- i64 )` asserted purity whether or not the author meant it,
+and you could not write a stack signature without first knowing every effect the
+body could reach. The fix is that `E02.ssig.ss_eff` distinguishes ABSENT from
+EMPTY — `option (list string)` where it was `list string` — which is the whole
+of the change; `install_def` already took `deceffs : option (list eff_id)` and
+already did the right thing with `None`.
+
+It pays for itself immediately on recursion:
+
+    catcat> define fact2 ( i64 -- i64 ) { dup 0 = if { } then { pop 1 }
+                                          else { dup 1 - recurse * } endif }
+    defined fact2 ( i64 -- i64 !Rec )
+
+Before, writing the signature required knowing that `recurse` produces `!Rec`
+(D-67) — an implementation fact standing between the author and a stack
+annotation.
+
+### The purity marker is a bare `!`
+
+`( i64 -- i64 ! )` asserts the row is empty. The sigil present, its name
+deliberately absent: the effect region is written, and there is nothing in it.
+
+**`!Pure` was considered and is worse**, for the reason the request itself
+named. It sits exactly where effect names sit, so it would have to be a name
+that is not an effect — reserved against `effect Pure { … }`, exempt from the
+propagation every other entry in that position obeys, and a special case in the
+row machinery that exists to have no special cases. A bare `!` cannot be
+confused with an effect because every effect has a name, and `!!` was rejected
+for having no reading at all.
+
+`E01` now lexes a bare `!` instead of refusing it. That was the right layer to
+change: the lexer cannot know which region it is in, so rejecting there made a
+legitimate spelling unlexable in order to give one context a better message.
+`$` and `#` keep their errors, since a local and a type variable are both
+references BY name and neither has an empty-name reading.
+
+`! !IO` together is refused — an assertion of emptiness alongside a named effect
+is a contradiction, not a row.
+
+### Generics need no unifier, because generalisation is never inferred
+
+Q-18 flagged D-31's "no unifier, no occurs check, no union-find" as a conflict
+with generics. It is not one, and the reason is worth stating precisely because
+it also decides how generics get built.
+
+**A word is generic only if its written signature says so.** Mode 1 always
+yields a monomorphic signature; there is no generalisation step, so nothing ever
+has to compute a most-general type. Then:
+
+* At a CALL SITE, a generic word's variables are instantiated by matching its
+  declared pattern against the modelled stack. Matching, not unification: the
+  pattern has variables, the target does not.
+* Inside a generic BODY, the declared variables are **rigid** — skolems, not
+  solvable slots. A call to another generic word matches its flexible variables
+  against those rigid atoms.
+
+So every constraint has the form `flexible := rigid`, in both directions of
+nesting. A flat map solves it in one left-to-right pass: no occurs check,
+because the target never contains flexible variables; no union-find, because
+there are no flexible-flexible constraints; no constraint graph, because there
+is no generalisation to postpone one for. D-31's claim holds verbatim, and the
+`M03.unify` on segments stays what it is — prefix matching, unrelated to this.
+
+**The pass structure is untouched too.** D-31's two passes exist because mode 1
+must compute types before emitting terms; modes 2 and 3 hand the elaborator its
+inputs and skip pass 1 (`elab_define` vs `elab_define_infer`). Generics change
+neither, because a body being inferred is monomorphic, so pass 1 never sees a
+type variable. Generics add one thing: a matching step at call sites in pass 2.
+
+*What this costs.* `define pair { dup }` cannot yield `∀T. ( T -- T T )` — you
+write `define pair ( #T -- #T #T ) { dup }`. D-31 already accepted the analogous
+limit and called it correct; this is the same limit with the escape hatch made
+explicit rather than absent.
+
+### A silent drop, found by asking what the rule means elsewhere
+
+`declare op ( i64 -- i64 !IO )` inside an `effect` block parsed, ignored the
+effect region, and said nothing. An operation belongs to the effect that
+declares it, so writing one there is meaningless — but meaningless and silently
+discarded is exactly the defect `!Eff` had before D-66, and it is now an error.
+Found only by asking what "effects inferred" should mean for a `declare`, and
+discovering the region had never been read at all.

@@ -59,10 +59,33 @@ type sparam = {
 
 /// A surface signature, in SOURCE order: bottom of stack first, top on the
 /// right. `( i64 bool -- i64 )` has `bool` on top. E04 reverses this.
+/// THREE MODES OF SPECIFICATION (D-77), and `ss_eff` is what carries the
+/// difference between the last two:
+///
+///   `define f { … }`                 nothing written — infer both
+///   `define f ( i64 -- i64 ) { … }`  stack written, effects inferred
+///   `define f ( i64 -- i64 !IO ) { … }`   both written, both checked
+///
+/// So the effect list has to distinguish ABSENT from EMPTY, which a `list
+/// string` cannot: `[]` meant "no effects" and there was no way to say "not
+/// written". Writing a stack signature therefore forced you to enumerate every
+/// effect the body could reach, and a bare `( i64 -- i64 )` asserted purity
+/// whether or not you meant to.
+///
+///   `None`      no `!` appeared; infer the row and check nothing.
+///   `Some []`   a bare `!` appeared; the row is asserted EMPTY.
+///   `Some ns`   named effects; the row is asserted to be exactly those.
+///
+/// The bare `!` is the sigil with its name deliberately absent, which is the
+/// one spelling that cannot be confused with an effect — every effect has a
+/// name. `!Pure` would read better and would be worse: it sits where effect
+/// names sit, so it would have to be a name that is not an effect, reserved
+/// against `effect Pure { … }`, and exempt from the propagation every other
+/// entry in that position obeys.
 type ssig = {
   ss_in   : list sparam;
   ss_out  : list sty;
-  ss_eff  : list string;
+  ss_eff  : option (list string);
 }
 
 (* ------------------------------------------------------------------------ *)

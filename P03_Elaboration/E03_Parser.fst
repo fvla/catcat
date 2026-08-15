@@ -159,6 +159,17 @@ let rec parse_outputs (acc:list sty) (effs:list string) (ts:list token)
        then parse_outputs (t :: acc) effs after
        else PErr "signature made no progress")
 
+/// Turn the collected `!` markers into `E02.ssig`'s three-way answer (D-77).
+/// A bare `!` arrives as the empty name, which is where it stops: `ssig` says
+/// `Some []`, and no later pass has to know that `""` meant anything.
+let classify_effs (ns:list string) : Tot (either string (option (list string))) =
+  if Nil? ns then Inr None
+  else if mem "" ns
+  then (if length ns = 1 then Inr (Some [])
+        else Inl "'!' asserts that there are no effects, so it cannot be \
+                  written alongside a named one")
+  else Inr (Some ns)
+
 /// A whole `( … -- … )`, with the opening paren already consumed.
 let parse_sig_body (ts:list token)
   : Tot (r:presult ssig { POk? r ==> length (POk?._1 r) <= length ts }) =
@@ -168,7 +179,9 @@ let parse_sig_body (ts:list token)
     (match parse_outputs [] [] after with
      | PErr e -> PErr e
      | POk (outs, effs) tail ->
-       POk ({ ss_in = ins; ss_out = outs; ss_eff = effs }) tail)
+       (match classify_effs effs with
+        | Inl e     -> PErr e
+        | Inr effs' -> POk ({ ss_in = ins; ss_out = outs; ss_eff = effs' }) tail))
 
 (* ------------------------------------------------------------------------ *)
 (* The macro table                                                          *)
