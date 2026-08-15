@@ -868,8 +868,10 @@ unhandled: nosuchfn escaped with no handler in scope
 with { old new … } { body }
 ```
 
-Runs `body` with words rebound. **Static**: the rebinding is discharged during
-elaboration and leaves *nothing* in the compiled program.
+Runs `body` with words rebound. It is sugar for a `Dict` handler (§6):
+`with { a b } { … }` elaborates to `handle Dict over ( ) init { } { a { b } } { … }`
+and is then **discharged during elaboration**, so it leaves *nothing* in the
+compiled program.
 
 ```
 catcat> define noisy ( i64 -- i64 !IO ) { dup show print }
@@ -897,32 +899,43 @@ catcat> define bad2 { with { slow not } { 1 } }
 error: with: not cannot replace slow; their signatures differ
 ```
 
-**`with` does not reach through a definition**, and the dynamic form does. The
-rebinding rewrites the block's *own* terms, so a call made by a word the block
-calls is untouched:
+**`with` reaches through a definition**, because it *is* a `Dict` handler —
+elaborated to one, then discharged at elaboration time:
 
 ```
 catcat> define greet ( -- str ) { "hello" }
 catcat> define bye   ( -- str ) { "goodbye" }
 catcat> define shout ( -- str ) { greet "!" cat }
-catcat> with { greet bye } { shout }
-ok  "hello!"
+catcat> define w ( -- str ) { with { greet bye } { shout } }
+catcat> w
+ok  "goodbye!"
+catcat> locate w
+define w ( -- str ) {
+  bye "!" cat
+}
 ```
 
-The block is just `shout`, so there is no `greet` in it to rewrite. To rebind
-where the word actually *runs*, handle the `Dict` effect (§6):
+The `greet` being rebound is inside `shout`, not in the block, and the rebinding
+still finds it. The residual shows why: `shout` was inlined and the call
+rewritten, so nothing about the `with` survives.
+
+The same thing spelled dynamically gives the same answer (§6):
 
 ```
 catcat> handle Dict over ( ) init { } { greet { bye } } { shout }
 ok  "goodbye!"
 ```
 
-That is the same distinction the rest of §6 draws between a static and a dynamic
-effect, applied to the one effect every word carries. `with` is resolved at
-elaboration and costs nothing; `handle Dict` is a frame consulted at the call and
-costs a lookup. Both are type-checked — the dynamic form checks the override
-against the word's declared signature, using the ordinary handler rule rather
-than a special test.
+That is the point. `with` is resolved at elaboration and costs nothing;
+`handle Dict` is a frame consulted at the call and costs a lookup; **the result
+is the same**, because they are one construct resolved at two times. Both are
+type-checked by the ordinary handler rule, which types the replacement at the
+declared signature of the word it replaces.
+
+**How much gets inlined depends on definition order**, and only the residual's
+size depends on it, never the answer. The discharge pass walks the words once
+from newest to oldest, so a replacement defined *after* the word it replaces
+survives as a call while one defined *before* is inlined in turn.
 
 A `Dict` handler may carry state, so it is a class over a word:
 
