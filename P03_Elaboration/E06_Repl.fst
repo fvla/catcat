@@ -326,9 +326,80 @@ let self_nenv (s:session) (body:list sterm) (row:srow) : Tot nenv =
                     n_sig = row; n_op = None })
                  :: s.se_nenv.ne_words }
 
+(* --- discharging static Dictionary frames --------------------------------- *)
+
+/// The session's definitions as a table `M05.resolve_defs` can walk.
+///
+/// Only `WDef` entries: a `WPrim` has no body, and a `WOp` is resolved by a
+/// frame at runtime rather than by inlining. That is the same division
+/// `M10.dict.d_defs` describes, read off the runtime dictionary the session was
+/// already keeping.
+let rec session_defs (d:rdict) : Tot (list (word_id & term)) (decreases d) =
+  match d with
+  | []                  -> []
+  | (w, WDef t) :: r    -> (w, t) :: session_defs r
+  | _ :: r              -> session_defs r
+
+/// Discharge every STATIC Dictionary frame: `with` (D-76).
+///
+/// A `with` elaborates to `THandle eff_dict [] TNil impls body` and this
+/// resolves it away, so nothing about the rebinding survives into the installed
+/// term. That is `M11.specialize` restricted to one effect, and it is D-02's
+/// claim with a running witness rather than an analogy: the SAME `resolve_defs`
+/// serves here at elaboration time and `M11.specialize` at any other time.
+///
+/// THE IMPLEMENTATIONS SHADOW THE AMBIENT TABLE, which is what makes this a
+/// handler rather than a rename. `assoc` takes the first match, so `impls @
+/// defs` gives the frame priority — and because the pass inlines, the rebinding
+/// reaches a call the block makes INDIRECTLY. That is the behaviour change D-75
+/// exposed: the old `subst_words` could only rewrite calls the block itself
+/// wrote, so static and dynamic `with` disagreed.
+///
+/// HOW FAR IT INLINES IS DECIDED BY DEFINITION ORDER, and that is worth knowing
+/// rather than discovering. The pass descends through the ids once, so a
+/// replacement defined AFTER the word it replaces is reached before the
+/// substitution that introduces it and survives as a call; one defined before is
+/// inlined in turn. Both are correct — the difference is only how much code the
+/// residual carries — and it is the same property that makes one descending pass
+/// enough (D-70).
+///
+/// A `handle Dict` written by hand is left alone: it carries a state segment or
+/// a real initialiser, or it is meant to be dynamic. Only the shape `with`
+/// emits is discharged, and that shape is checked here rather than assumed.
+let rec discharge_dict (defs:list (word_id & term)) (n:nat) (t:term)
+  : Tot term (decreases %[(term_size t <: nat); 0]) =
+  match t with
+  | TSeq a b -> TSeq (discharge_dict defs n a) (discharge_dict defs n b)
+  | THandle e st i impls b ->
+    let b' = discharge_dict defs n b in
+    if e = eff_dict_r && Nil? st && TNil? i
+    then resolve_defs (impls @ defs) n b'
+    else THandle e st (discharge_dict defs n i)
+                 (discharge_dict_impls defs n impls) b'
+  | TTry e p b c -> TTry e p (discharge_dict defs n b) (discharge_dict defs n c)
+  | TSpecialize b -> TSpecialize (discharge_dict defs n b)
+  | _ -> t
+
+and discharge_dict_impls (defs:list (word_id & term)) (n:nat)
+                         (im:list (op_id & term))
+  : Tot (list (op_id & term)) (decreases %[impls_size im; 1]) =
+  match im with
+  | []          -> []
+  | (o, t) :: r -> (o, discharge_dict defs n t) :: discharge_dict_impls defs n r
+
+/// Every id the session has handed out bounds every word any term can call, so
+/// it is fuel enough for `resolve_defs` (D-70, D-74).
+let discharge (s:session) (t:term) : Tot term =
+  discharge_dict (session_defs s.se_dict) s.se_next t
+
 let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
                 (deceffs:option (list eff_id)) (row:srow) (t:term)
   : Tot (session & string) =
+  /// STATIC DICTIONARY FRAMES GO FIRST (D-76), before the term is typechecked
+  /// or stored, so what a definition carries is the residual and `locate` shows
+  /// what the program actually costs. The word being defined is not yet in
+  /// `se_dict`, so a `recurse` cannot be inlined by this.
+  let t = discharge s t in
   /// Checked against the self-extended environment when a signature was
   /// declared, so that a `recurse` the elaborator resolved has something to
   /// typecheck against. With no declared signature there is no self binding, and
@@ -654,6 +725,7 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
      | Inl e -> DDone s ("error: " ^ e)
      | Inr (t, ds) ->
        let s = with_case_ops s ds body in
+       let t = discharge s t in
        let env = s.se_wenv in
        (match infer env t with
         | None -> DDone s "error: expression does not typecheck"

@@ -270,12 +270,32 @@ let rec resolve_rebinds (env:nenv) (su:list (string & string))
      | None, _ -> Inl ("with: unknown word: " ^ a)
      | _, None -> Inl ("with: unknown word: " ^ b)
      | Some na, Some nb ->
-       if na.n_sig <> nb.n_sig
+       /// CHECKED HERE FOR THE MESSAGE, decided by `M06.infer_impls` (D-76).
+       /// A `with` is a Dictionary handler, so the replacement is an
+       /// implementation and M06 already types it at the operation's declared
+       /// signature — this test is redundant for soundness and kept because
+       /// "their signatures differ" locates the mistake, where the typing
+       /// failure surfaces as "this definition does not typecheck".
+       ///
+       /// It is deliberately the same test M06 makes rather than the stricter
+       /// equality it used to be: `impl_frame` accepts a replacement that
+       /// reaches less deep than the operation declares (D-68), and rejecting
+       /// one here would refuse a program the core accepts.
+       if None? (impl_frame nb.n_sig []
+                   ({ op_pre = na.n_sig.pre; op_post = na.n_sig.post }))
        then Inl ("with: " ^ b ^ " cannot replace " ^ a
                  ^ "; their signatures differ")
        else (match resolve_rebinds env r with
              | Inl e   -> Inl e
              | Inr ids -> Inr ((na.n_id, nb.n_id) :: ids)))
+
+/// The rebindings as handler implementations: replacing `a` by `b` is
+/// implementing the Dictionary operation `a` as a call to `b`.
+let rec rebind_impls (ids:list (word_id & word_id))
+  : Tot (list (op_id & term)) (decreases ids) =
+  match ids with
+  | []            -> []
+  | (a, b) :: r   -> (a, TWord b) :: rebind_impls r
 
 let elab_lit (n:int) : Tot (either string term) =
   if -(pow2 63) <= n && n < pow2 63
@@ -434,19 +454,29 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
              elab_terms env cs (base + sterm_size t) (anon_slots st @ shb)
                (THandle eid st it ims (seq_of bts) :: acc) (d1 @ d2 @ dacc) rest))
 
-     /// STATIC `with`: D-02's first running witness.
+     /// `with` IS A DICTIONARY HANDLER (D-76). It elaborates to
      ///
-     /// The body is elaborated normally — under the ORIGINAL names, so the
-     /// shape model is the one the reader wrote — and the rebinding is then
-     /// discharged by substituting word ids in the core term
-     /// (`M11.subst_words`). Nothing survives into the term, which is exactly
-     /// what M11's E3 says a fully static effect must cost, demonstrated
-     /// rather than assumed.
+     ///     THandle eff_dict [] TNil [(old, TWord new); …] body
      ///
-     /// The signature check is what licenses elaborating under the original
-     /// names: with equal signatures the substitution cannot change the shape,
-     /// so the model stays accurate. It is also the hypothesis of M11's E7,
-     /// enforced here because E7 is not yet proved.
+     /// and nothing else. `E06` then discharges that frame statically, which is
+     /// `M11.specialize` restricted to one effect — so `with` costs nothing at
+     /// runtime for the reason D04 gives rather than because the elaborator has
+     /// a rewrite rule for it.
+     ///
+     /// WHAT THIS REPLACED, and why it was wrong. The old case emitted
+     /// `subst_words ids body`: a rename of the calls the block writes. That is
+     /// NOT what handling the Dictionary effect means, and D-75 produced the
+     /// counterexample — `with { greet bye } { shout }` left `greet` alone
+     /// inside `shout`, while `handle Dict { greet { bye } } { shout }` rebound
+     /// it. Two spellings of one construct disagreeing on a result is precisely
+     /// what D-02 says cannot happen, so the substitution had to go.
+     ///
+     /// The body is still elaborated under the ORIGINAL names, which keeps the
+     /// shape model the one the reader wrote. What licenses that is no longer an
+     /// equality check here but `M06.infer_impls`, which types each replacement
+     /// at the operation's declared signature — the same rule every other
+     /// handler obeys, and weaker than equality in exactly the way `impl_frame`
+     /// is (D-68).
      | StWith su body ->
        (match resolve_rebinds env su with
         | Inl e -> Inl e
@@ -455,7 +485,9 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
            | Inl e -> Inl e
            | Inr (shb, bts, d1) ->
              elab_terms env cs (base + sterm_size t) shb
-               (subst_words ids (seq_of bts) :: acc) (d1 @ dacc) rest))
+               (THandle eff_dict_r [] TNil (rebind_impls ids) (seq_of bts)
+                :: acc)
+               (d1 @ dacc) rest))
 
      /// `try { … } catch { … }` (D-71).
      ///

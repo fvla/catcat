@@ -290,55 +290,6 @@ let rec seq_of (ts:list term) : Tot term =
   | []     -> TNil
   | t :: r -> TSeq t (seq_of r)
 
-(* ------------------------------------------------------------------------ *)
-(* Word rebinding                                                           *)
-(* ------------------------------------------------------------------------ *)
-
-/// Rewrite every `TWord w` for which `su` gives a replacement.
-///
-/// This is `M11.specialize` restricted to one kind of static effect, and the
-/// first piece of D-02 that runs: surface `with { old new } { body }` installs
-/// a Dictionary handler, the elaborator discharges it immediately, and the
-/// residual program is this substitution. Nothing about the rebinding survives.
-/// See M11's header for why that is the zero-cost theorem in miniature, and E7
-/// for what it preserves.
-///
-/// Defined here rather than in M11 because it needs no environment -- it is a
-/// rewrite of syntax, not a use of the typing judgment.
-let subst_word (su:list (word_id & word_id)) (w:word_id) : Tot word_id =
-  match assoc w su with
-  | Some w' -> w'
-  | None    -> w
-
-/// Measure as above: the rank orders `list(1) > term(0)`.
-let rec subst_words (su:list (word_id & word_id)) (t:term)
-  : Tot term (decreases %[(term_size t <: nat); 0]) =
-  match t with
-  | TWord w              -> TWord (subst_word su w)
-  | TSeq a b             -> TSeq (subst_words su a) (subst_words su b)
-  | TDispatch _ _        -> t
-  | THandle e st i im b  -> THandle e st (subst_words su i)
-                                    (subst_words_impls su im)
-                                    (subst_words su b)
-  | TTry e p b c         -> TTry e p (subst_words su b) (subst_words su c)
-  | TSpecialize b        -> TSpecialize (subst_words su b)
-  | _                    -> t
-
-and subst_words_list (su:list (word_id & word_id)) (ts:list term)
-  : Tot (list term) (decreases %[terms_size ts; 1]) =
-  match ts with
-  | []     -> []
-  | t :: r -> subst_words su t :: subst_words_list su r
-
-/// An implementation's KEY is not substituted, only its body. The key says
-/// which operation is being implemented; rebinding it would change which
-/// handler answers, rather than what that handler does.
-and subst_words_impls (su:list (word_id & word_id)) (im:list (op_id & term))
-  : Tot (list (op_id & term)) (decreases %[impls_size im; 1]) =
-  match im with
-  | []            -> []
-  | (o, t) :: r   -> (o, subst_words su t) :: subst_words_impls su r
-
 /// Whether a term mentions `TSpecialize` anywhere. The linker uses the
 /// analogous predicate over the whole dependency tree to decide how much of
 /// the compiler to embed in the output binary (D04): if this is false
@@ -479,11 +430,12 @@ let ordered_at (w:word_id) (t:term) : Tot bool = word_bound t <= w
 /// Replace every call to `w` by `body`. This is what `M11.specialize` does, and
 /// it is the reason `word_bound` is the measure it runs on.
 ///
-/// `subst_words` NEXT DOOR IS A DIFFERENT OPERATION. That one renames a call to
-/// another call, which cannot change how deep the term reaches; this one splices
-/// a whole body in, so it can. The two exist side by side because `with` is
-/// rebinding and `specialize` is resolving, and only the second needs a
-/// termination argument.
+/// IT REPLACED A RENAMER (D-76). `subst_words` used to sit here, rewriting a
+/// call to another call for `with`; it could not change how deep a term reaches
+/// and so needed no termination argument, and it could not reach a call made
+/// INDIRECTLY, which is what made static and dynamic rebinding disagree. Since
+/// `with` is a Dictionary handler discharged by inlining, nothing renames any
+/// more and there is one operation where there were two.
 ///
 /// `TDispatch` IS DELIBERATELY UNTOUCHED, and the same reason applies to a
 /// `THandle`'s implementation keys. A dispatch target is selected by a runtime
@@ -515,3 +467,39 @@ and inline_word_impls (w:word_id) (body:term) (im:list (op_id & term))
   match im with
   | []          -> []
   | (o, t) :: r -> (o, inline_word w body t) :: inline_word_impls w body r
+
+/// One downward pass over the id space: resolve word `n-1`, then `n-2`, and so
+/// on to 0. `M11.specialize` is this at `n = word_bound t`.
+///
+/// THE ORDERING IS THE ALGORITHM (D-70). A word calls only words defined before
+/// it, so a body spliced in at step `w` mentions only words `< w` -- every one of
+/// which a later step still has to visit. Descending is therefore enough; no
+/// worklist, no fixpoint, and no check that the substitution settled.
+///
+/// TERMINATION IS ON THE FUEL, NOT ON THE TERM, and that is a choice worth
+/// naming. Recursing on `word_bound` of the residual would be tighter and would
+/// need a lemma -- that inlining the highest word strictly lowers the bound --
+/// which is true only when `M10.dict_ordered`. Counting down instead makes the
+/// function total for ANY table, and turns a disordered one from a divergence
+/// into an incompleteness: inlining a self-referential body at step `w` leaves
+/// the inner `TWord w` behind, because the pass has gone past `w` and never
+/// returns. A specializer that quietly leaves a call still produces a residual
+/// that runs; one that loops does not.
+///
+/// The cost is a pass per id rather than per call. This is a specification; an
+/// implementation walks the term once with the table in hand, and agreeing with
+/// this is its obligation.
+///
+/// IT LIVES HERE RATHER THAN IN M11 (D-76) because it is a rewrite of syntax,
+/// needing neither the typing judgment nor a denotation. Keeping it in M11 put it behind M07, and P03 verifies against
+/// M01-M06 -- so the elaborator could not discharge a static Dictionary frame
+/// without dragging the denotation into its dependency set.
+let rec resolve_defs (defs:list (word_id & term)) (n:nat) (t:term)
+  : Tot term (decreases n) =
+  if n = 0 then t
+  else
+    let w : word_id = n - 1 in
+    let t' = (match assoc w defs with
+              | None      -> t
+              | Some body -> inline_word w body t) in
+    resolve_defs defs (n - 1) t'

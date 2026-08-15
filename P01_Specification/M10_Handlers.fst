@@ -121,8 +121,8 @@ let rec lookup_stage_of (ss:list (eff_id & stage)) (e:eff_id)
 /// before it (D-70).
 ///
 /// This is the well-foundedness `M11.specialize` runs on, and it is why that
-/// function can exist at all. Inlining is `subst_words` over the whole term at
-/// once, so a pass that resolves every call to the HIGHEST word in `t` produces
+/// function can exist at all. Inlining is `M05.inline_word` over the whole term
+/// at once, so a pass that resolves every call to the HIGHEST word in `t` produces
 /// a term of strictly smaller `M05.word_bound` — each body substituted in is
 /// ordered strictly below the word it defines — and the recursion is on that
 /// measure. Nothing about the call graph has to be computed.
@@ -151,7 +151,8 @@ let dict_ordered (d:dict) : bool =
 /// The ROW is not required to agree, and must not be: inlining a body brings its
 /// effects with it, which is exactly what makes a static Dictionary word cost
 /// nothing at runtime. Only the stack signature is invariant. That asymmetry is
-/// the same one E7 records for `subst_words`.
+/// the same asymmetry a Dictionary frame has: an override may perform effects
+/// the word it replaces did not, which is the whole reason to install one.
 let rec defs_agree (env:wenv) (ds:list (word_id & term)) : Tot bool (decreases ds) =
   match ds with
   | []           -> true

@@ -43,35 +43,13 @@ open M10_Handlers
 (* Specialization                                                           *)
 (* ------------------------------------------------------------------------ *)
 
-/// One downward pass over the id space: resolve word `n-1`, then `n-2`, and so
-/// on to 0.
-///
-/// THE ORDERING IS THE ALGORITHM (D-70). A word calls only words defined before
-/// it, so a body spliced in at step `w` mentions only words `< w` — every one of
-/// which a later step still has to visit. Descending is therefore enough; no
-/// worklist, no fixpoint, and no check that the substitution settled.
-///
-/// TERMINATION IS ON THE FUEL, NOT ON THE TERM, and that is a choice worth
-/// naming. Recursing on `M05.word_bound` of the residual would be tighter and
-/// would need a lemma — that inlining the highest word strictly lowers the
-/// bound — which is true only when `dict_ordered d`. Counting down instead makes
-/// the function total for ANY dictionary, and turns a disordered one from a
-/// divergence into an incompleteness: inlining a self-referential body at step
-/// `w` leaves the inner `TWord w` behind, because the pass has already gone past
-/// `w` and never returns. A specializer that quietly leaves a call is a residual
-/// that still runs; one that loops is not.
-///
-/// The cost is a pass per id rather than per call. This is a specification: the
-/// implementation walks the term once with the table in hand, and agreeing with
-/// this is its obligation.
-let rec resolve_below (d:dict) (n:nat) (t:term) : Tot term (decreases n) =
-  if n = 0 then t
-  else
-    let w : word_id = n - 1 in
-    let t' = (match lookup_def d.d_defs w with
-              | None      -> t
-              | Some body -> inline_word w body t) in
-    resolve_below d (n - 1) t'
+/// The pass is `M05.resolve_defs` (D-76), which needs neither a `dict` nor the
+/// typing judgment — a table of bodies is an association list. This wrapper is
+/// what makes it a DICTIONARY operation, and the move is what lets `E04`
+/// discharge a static Dictionary frame without the denotation in its dependency
+/// set. The argument for why one descending pass suffices is at `resolve_defs`.
+let resolve_below (d:dict) (n:nat) (t:term) : Tot term =
+  resolve_defs d.d_defs n t
 
 /// Resolve every statically-staged effect of `t` against `d`, producing a
 /// residual program.
@@ -113,13 +91,13 @@ let specialize (env:wenv) (d:dict) (t:term { well_typed env t }) : Tot term =
 /// A dictionary with nothing in it changes nothing. The sanity check that the
 /// pass is doing lookup rather than rewriting, and the one property of
 /// `resolve_below` that needs no ordering hypothesis.
-let rec lemma_resolve_below_empty (d:dict { Nil? d.d_defs }) (n:nat) (t:term)
-  : Lemma (ensures resolve_below d n t == t) (decreases n) =
-  if n = 0 then () else lemma_resolve_below_empty d (n - 1) t
+let rec lemma_resolve_defs_empty (n:nat) (t:term)
+  : Lemma (ensures resolve_defs [] n t == t) (decreases n) =
+  if n = 0 then () else lemma_resolve_defs_empty (n - 1) t
 
 let lemma_specialize_empty (env:wenv) (t:term { well_typed env t })
   : Lemma (specialize env empty_dict t == t) =
-  lemma_resolve_below_empty empty_dict (word_bound t) t
+  lemma_resolve_defs_empty (word_bound t) t
 
 (* --- non-vacuity: the pass computes --------------------------------------- *)
 
@@ -184,9 +162,8 @@ let lemma_specialize_unordered_leaves_a_call ()
 /// as `w_sig env w`, by a body of that same signature, so `M06.compose` sees the
 /// same operands at every enclosing `TSeq`. The `THandle` case additionally
 /// needs `op_of env.w_ops` unchanged, which holds because `inline_word_impls`
-/// does not rewrite an implementation's key — the same fact E7 relies on for
-/// `subst_words`. Nothing here is deep; it is a mutual induction over `infer`
-/// that has not been written.
+/// does not rewrite an implementation's key. Nothing here is deep; it is a
+/// mutual induction over `infer` that has not been written.
 assume val specialize_typed (env:wenv) (d:dict) (t:term { well_typed env t })
   : Lemma (requires dict_agrees env d)
           (ensures  well_typed env (specialize env d t))
@@ -195,23 +172,28 @@ assume val specialize_typed (env:wenv) (d:dict) (t:term { well_typed env t })
 (* Word rebinding: specialization in its first useful form                  *)
 (* ------------------------------------------------------------------------ *)
 
-/// `M05.subst_words` IS `specialize` RESTRICTED TO ONE KIND OF STATIC EFFECT,
-/// and it is the first piece of D-02 that actually runs.
+/// `with` IS `specialize` RESTRICTED TO ONE EFFECT, and it is the first piece
+/// of D-02 that actually runs. `E04` elaborates `with { old new } { body }` to
+/// `THandle eff_dict [] TNil [(old, TWord new)] body`, and `E06.discharge`
+/// resolves that frame away with the SAME `M05.resolve_defs` this module's
+/// `specialize` calls. One function, two call sites, which is the claim.
 ///
-/// Resolving a word against a dictionary frame is a static effect being
-/// discharged (D-37): the surface `with { old new } { body }` installs a
-/// Dictionary handler, the elaborator discharges it immediately, and the
-/// residual program is that substitution. Nothing about the rebinding survives
-/// into the term, which is exactly what E3 below says a fully static effect
-/// must cost -- demonstrated rather than assumed.
+/// THIS SECTION USED TO SAY `M05.subst_words` WAS THAT RESTRICTION, AND IT WAS
+/// WRONG (D-76). A rename rewrites the calls the block itself writes; handling
+/// the Dictionary effect reaches a call the block makes INDIRECTLY, because the
+/// frame stays installed while the callee runs. D-75 produced the
+/// counterexample the moment the runtime path existed:
 ///
-/// It lives in M05 rather than here because it needs no environment: it is a
-/// rewrite of syntax, not a use of the typing judgment. That also keeps it
-/// inside the modules P03 extracts, which the general `specialize` is not.
+///     with { greet bye } { shout }                        -- gave "hello!"
+///     handle Dict … { greet { bye } } { shout }           -- gave "goodbye!"
 ///
-/// The general `specialize` will subsume it by inlining the replacement as
-/// well; keeping it separate now means the substitution is DEFINED and runs,
-/// where `specialize` is still `assume val`. E7 below states what it preserves.
+/// Two spellings of one construct disagreeing on a result is exactly what D-02
+/// says cannot happen, so the substitution is gone and `with` is the handler.
+/// Both now give "goodbye!", and `locate` shows the residual — `bye "!" cat`,
+/// with `shout` inlined and nothing of the rebinding left.
+///
+/// The claim was not merely unproved; it was false, and it survived because
+/// nothing could compare the two until the dynamic side ran.
 
 (* ------------------------------------------------------------------------ *)
 (* The reflective tower                                                     *)
@@ -391,28 +373,24 @@ let e3_type : Type =
 ///     specialize. Discharging it needs the reachability closure over
 ///     `env.w_effs`, which the specification does not yet have.
 ///
-/// E7  REBINDING PRESERVES SIGNATURES.
-///     If every pair `(w, w')` in `su` satisfies `w_sig env w == w_sig env w'`,
-///     then for every `t`,
+/// E7  REBINDING PRESERVES SIGNATURES -- WITHDRAWN (D-76), because the
+///     function it was about is gone.
 ///
-///         fst_of (infer env (subst_words su t))  ==  fst_of (infer env t)
+///     It said: if every pair in `su` has `w_sig env w == w_sig env w'`, then
+///     `subst_words su` preserves inferred signatures. `subst_words` was
+///     deleted when `with` became a Dictionary handler, and nothing renames a
+///     word any more.
 ///
-///     and in particular `well_typed env t ==> well_typed env (subst_words su t)`.
-///     The effect ROW may legitimately differ: a replacement is allowed to
-///     perform effects the original did not, which is the whole reason to
-///     rebind a word.
-///
-///     STATED IN PROSE RATHER THAN AS A LEMMA, because a stub proving nothing
-///     would be worse than an honest gap. Discharging it is a mutual induction
-///     over `infer` / `infer_branches` / `infer_impls`: every case but `TWord`
-///     is structural and immediate, `TWord` is the hypothesis, and `THandle`
-///     needs additionally that `op_of env.w_ops` is unchanged -- which holds
-///     because `subst_words_impls` deliberately does not substitute the key.
-///
-///     `E04_Elaborate` currently enforces the hypothesis by CHECKING, at the
-///     point a `with` is elaborated, that the two words have equal signatures.
-///     That check is what makes the unproved theorem safe to rely on today; it
-///     becomes redundant, not wrong, once E7 is discharged.
+///     Both halves are now someone else's. The hypothesis is `M10.dict_agrees`
+///     and the conclusion is E1, which says exactly this about `specialize` and
+///     therefore about `with` — including that the effect ROW may legitimately
+///     differ, since a replacement performing effects the original did not is
+///     the whole reason to install one. And the CHECK `E04` used to make, an
+///     equality test standing in for the unproved theorem, is now
+///     `M06.infer_impls` typing the replacement at the operation's declared
+///     signature: the ordinary handler rule, weaker than equality in the way
+///     `impl_frame` is (D-68), and kept in `E04` only to locate the mistake in
+///     a message.
 ///
 /// E6  TOWER COLLAPSE.
 ///     Specializing an interpreter for catcat, written in catcat, against a

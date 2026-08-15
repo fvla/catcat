@@ -1717,3 +1717,82 @@ half down — `inline_word` is already in M05 and `d_defs` is a plain associatio
 list, so a `resolve_defs : list (word_id & term) -> nat -> term -> term` in M05
 would let `E04` call it, with M10 and M11 wrapping it in `dict`. Worth doing, not
 done here.
+
+---
+
+## D-76. `with` is a Dictionary handler. `subst_words` was not `specialize`, and is gone.
+
+Q-18's third step. It was supposed to be a refactor and turned into a
+correction, because implementing the runtime path (D-75) produced a
+counterexample to a claim M11 had been making since it was written.
+
+### The claim that was false
+
+M11 said `M05.subst_words` IS `specialize` restricted to one kind of static
+effect. It is not. A rename rewrites the calls the block itself writes; handling
+the Dictionary effect reaches a call the block makes INDIRECTLY, because the
+frame stays installed while the callee runs. As soon as both sides ran:
+
+    with { greet bye } { shout }                    -- "hello!"
+    handle Dict … { greet { bye } } { shout }       -- "goodbye!"
+
+Two spellings of one construct disagreeing on a result is exactly what D-02 says
+cannot happen. The claim was not merely unproved; it was false, and it survived
+because until D-75 nothing could compare the two.
+
+### What replaced it
+
+`E04` elaborates `with { old new } { body }` to
+
+    THandle eff_dict [] TNil [(old, TWord new); …] body
+
+and nothing else — no rewrite rule in the elaborator at all. `E06.discharge`
+then resolves that frame away with `M05.resolve_defs`, the SAME function
+`M11.specialize` calls. One function, two call sites, which is the whole of
+D-02 stated as an arrangement of code rather than as an analogy.
+
+    catcat> define w ( -- str ) { with { g b } { s } }
+    catcat> w
+    ok  "bye!"
+    catcat> locate w
+    define w ( -- str ) {
+      b "!" cat
+    }
+
+Static and dynamic now agree, and the residual carries nothing of the rebinding
+— `s` is inlined, `g` is `b`, the frame is gone. Zero-cost demonstrated rather
+than asserted, and this time it is the same mechanism at both stages.
+
+### Three deletions, and the module boundary that forced one of them
+
+* **`M05.subst_words`, `subst_words_list`, `subst_words_impls` are deleted.**
+  Nothing renames a word any more; `inline_word` does strictly more. This is the
+  second piece of dead spec surface found this way, after `M03.srow_join`
+  (Q-18) — both times a construct moved on and left its helper behind.
+* **E7 is withdrawn**, since it was a theorem about `subst_words`. Both halves
+  have owners: the hypothesis is `M10.dict_agrees`, the conclusion is E1.
+* **`E04`'s signature-equality check is no longer load-bearing.** It stood in
+  for E7; `M06.infer_impls` now types each replacement at the operation's
+  declared signature. The check is kept ONLY to locate the mistake in a message,
+  and was relaxed from equality to `impl_frame` so it cannot reject a program
+  the core accepts.
+
+`M05.resolve_defs` had to move down from M11 for any of this to work. M11 opens
+M07, and P03 verifies against M01–M06, so an elaborator that discharged a
+Dictionary frame would have dragged the denotation into its dependency set. The
+pass needs neither a `dict` nor the judgment — a table of bodies is an
+association list — so it belongs in M05 beside `inline_word`, with M11's
+`resolve_below` a one-line wrapper.
+
+### How far it inlines is decided by definition order
+
+The pass descends the ids once, so a replacement defined AFTER the word it
+replaces is reached before the substitution that introduces it and survives as a
+call; one defined before is inlined in turn. Both are correct and differ only in
+how much code the residual carries. It is the same property that makes one
+descending pass enough (D-70), and it is why `locate t2` still prints
+`quiet quiet` for U01's transcript rather than the inlined body.
+
+A `handle Dict` written by hand is left alone — it carries state or a real
+initialiser, or it is meant to be dynamic. Only the shape `with` emits is
+discharged, and `E06.discharge_dict` checks that shape rather than assuming it.
