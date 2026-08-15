@@ -40,7 +40,7 @@ expression = term* ;
 
 signature  = input* "--" output* ;
 input      = "$" name ":" type | type ;
-output     = type | "!" name ;
+output     = type | "!" name | "!" ;          (* bare ! : no effects, §3 *)
 
 type       = "Box" "[" type "]"
            | "Rc"  "[" type "]"
@@ -153,6 +153,7 @@ which region of a signature it is in:
 | `$x` | local variable | works |
 | `#T` | parametric type | parses, rejected by the elaborator |
 | `!Eff` | effect | works — resolved and checked (§6) |
+| `!` | asserted-empty effect row | works (§3) |
 
 **Integers** are an optional `-` followed by at least one digit. The digit
 requirement is what lets `-` be a word:
@@ -220,10 +221,45 @@ must be `Drop`. A linear local left unconsumed is a type error, not a leak.
 **A read inside a conditional branch always counts as repeated** (§4), whatever
 the actual number.
 
-### The signature is optional
+### Three modes of specification
 
-`define sq { dup * }` infers `( i64 -- i64 )`. Writing a signature is an
-assertion, checked against the body.
+Everything about a signature is optional, and the effects are optional
+*separately* from the stack effect:
+
+| written | stack effect | effects |
+|---|---|---|
+| `define f { … }` | inferred | inferred |
+| `define f ( i64 -- i64 ) { … }` | asserted | inferred |
+| `define f ( i64 -- i64 !IO ) { … }` | asserted | asserted |
+| `define f ( i64 -- i64 ! ) { … }` | asserted | asserted **empty** |
+
+```
+catcat> define b ( i64 -- i64 ) { dup show print dup * }
+defined b ( i64 -- i64 !IO )
+catcat> define c ( i64 -- i64 ! ) { dup show print dup * }
+error: c declares no effects but its body has !IO
+```
+
+`b` asserts what it consumes and produces and lets the row follow; the reported
+signature is the truth, so `!IO` shows up whether or not you wrote it. This is
+what lets you annotate a stack without first knowing every effect the body can
+reach — which matters most for recursion, where `!Rec` is an implementation fact
+rather than something the author chose:
+
+```
+catcat> define fact ( i64 -- i64 ) { dup 0 = if { } then { pop 1 }
+                                     else { dup 1 - recurse * } endif }
+defined fact ( i64 -- i64 !Rec )
+```
+
+**A bare `!` asserts there are no effects.** The sigil is written and its name
+is deliberately absent: the effect region is present and empty. Use it where
+purity is part of the contract and you want the compiler to hold you to it. It
+cannot be combined with a named effect — `( -- ! !IO )` is a contradiction, not
+a row — and it is not an effect called `Pure`, because an effect would propagate
+to every caller, which is the opposite of what this says.
+
+### What inference can and cannot do
 
 ```
 define sq   { dup * }        \ ( i64 -- i64 )
@@ -485,16 +521,30 @@ defined twice ( -- i64 !Counter )
 
 ### `!Eff` in a signature
 
-Effects propagate automatically and are **checked** against a written
-signature. An unwritten signature is not a claim of purity, so this only bites
-when you wrote one:
+Effects propagate automatically. Writing them is optional and independent of
+writing the stack effect (§3): a signature with no `!` at all infers the row,
+and a signature with any `!` asserts it exactly.
 
 ```
-catcat> define bad  ( -- i64 )          { tick }
-error: bad declares no effects but its body has !Counter
-catcat> define good ( -- i64 !Counter ) { tick }
+catcat> define quiet ( -- i64 )          { tick }
+defined quiet ( -- i64 !Counter )
+catcat> define good  ( -- i64 !Counter ) { tick }
 defined good ( -- i64 !Counter )
+catcat> define bad   ( -- i64 ! )        { tick }
+error: bad declares no effects but its body has !Counter
 ```
+
+**An operation's effects are not written.** A `declare` inside an `effect` block
+belongs to the effect declaring it, so writing anything in its effect region is
+refused rather than ignored:
+
+```
+catcat> effect E { declare op ( i64 -- i64 !IO ) }
+error: declare op: an operation belongs to the effect that declares it, so its
+effects are not written
+```
+
+`extern` is the same: its row is fixed at `!C !Unsafe`.
 
 ### Handling
 
