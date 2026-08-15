@@ -22,8 +22,9 @@ program    = decl* ;
 
 decl       = define | effect | extern | macro | locate | expression ;
 
-define     = "define" word "(" signature ")" "{" term* "}"
-           | "define" word                   "{" term* "}" ;   (* inferred *)
+define     = "define" word [ tparams ] "(" signature ")" "{" term* "}"
+           | "define" word                        "{" term* "}" ;  (* inferred *)
+tparams    = "[" ( "#" name )+ "]" ;                           (* see §3 *)
 
 effect     = "effect" word "{" declare* "}" ;                  (* see §6 *)
 declare    = "declare" word "(" signature ")" ;
@@ -151,7 +152,7 @@ which region of a signature it is in:
 | Sigil | Meaning | Status |
 |---|---|---|
 | `$x` | local variable | works |
-| `#T` | parametric type | parses, rejected by the elaborator |
+| `#T` | parametric type | works — declared in `[…]`, matched at the call (§3) |
 | `!Eff` | effect | works — resolved and checked (§6) |
 | `!` | asserted-empty effect row | works (§3) |
 
@@ -258,6 +259,60 @@ purity is part of the contract and you want the compiler to hold you to it. It
 cannot be combined with a named effect — `( -- ! !IO )` is a contradiction, not
 a row — and it is not an effect called `Pure`, because an effect would propagate
 to every caller, which is the opposite of what this says.
+
+### Generics
+
+```
+define name[#T #U] ( … ) { … }
+```
+
+Type parameters are declared in `[…]` and used as `#T` in the signature. A
+generic **must** write its signature: inference never generalises, so an
+unwritten one would have nothing to generalise from.
+
+```
+catcat> define twice[#T] ( #T -- #T #T ) { dup }
+generic twice[#T]
+catcat> 5 twice
+ok  5 5
+catcat> "hi" twice
+ok  5 5 "hi" "hi"
+catcat> define swap2[#A #B] ( #A #B -- #B #A ) { swap }
+catcat> 1 "x" swap2
+ok  "x" 1
+```
+
+**A generic is a template, and each call gets its own copy.** The types come
+from the stack at the call: `5 twice` matches `#T` against `i64` and builds a
+word that duplicates an `i64`. Nothing polymorphic reaches the compiled program.
+
+Because the copy is made at the call, **the body is checked there too** — so a
+generic is fine at every type that satisfies what it does, and fails at the ones
+that do not:
+
+```
+catcat> define boxy ( Box[i64] -- Box[i64] Box[i64] ) { twice }
+error: twice, instantiated: dup: this value's type is not Copy
+```
+
+That is linearity (§U02 §4) applying across generics with no extra rule.
+
+Every parameter must be pinned down by the **inputs**, since the outputs are
+what the call is trying to work out:
+
+```
+catcat> define bad[#T] ( -- #T ) { }
+catcat> 1 bad
+error: bad: #T is not determined by the inputs, so a call site cannot say what
+it should be
+```
+
+A `#T` in the signature that names no declared parameter is caught earlier, when
+the generic is declared.
+
+**Two things a generic body may not do yet**: contain a conditional, call
+another generic, or call itself. Each needs word ids an instance has no way to
+allocate; see §9.
 
 ### What inference can and cannot do
 
@@ -1034,7 +1089,8 @@ is otherwise invisible.
 |---|---|
 | mutual recursion | impossible without being marked, since the Dictionary is ordered and there are no forward references (§6) |
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
-| `#T` generics | parses, elaborator rejects |
+| generics: conditional or nested generic call in a generic body | refused (§3): an instance takes the call site's single word id, so it has none to allocate for a `case` or a nested instance. Sharing instances by (name, types) would lift it |
+| recursion in a generic | refused, deliberately: an instance is minted per call site, so a self-call would request itself forever |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
@@ -1053,7 +1109,7 @@ is otherwise invisible.
 | a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
 | a `try` block that reads the enclosing stack | the block runs on a fresh stack (§6); the core does not restrict this, the elaborator does |
 
-Six entries left this table recently and are worth naming, because a reader of
+Seven entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and
 silently dropped** — the misleading gap — and is now resolved and checked (§6).
 Effects and handlers used to be absent entirely. User-defined macros used to be
@@ -1063,7 +1119,8 @@ now impossible without being marked (§6). **Macro hygiene** used to be listed
 flatly as absent; it turned out to be a check rather than a renaming pass, for
 the reason §5 gives, and the entry above records only what is left of it. And
 **dynamic `with`** used to say there was no runtime dictionary lookup; there is,
-spelled `handle Dict` (§7).
+spelled `handle Dict` (§7). And **`#T` generics** used to parse and be rejected;
+they run (§3), with the two entries above recording what is left of them.
 
 **Handler state aliasing is checked at runtime**, not statically (§6). That is a
 gap in a different sense: the language is safe, but the check is dynamic where
