@@ -24,6 +24,7 @@ module E02_Ast
 ///   is part of the syntax tree.
 
 open FStar.List.Tot
+open M01_Kinds
 
 (* ------------------------------------------------------------------------ *)
 /// Surface types                                                           *)
@@ -39,11 +40,18 @@ type sty =
   /// `#T` — a parametric type variable. Parsed and rejected by E04 for now;
   /// present so generics do not require an AST change.
   | StyVar  : string -> sty
+  /// A type that is already elaborated (D-79). Never parsed: it exists so that
+  /// instantiating a generic is a SURFACE rewrite, `sty` for `sty`, with the
+  /// concrete type coming from a call site's stack model rather than from text.
+  /// Without it the substitution would have to be `string -> dtype` and every
+  /// type elaboration in the module would need it threaded through.
+  | StyFixed : dtype -> sty
 
 let rec sty_size (t:sty) : Tot pos =
   match t with
   | StyName _ -> 1
   | StyVar _  -> 1
+  | StyFixed _ -> 1
   | StyBox u  -> 1 + sty_size u
   | StyRc u   -> 1 + sty_size u
 
@@ -367,6 +375,84 @@ and subst_impls (caps:list mcap) (im:list (string & list sterm))
   match im with
   | []           -> []
   | (o, ts) :: r -> (o, subst_terms caps ts) :: subst_impls caps r
+
+(* ------------------------------------------------------------------------ *)
+(* Type substitution: instantiating a generic                               *)
+(* ------------------------------------------------------------------------ *)
+
+/// A generic's type parameters bound to concrete types (D-79).
+///
+/// INSTANTIATION IS A SURFACE REWRITE, `sty` for `sty`, and `StyFixed` is what
+/// makes that possible: the concrete type comes from a call site's stack model
+/// and so is already a `M01.dtype`, with no source text to put in its place.
+/// The alternative — a `string -> dtype` map consulted during elaboration —
+/// would have to be threaded through `elab_ty`, `elab_sig`, `elab_terms` and
+/// the whole mutual block beneath it, to reach the two places a body mentions a
+/// type at all.
+///
+/// Rewriting instead means an instance is elaborated by the EXISTING elaborator
+/// with nothing added: the generic's stored signature and body are copied with
+/// the variables replaced, and what comes out is an ordinary definition. That
+/// is also the precise sense in which generics are erased before the core sees
+/// anything (D-77): `M01.dtype` gains no variable case, because no variable
+/// ever reaches it.
+type tsub = list (string & sty)
+
+let rec subst_ty (su:tsub) (t:sty) : Tot sty (decreases (sty_size t)) =
+  match t with
+  | StyVar n  -> (match assoc n su with Some u -> u | None -> t)
+  | StyBox u  -> StyBox (subst_ty su u)
+  | StyRc u   -> StyRc (subst_ty su u)
+  | _         -> t
+
+let rec subst_stys (su:tsub) (ts:list sty) : Tot (list sty) (decreases ts) =
+  match ts with
+  | []     -> []
+  | t :: r -> subst_ty su t :: subst_stys su r
+
+let rec subst_params (su:tsub) (ps:list sparam)
+  : Tot (list sparam) (decreases ps) =
+  match ps with
+  | []     -> []
+  | p :: r -> ({ sp_name = p.sp_name; sp_ty = subst_ty su p.sp_ty })
+              :: subst_params su r
+
+let subst_ssig (su:tsub) (s:ssig) : Tot ssig =
+  { ss_in  = subst_params su s.ss_in;
+    ss_out = subst_stys su s.ss_out;
+    ss_eff = s.ss_eff }
+
+/// A body mentions a type in exactly one place — a handler's `over ( … )` — so
+/// this walk exists to reach that one field. Everything else is copied.
+let rec subst_tys (su:tsub) (t:sterm)
+  : Tot sterm (decreases %[(sterm_size t <: nat); 0]) =
+  match t with
+  | StBlock ts -> StBlock (subst_tys_list su ts)
+  | StCase bs  -> StCase (subst_tys_lists su bs)
+  | StHandle e tys i im b ->
+    StHandle e (subst_stys su tys) (subst_tys_list su i)
+             (subst_tys_impls su im) (subst_tys_list su b)
+  | StWith s b -> StWith s (subst_tys_list su b)
+  | StTry b c  -> StTry (subst_tys_list su b) (subst_tys_list su c)
+  | _          -> t
+
+and subst_tys_list (su:tsub) (ts:list sterm)
+  : Tot (list sterm) (decreases %[sterms_size ts; 1]) =
+  match ts with
+  | []     -> []
+  | t :: r -> subst_tys su t :: subst_tys_list su r
+
+and subst_tys_lists (su:tsub) (bs:list (list sterm))
+  : Tot (list (list sterm)) (decreases %[sterm_lists_size bs; 1]) =
+  match bs with
+  | []     -> []
+  | b :: r -> subst_tys_list su b :: subst_tys_lists su r
+
+and subst_tys_impls (su:tsub) (im:list (string & list sterm))
+  : Tot (list (string & list sterm)) (decreases %[simpls_size im; 1]) =
+  match im with
+  | []           -> []
+  | (o, ts) :: r -> (o, subst_tys_list su ts) :: subst_tys_impls su r
 
 (* ------------------------------------------------------------------------ *)
 (* Declarations                                                             *)

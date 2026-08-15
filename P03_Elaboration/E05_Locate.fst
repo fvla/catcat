@@ -365,6 +365,9 @@ let rec show_sty (t:sty) : Tot string (decreases (sty_size t)) =
   | StyVar n  -> "#" ^ n
   | StyBox u  -> "Box[" ^ show_sty u ^ "]"
   | StyRc u   -> "Rc[" ^ show_sty u ^ "]"
+  /// An instantiated parameter (D-79) prints as the type it was bound to, which
+  /// is what a reader wants: `locate` on an instance should show the instance.
+  | StyFixed d -> render_ty d
 
 let rec show_stys (ts:list sty) : Tot string (decreases ts) =
   match ts with

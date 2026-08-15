@@ -1895,3 +1895,84 @@ declares it, so writing one there is meaningless — but meaningless and silentl
 discarded is exactly the defect `!Eff` had before D-66, and it is now an error.
 Found only by asking what "effects inferred" should mean for a `declare`, and
 discovering the region had never been read at all.
+
+---
+
+## D-79. Generics erase at elaboration. The instantiation machinery, built; the wiring, not yet.
+
+D-77 settled the architecture — generalisation is never inferred, declared type
+variables are rigid in a body and flexible at a call site, so instantiation is
+MATCHING and needs no unifier. This turns that into code. **What is committed is
+the machinery, verified and complete in itself; the surface syntax and the
+instantiation pass are not wired, so generics are not yet usable from the REPL.**
+Saying so plainly is better than a half-connected feature that appears to work.
+
+### `M01.dtype` gains nothing, and that is the design
+
+A type variable never reaches the core. `sty` gains one case instead:
+
+    | StyFixed : dtype -> sty      -- a type that is already elaborated
+
+Never parsed. It exists so that **instantiating a generic is a surface rewrite,
+`sty` for `sty`**, with the concrete type coming from a call site's stack model
+rather than from source text. The alternative — a `string -> dtype` map consulted
+during elaboration — would have to be threaded through `elab_ty`, `elab_sig`,
+`elab_terms` and the whole mutual block beneath it, to reach the two places a
+body mentions a type at all.
+
+Rewriting instead means an instance is elaborated **by the existing elaborator
+with nothing added**: copy the generic's stored signature and body with the
+variables replaced, and what comes out is an ordinary definition. That is also
+the precise sense in which generics are erased before the core sees anything —
+`M01` needs no variable case because no variable ever gets there.
+
+### What is built
+
+* `E02.tsub`, `subst_ty`, `subst_stys`, `subst_params`, `subst_ssig`, and
+  `subst_tys` over `sterm`. The last exists to reach one field: a body mentions a
+  type only in a handler's `over ( … )`.
+* `E04.match_ty` / `match_tys` / `all_bound` — the call-site matcher.
+* `E04.elab_ty` handles `StyFixed`, and its `StyVar` error stopped being "not
+  supported yet": a variable that reaches elaboration was never bound, which
+  after D-79 means it names no parameter of its own signature.
+* `E05.show_sty` prints an instantiated parameter as the type it was bound to.
+
+`match_ty` is where D-77's claim becomes an artefact rather than an argument. The
+pattern is an `sty` and may hold variables; the target is a `dtype` from the
+stack model and never can. So every constraint is `flexible := rigid` — a flat
+map, no occurs check (nothing to occur in), no union-find (no flexible-flexible
+constraints), no constraint graph. `all_bound` refuses a parameter that appears
+only in the outputs: `( -- #T )` asks the call site to invent a type, and
+refusing it is what keeps instantiation a matching problem.
+
+### What remains, and the shape it should take
+
+1. **Parse `define f[#T #U] ( … ) { … }`.** `[` is self-delimiting, so
+   `f[#T` already lexes as three tokens and the three-way choice after a name
+   (`[`, `(`, `{`) is LL(1) on the token in hand — no lookahead problem.
+   `E02.sdecl` gains `SdDefineGen`.
+2. **A generic table**, in `nenv` and the session: name -> (params, ssig, body).
+   Nothing is elaborated at declaration; a generic is a template.
+3. **The call site.** `E04.elab_terms`' `StWord` case, when the name is generic:
+   match the declared inputs against the modelled shape, allocate an instance id
+   from the positional budget, emit `TWord id`, and record the request.
+4. **The request channel already exists.** `elab_terms` threads
+   `dacc : list (op_id & op_decl)` for `case` operations; widening that element
+   to a variant — a case operation OR an instantiation request — needs no new
+   parameter and no change to the plumbing through `elab_branches`,
+   `elab_impls` and `elab_handle_parts`. This is the observation that makes the
+   remaining work small.
+5. **`E06` fulfils requests**: substitute, elaborate, `install_def` at the given
+   id. An instance body may call another generic, so this iterates with fuel.
+
+### Two consequences to accept when it lands
+
+**A generic body is checked at instantiation, not at declaration** — C++
+templates, not ML. Checking at declaration would need rigid variables to be real
+`dtype`s, which is exactly the pollution `StyFixed` avoids. The trade is
+deliberate and the error messages will name the use site.
+
+**No recursion in a generic**, because an instance is created per call site and a
+self-call would request an instance of itself forever. `!Rec` marks recursion on
+a monomorphic word by keeping it out of `d_defs`; there is no analogue here until
+instances are shared by (name, substitution) rather than minted per site.

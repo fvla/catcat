@@ -109,7 +109,13 @@ let rec elab_ty (t:sty) : Tot (either string dtype) (decreases (sty_size t)) =
                   | None   -> Inl ("unknown type: " ^ n))
   | StyBox u  -> (match elab_ty u with Inl e -> Inl e | Inr d -> Inr (TBox d))
   | StyRc u   -> (match elab_ty u with Inl e -> Inl e | Inr d -> Inr (TRc d))
-  | StyVar n  -> Inl ("generic type #" ^ n ^ " is not supported yet")
+  /// A variable that survived to here was never bound by an instantiation
+  /// (D-79). Inside a generic's stored body that is impossible — `E06` rewrites
+  /// every parameter before elaborating — so this reports the one case that can
+  /// reach it: a `#T` written in a signature that declares no such parameter.
+  | StyVar n  -> Inl ("#" ^ n ^ " is not a type parameter of this definition")
+  /// Already elaborated: the type an instantiation substituted in.
+  | StyFixed d -> Inr d
 
 let rec elab_tys (ts:list sty) : Tot (either string (list dtype)) (decreases ts) =
   match ts with
@@ -124,6 +130,60 @@ let rec param_tys (ps:list sparam) : Tot (list sty) (decreases ps) =
   match ps with
   | []     -> []
   | p :: r -> p.sp_ty :: param_tys r
+
+(* ------------------------------------------------------------------------ *)
+(* Matching a generic's declared types against a call site                  *)
+(* ------------------------------------------------------------------------ *)
+
+/// Bind a generic's type parameters by matching its declared inputs against
+/// what is actually on the modelled stack (D-77, D-79).
+///
+/// MATCHING, NOT UNIFICATION, and the asymmetry is the whole reason the
+/// language needs no unifier. The pattern is a surface `sty` and may contain
+/// variables; the target is a `M01.dtype` from the stack model and never can.
+/// So every constraint is `flexible := rigid`: a flat map, no occurs check
+/// (the target holds no variables to occur in), no union-find (there are no
+/// flexible-flexible constraints), no constraint graph.
+///
+/// A variable already bound must match what it was bound to, which is what
+/// makes `( #T #T -- #T )` mean both inputs have the same type.
+let rec match_ty (su:tsub) (pat:sty) (d:dtype)
+  : Tot (option tsub) (decreases (sty_size pat)) =
+  match pat with
+  | StyVar n   -> (match assoc n su with
+                   | Some (StyFixed d') -> if d' = d then Some su else None
+                   | Some _             -> None
+                   | None               -> Some ((n, StyFixed d) :: su))
+  | StyFixed d' -> if d' = d then Some su else None
+  | StyName n  -> (match prim_of_name n, d with
+                   | Some p, TPrim q -> if p = q then Some su else None
+                   | _               -> None)
+  | StyBox u   -> (match d with
+                   | TBox d' -> match_ty su u d'
+                   | _       -> None)
+  | StyRc u    -> (match d with
+                   | TRc d'  -> match_ty su u d'
+                   | _       -> None)
+
+/// Left to right over the declared inputs, TOP FIRST — the caller reverses the
+/// surface list, since the stack model runs top-first and a signature does not.
+let rec match_tys (su:tsub) (pats:list sty) (ds:list dtype)
+  : Tot (option tsub) (decreases pats) =
+  match pats, ds with
+  | [], _            -> Some su
+  | p :: pr, d :: dr -> (match match_ty su p d with
+                         | None     -> None
+                         | Some su' -> match_tys su' pr dr)
+  | _, []            -> None
+
+/// Every parameter must be determined by the inputs. One that is not appears
+/// only in the outputs, which the call site cannot see — `( -- #T )` is a
+/// request to invent a type, and refusing it is what keeps instantiation a
+/// matching problem rather than an inference problem.
+let rec all_bound (su:tsub) (ps:list string) : Tot (option string) (decreases ps) =
+  match ps with
+  | []     -> None
+  | p :: r -> if None? (assoc p su) then Some p else all_bound su r
 
 (* ------------------------------------------------------------------------ *)
 (* Signatures                                                               *)
