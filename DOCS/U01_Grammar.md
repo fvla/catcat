@@ -310,9 +310,23 @@ it should be
 A `#T` in the signature that names no declared parameter is caught earlier, when
 the generic is declared.
 
-**Two things a generic body may not do yet**: contain a conditional, call
-another generic, or call itself. Each needs word ids an instance has no way to
-allocate; see §9.
+A generic body may contain a conditional, carry effects, and abort:
+
+```
+catcat> define pick0[#T] ( #T #T bool -- #T ) { if { } then { pop } else { swap pop } endif }
+catcat> 1 2 true pick0
+ok  1
+catcat> "a" "b" true pick0
+ok  "a"
+catcat> define safe[#T] ( #T -- #T !Fail ) { 1 1 = if { } then { fail } else { } endif }
+catcat> try { 9 safe } catch { 0 }
+ok  0
+```
+
+**What it may not do is call another generic, or call itself.** Each instance is
+a separate word created at the call, so an inner one would have to be numbered
+after the outer one that contains it, and a self-call would ask for an instance
+of itself forever. See §9.
 
 ### What inference can and cannot do
 
@@ -1089,7 +1103,7 @@ is otherwise invisible.
 |---|---|
 | mutual recursion | impossible without being marked, since the Dictionary is ordered and there are no forward references (§6) |
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
-| generics: conditional or nested generic call in a generic body | refused (§3): an instance takes the call site's single word id, so it has none to allocate for a `case` or a nested instance. Sharing instances by (name, types) would lift it |
+| a generic body calling another generic | refused (§3): an instance is an ordinary word, so an inner one would be numbered after the outer one containing it. Installing instances innermost-first and renumbering the call would lift it |
 | recursion in a generic | refused, deliberately: an instance is minted per call site, so a self-call would request itself forever |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
