@@ -417,6 +417,39 @@ let rec subst_params (su:tsub) (ps:list sparam)
   | p :: r -> ({ sp_name = p.sp_name; sp_ty = subst_ty su p.sp_ty })
               :: subst_params su r
 
+/// The first type variable in a signature that names no declared parameter
+/// (D-79). Checked when a generic is DECLARED: `#U` in `define f[#T] ( #U -- )`
+/// can never be bound, so a call site would fail with a message about a
+/// substitution rather than about the typo that caused it.
+let rec sty_stray (ps:list string) (t:sty)
+  : Tot (option string) (decreases (sty_size t)) =
+  match t with
+  | StyVar n -> if mem n ps then None else Some n
+  | StyBox u -> sty_stray ps u
+  | StyRc u  -> sty_stray ps u
+  | _        -> None
+
+let rec stys_stray (ps:list string) (ts:list sty)
+  : Tot (option string) (decreases ts) =
+  match ts with
+  | []     -> None
+  | t :: r -> (match sty_stray ps t with
+               | Some n -> Some n
+               | None   -> stys_stray ps r)
+
+let rec params_stray (ps:list string) (qs:list sparam)
+  : Tot (option string) (decreases qs) =
+  match qs with
+  | []     -> None
+  | q :: r -> (match sty_stray ps q.sp_ty with
+               | Some n -> Some n
+               | None   -> params_stray ps r)
+
+let ssig_stray (ps:list string) (s:ssig) : Tot (option string) =
+  match params_stray ps s.ss_in with
+  | Some n -> Some n
+  | None   -> stys_stray ps s.ss_out
+
 let subst_ssig (su:tsub) (s:ssig) : Tot ssig =
   { ss_in  = subst_params su s.ss_in;
     ss_out = subst_stys su s.ss_out;
@@ -461,6 +494,14 @@ and subst_tys_impls (su:tsub) (im:list (string & list sterm))
 type sdecl =
   /// `define name ( sig ) { body }`
   | SdDefine      : string -> ssig -> list sterm -> sdecl
+  /// `define name[#T #U] ( sig ) { body }` — a generic (D-79).
+  ///
+  /// The parameters are a separate field rather than being discovered in the
+  /// signature, because a `#T` that names no declared parameter is an error and
+  /// there has to be a list to check it against. A generic REQUIRES a written
+  /// signature: generalisation is never inferred (D-77), so there is nothing
+  /// for an unwritten one to generalise.
+  | SdDefineGen   : string -> list string -> ssig -> list sterm -> sdecl
   /// `define name { body }` — signature inferred from the body (D-31).
   | SdDefineInfer : string -> list sterm -> sdecl
   /// `effect E { declare op ( sig ) … }`.

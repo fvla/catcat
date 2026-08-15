@@ -1976,3 +1976,98 @@ deliberate and the error messages will name the use site.
 self-call would request an instance of itself forever. `!Rec` marks recursion on
 a monomorphic word by keeping it out of `d_defs`; there is no analogue here until
 instances are shared by (name, substitution) rather than minted per site.
+
+---
+
+## D-80. Generics run. `define f[#T] ( … ) { … }`, monomorphised at each call site.
+
+D-79 built the machinery; this wires it. Generics are usable from the REPL:
+
+    catcat> define twice[#T] ( #T -- #T #T ) { dup }
+    generic twice[#T]
+    catcat> 5 twice
+    ok  5 5
+    catcat> "hi" twice
+    ok  5 5 "hi" "hi"
+    catcat> define swap2[#A #B] ( #A #B -- #B #A ) { swap }
+    catcat> 1 "x" swap2
+    ok  "x" 1
+
+Three instances of `twice` exist after that transcript — at `i64`, `str` and
+`bool` — each an ordinary monomorphic word. D-77's architecture, running.
+
+### The four pieces, and the one that made it small
+
+1. **`E03` parses `[#T #U]`.** `[` is self-delimiting, so `f[#T` is already
+   three tokens and the choice between `[`, `(` and `{` after a name is made on
+   the token in hand — LL(1) with nothing to look ahead at (D-30). A generic
+   must write its signature: generalisation is never inferred (D-77), so an
+   unwritten one would have nothing to generalise.
+2. **`E04.nenv` gains `ne_gens`**, a third namespace. A generic has no
+   `word_id` and cannot be called until instantiated, so it cannot live among
+   words. Nothing is elaborated at declaration.
+3. **The call site** matches the declared inputs against the stack model,
+   takes the instance id from the term's own budget, emits `TWord id` and
+   records the request.
+4. **`E06` fulfils requests** before typechecking the caller, since `M06.infer`
+   reads the instance's signature out of `w_ops`.
+
+The piece that kept this small was noticing the request channel already existed:
+`elab_terms` threads `dacc` for `case` operations (D-68), so widening its
+element from `(op_id & op_decl)` to a variant — `GOp` or `GInst` — needed no new
+parameter and no change to the plumbing through `elab_branches`, `elab_impls`
+and `elab_handle_parts`.
+
+**A `StWord`'s budget is exactly one id, which is exactly what an instance
+needs.** That is a coincidence worth naming, because it is what lets an instance
+be identified before it is built.
+
+### What the checks caught, and where they fire
+
+    catcat> define bad3[#T] ( #U -- #U ) { }
+    error: bad3 declares no type parameter #U
+    catcat> define bad1[#T] ( -- #T ) { }
+    catcat> 1 bad1
+    error: bad1: #T is not determined by the inputs, so a call site cannot say
+    what it should be
+    catcat> define boxy ( Box[i64] -- Box[i64] Box[i64] ) { twice }
+    error: twice, instantiated: dup: this value's type is not Copy
+
+The last is the design working rather than a limitation. A generic body is
+checked **at instantiation, not at declaration** — C++ templates, not ML —
+because checking earlier needs rigid variables to be real `M01.dtype`s, which is
+exactly the pollution `StyFixed` avoids (D-79). So `twice` is fine at every
+`Copy` type and fails at `Box`, per instance, with the capability rule doing the
+work. Linearity is enforced across generics with no rule written for it.
+
+`ssig_stray` is the one check that fires at declaration, because a `#U` naming
+no parameter can never be bound and reporting it at a call site would blame the
+wrong line.
+
+### Two restrictions, both deliberate
+
+**No conditional and no nested generic call inside a generic body**, checked
+rather than assumed:
+
+    catcat> define bad2[#T] ( #T -- #T ) { dup 0 = if { } then { } else { } endif }
+    catcat> 1 bad2
+    error: bad2: a generic body may not contain a conditional or another generic
+    call yet
+
+An instance takes the call site's one-id budget, so it has none of its own to
+hand out; ids taken from anywhere else would sit ABOVE the instance and break
+the Dictionary ordering (D-70), which would surface as a spurious `!Rec`. Both
+cases are exactly "the instance's elaboration returned declarations", so one
+test catches them and the message names the limit. Lifting it means sharing
+instances by (name, substitution) and installing them from a region below the
+caller — the same change that would allow recursion.
+
+**No recursion in a generic**, confirmed as a decision rather than a gap. An
+instance is minted per call site, so a self-call would request an instance of
+itself forever. Not worth complicating for: compile-time evaluation of pure
+words is the likelier route to what recursive generics would be wanted for.
+
+`locate` shows a generic as its TEMPLATE, printed from the surface form since it
+has never been elaborated, and round-trips — including named parameters and the
+bare `!` of D-77. An instance has no name and appears in a caller as `#101`,
+which is the honest rendering of a word no program can write.

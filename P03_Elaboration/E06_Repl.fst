@@ -173,7 +173,7 @@ let rec nenv_ops (ws:list nentry) : Tot (list (word_id & op_decl)) (decreases ws
                          od_sig   = { op_pre = n.n_sig.pre; op_post = n.n_sig.post } })
               :: nenv_ops r
 
-let prelude_nenv : nenv = { ne_words = prelude_words; ne_effs = prelude_effs }
+let prelude_nenv : nenv = { ne_words = prelude_words; ne_effs = prelude_effs; ne_gens = [] }
 
 let init_session : session = {
   se_nenv  = prelude_nenv;
@@ -276,17 +276,19 @@ let case_base (s:session) : Tot nat = s.se_next
 /// `se_next` advances past the WHOLE budget rather than past the highest id
 /// actually used, because the budget is what `E04` reasoned with; using less
 /// would make the next declaration's range overlap this one's.
-let rec add_case_ops (o:sig_env) (ds:list (word_id & op_decl))
+let rec add_case_ops (o:sig_env) (ds:list gdecl)
   : Tot sig_env (decreases ds) =
   match ds with
-  | []          -> o
-  | (i, d) :: r -> add_case_ops ({ se_ops = (i, d) :: o.se_ops }) r
+  | []              -> o
+  | GOp i d :: r    -> add_case_ops ({ se_ops = (i, d) :: o.se_ops }) r
+  | GInst _ _ _ :: r -> add_case_ops o r
 
-let rec add_case_dict (d:rdict) (ds:list (word_id & op_decl))
+let rec add_case_dict (d:rdict) (ds:list gdecl)
   : Tot rdict (decreases ds) =
   match ds with
-  | []          -> d
-  | (i, _) :: r -> add_case_dict (dict_extend d i (WOp eff_case)) r
+  | []               -> d
+  | GOp i _ :: r     -> add_case_dict (dict_extend d i (WOp eff_case)) r
+  | GInst _ _ _ :: r -> add_case_dict d r
 
 /// The id the word being defined will get: one past its body's case-operation
 /// budget (D-70).
@@ -300,7 +302,7 @@ let self_id (s:session) (body:list sterm) : Tot word_id =
 /// `se_next` advances past the case budget AND past the word's own id, so a
 /// later declaration cannot be handed either. The `expr` path reserves a word
 /// id it never installs, which costs an integer and keeps one rule.
-let with_case_ops (s:session) (ds:list (word_id & op_decl)) (body:list sterm)
+let with_case_ops (s:session) (ds:list gdecl) (body:list sterm)
   : Tot session =
   { s with
       se_wenv = { s.se_wenv with w_ops = add_case_ops s.se_wenv.w_ops ds };
@@ -485,6 +487,83 @@ let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
         (s', "defined " ^ name ^ " "
              ^ render_row_eff s'.se_nenv row (w_eff s'.se_wenv id))
 
+
+(* --- generic instantiation ------------------------------------------------ *)
+
+/// `[#T #U]`, for the message a declaration prints back.
+let rec show_tparams (ps:list string) : Tot string (decreases ps) =
+  match ps with
+  | []      -> ""
+  | p :: [] -> "#" ^ p
+  | p :: r  -> "#" ^ p ^ " " ^ show_tparams r
+
+let show_tparam_block (ps:list string) : Tot string =
+  if Nil? ps then "" else "[" ^ show_tparams ps ^ "]"
+
+/// Install one instance of a generic (D-79).
+///
+/// The generic's stored signature and body are copied with its parameters
+/// replaced (`E02.subst_ssig` / `subst_tys_list`) and then run through the
+/// ORDINARY elaborator: an instance is an ordinary definition that happened to
+/// be written once. Nothing here knows about type variables, because the
+/// substitution removed them before this ran.
+///
+/// It gets no `nenv` entry, like a `case` operation and for the same reason:
+/// the instance has no surface name a program could write, and giving it the
+/// generic's name would shadow the template. `locate` prints it as `#id`, which
+/// is what an unnameable word should print.
+///
+/// PROOF-OF-CONCEPT LIMIT, checked rather than assumed. The instance takes the
+/// call site's one-id budget, so it has no ids of its own to hand out — which
+/// means its body may contain neither a conditional nor another generic call,
+/// since each of those needs ids, and ids allocated from anywhere else would sit
+/// ABOVE the instance and break the Dictionary ordering (D-70). Both cases are
+/// exactly `ds` coming back non-empty, so one test catches them and the message
+/// says which limit was hit rather than reporting a mysterious `!Rec`.
+let install_instance (s:session) (id:word_id) (gname:string) (su:tsub)
+  : Tot (either string session) =
+  match lookup_gen_in s.se_nenv.ne_gens gname with
+  | None -> Inl ("internal error: no generic named " ^ gname)
+  | Some g ->
+    (match elab_define s.se_nenv id (subst_ssig su g.g_sig)
+                       (subst_tys_list su g.g_body) with
+     | Inl e -> Inl (gname ^ ", instantiated: " ^ e)
+     | Inr (row, t, ds) ->
+       if not (Nil? ds)
+       then Inl (gname ^ ": a generic body may not contain a conditional or \
+                  another generic call yet")
+       else if not (ordered_at id t)
+       then Inl (gname ^ ": an instance may not call a word defined after it")
+       else
+         (match infer s.se_wenv t with
+          | None -> Inl (gname ^ ", instantiated: the body does not typecheck \
+                                  at these types")
+          | Some (got, grow) ->
+            if got <> row
+            then Inl (gname ^ ", instantiated: declares " ^ render_row row
+                      ^ " but its body has " ^ render_row got)
+            else
+              Inr { s with
+                se_wenv = { w_effs = (id, row_visible grow) :: s.se_wenv.w_effs;
+                            w_ops  = { se_ops =
+                              (id, { od_eff   = eff_dict_r;
+                                     od_stage = SStatic;
+                                     od_sig   = { op_pre = row.pre;
+                                                  op_post = row.post } })
+                              :: s.se_wenv.w_ops.se_ops } };
+                se_dict = dict_extend s.se_dict id (WDef t) }))
+
+/// Fulfil every instantiation request a body produced, before the body itself
+/// is typechecked: `M06.infer` reads the instance's signature out of `w_ops`,
+/// so the word has to be there first.
+let rec install_insts (s:session) (ds:list gdecl)
+  : Tot (either string session) (decreases ds) =
+  match ds with
+  | []                    -> Inr s
+  | GOp _ _ :: r          -> install_insts s r
+  | GInst id gn su :: r   -> (match install_instance s id gn su with
+                              | Inl e  -> Inl e
+                              | Inr s' -> install_insts s' r)
 (* --- effect declarations -------------------------------------------------- *)
 
 /// Install one effect's operations. Each gets the next WORD id — one namespace
@@ -680,9 +759,12 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
           (match elab_define (self_nenv s body row0) (case_base s) sg body with
            | Inl e -> DDone s ("error: " ^ e)
            | Inr (row, t, ds) ->
-             let (s2, m) = install_def (with_case_ops s ds body) (self_id s body) name
-                                       (Some row) es row t in
-             DDone s2 m)))
+             (match install_insts (with_case_ops s ds body) ds with
+              | Inl e -> DDone s ("error: " ^ e)
+              | Inr s1 ->
+                let (s2, m) = install_def s1 (self_id s body) name
+                                          (Some row) es row t in
+                DDone s2 m))))
 
   /// The inferred form prints the signature it worked out, which is the same
   /// text a language server would show inline (D01's tooling goal, N02 Q-11).
@@ -701,13 +783,31 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
       (match elab_define_infer s.se_nenv (case_base s) body with
        | Inl e -> DDone s ("error: " ^ e)
        | Inr (row, t, ds) ->
-         let (s2, m) = install_def (with_case_ops s ds body) (self_id s body) name
-                                   None None row t in
-         DDone s2 m)
+         (match install_insts (with_case_ops s ds body) ds with
+          | Inl e -> DDone s ("error: " ^ e)
+          | Inr s1 ->
+            let (s2, m) = install_def s1 (self_id s body) name None None row t in
+            DDone s2 m))
 
   /// An effect declaration installs nothing runnable — it names operations and
   /// gives them signatures. Calling one without a handler in scope is legal and
   /// escapes to the top level, which is what `!IO` at `main` will mean (M5).
+  /// A generic is STORED, not elaborated (D-79). There is no monomorphic body
+  /// to check until a call site supplies the types, so the declaration only
+  /// records the template and reports the signature as written.
+  | SdDefineGen name ps sg body ->
+    if Some? (lookup_name s.se_nenv name) || Some? (lookup_gen_in s.se_nenv.ne_gens name)
+    then DDone s ("error: " ^ name ^ " is already defined")
+    else
+      (match ssig_stray ps sg with
+       | Some n -> DDone s ("error: " ^ name ^ " declares no type parameter #" ^ n)
+       | None ->
+      let s' = { s with se_nenv = { s.se_nenv with
+                    ne_gens = ({ g_name = name; g_params = ps;
+                                 g_sig = sg; g_body = body })
+                               :: s.se_nenv.ne_gens } } in
+      DDone s' ("generic " ^ name ^ show_tparam_block ps))
+
   | SdEffect name decls ->
     (match lookup_eff s.se_nenv name with
      | Some _ -> DDone s ("error: effect " ^ name ^ " is already declared")
@@ -747,7 +847,10 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
     (match elab_expr s.se_nenv (case_base s) s.se_shape body with
      | Inl e -> DDone s ("error: " ^ e)
      | Inr (t, ds) ->
-       let s = with_case_ops s ds body in
+       let s0 = with_case_ops s ds body in
+       (match install_insts s0 ds with
+        | Inl e -> DDone s ("error: " ^ e)
+        | Inr s ->
        let t = discharge s t in
        let env = s.se_wenv in
        (match infer env t with
@@ -758,7 +861,7 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
              DDone s ("error: this needs " ^ render_tys (rev row.pre)
                       ^ " on the stack, but the stack holds "
                       ^ render_tys (rev s.se_shape))
-           | Some below -> run_expr s row.post below (eval s.se_dict fuel t s.se_stack))))
+           | Some below -> run_expr s row.post below (eval s.se_dict fuel t s.se_stack)))))
 
 let join_msg (acc msg:string) : Tot string =
   if acc = "" then msg else acc ^ "\n" ^ msg

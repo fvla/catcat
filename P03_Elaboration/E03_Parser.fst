@@ -643,9 +643,40 @@ and parse_slots (mt:list mprod) (acc:list mcap) (ss:list mslot) (ts:list token)
 ///
 /// The choice between the two rests on the single token after the name, so
 /// this stays LL(1) — no backtracking, no second-token peek (D-30).
+/// `[ #T #U ]` after the name (D-79). `[` is self-delimiting, so `f[#T` is
+/// already three tokens and the choice between `[`, `(` and `{` after a name is
+/// made on the token in hand — LL(1), with nothing to look ahead at (D-30).
+let rec parse_tparams (acc:list string) (ts:list token)
+  : Tot (r:presult (list string) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | TkRBrack :: rest -> if Nil? acc
+                        then PErr "a generic needs at least one type parameter, as in define f[#T] ( … )"
+                        else POk (rev acc) rest
+  | TkHash n :: rest -> parse_tparams (n :: acc) rest
+  | t :: _ -> PErr ("expected a type parameter or ']', found " ^ render_token t)
+  | [] -> PErr "expected ']' closing the type parameters, found end of input"
+
 let parse_define (mt:list mprod) (ts:list token)
   : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
   match ts with
+  | TkWord name :: TkLBrack :: rest ->
+    (match parse_tparams [] rest with
+     | PErr e -> PErr e
+     | POk ps after ->
+       (match after with
+        | TkLParen :: rest2 ->
+          (match parse_sig_body rest2 with
+           | PErr e -> PErr e
+           | POk sg after2 ->
+             (match after2 with
+              | TkLBrace :: body_ts ->
+                (match parse_terms mt true [] body_ts with
+                 | PErr e -> PErr e
+                 | POk body tail -> POk (SdDefineGen name ps sg body) tail)
+              | _ -> PErr ("expected '{' opening the body of " ^ name)))
+        | _ -> PErr ("expected '(' after the type parameters of " ^ name
+                     ^ "; a generic must write its signature")))
   | TkWord name :: TkLParen :: rest ->
     (match parse_sig_body rest with
      | PErr e -> PErr e

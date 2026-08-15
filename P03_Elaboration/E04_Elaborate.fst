@@ -63,11 +63,45 @@ type nentry = {
   n_op   : option eff_id;
 }
 
+/// A generic definition, stored as a TEMPLATE (D-79). Nothing is elaborated
+/// when it is declared: rigid type variables are not `M01.dtype`s, so there is
+/// no monomorphic body to check until a call site supplies the types. The body
+/// is therefore checked at INSTANTIATION, C++ and not ML, and the trade is what
+/// keeps the core free of a variable case.
+type gentry = {
+  g_name   : string;
+  g_params : list string;
+  g_sig    : ssig;
+  g_body   : list sterm;
+}
+
+let rec lookup_gen_in (gs:list gentry) (x:string)
+  : Tot (option gentry) (decreases gs) =
+  match gs with
+  | []     -> None
+  | g :: r -> if g.g_name = x then Some g else lookup_gen_in r x
+
+/// What `E04` hands back for `E06` to install. `case` operations travelled this
+/// channel already (D-68); widening its element to a variant is what lets a
+/// generic instantiation use the same route without threading a second
+/// accumulator through `elab_terms`, `elab_branches`, `elab_impls` and
+/// `elab_handle_parts`.
+noeq type gdecl =
+  /// An operation a `case` site dispatches through.
+  | GOp   : op_id -> op_decl -> gdecl
+  /// Instantiate generic `name` at `sub`, and install it as word `id`. The id
+  /// comes from the call site's own one-id budget, which is exactly what an
+  /// instance needs.
+  | GInst : word_id -> string -> tsub -> gdecl
+
 /// Names live in two namespaces because effects are not words — `handle E`
 /// names an effect, and an effect has no signature and cannot be called.
 type nenv = {
   ne_words : list nentry;
   ne_effs  : list (string & eff_id);
+  /// Generic templates (D-79). A third namespace, because a generic has no
+  /// `word_id` and cannot be called until it is instantiated.
+  ne_gens  : list gentry;
 }
 
 let rec lookup_word_in (ws:list nentry) (x:string)
@@ -368,8 +402,8 @@ let elab_lit (n:int) : Tot (either string term) =
 /// documentation of the intended ordering rather than load-bearing — unlike
 /// M01's and M05's, where an empty sub-list makes them necessary.
 let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
-                   (dacc:list (op_id & op_decl)) (ts:list sterm)
-  : Tot (either string (shape & list term & list (op_id & op_decl)))
+                   (dacc:list gdecl) (ts:list sterm)
+  : Tot (either string (shape & list term & list gdecl))
         (decreases %[sterms_size ts; 0]) =
   match ts with
   | [] -> Inr (sh, rev acc, dacc)
@@ -425,17 +459,57 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
             (TPrimOp (PStack (SSwap a.sl_ty b.sl_ty)) :: acc) dacc rest
         | _ -> Inl "swap: needs two values on the stack")
 
+     /// A GENERIC CALL IS AN ORDINARY CALL TO A WORD THAT DOES NOT EXIST YET
+     /// (D-79). The types come from the stack model by matching, an instance id
+     /// comes from this term's own one-id budget, and `E06` is told to build the
+     /// word. Nothing about the emitted term is special: `TWord id` like any
+     /// other call, which is what "generics are erased at elaboration" means
+     /// concretely.
      | StWord w ->
-       (match lookup_name env w with
-        | None -> Inl ("unknown word: " ^ w)
-        | Some n ->
-          (match drop_n (length n.n_sig.pre) sh with
-           | None ->
-             Inl ("stack underflow calling " ^ w ^ ": it needs "
-                  ^ string_of_int (length n.n_sig.pre) ^ " inputs")
-           | Some sh' ->
-             elab_terms env cs (base + sterm_size t) (anon_slots n.n_sig.post @ sh')
-               (TWord n.n_id :: acc) dacc rest))
+       (match lookup_gen_in env.ne_gens w with
+        /// A GENERIC CALL IS AN ORDINARY CALL TO A WORD THAT DOES NOT EXIST YET
+        /// (D-79). The types come from the stack model by matching, the instance
+        /// id comes from this term's own one-id budget — a `StWord` has exactly
+        /// one, which is exactly what an instance needs — and `E06` is told to
+        /// build the word. Nothing about the emitted term is special: `TWord id`
+        /// like any other call, which is what "generics erase at elaboration"
+        /// means concretely.
+        | Some g ->
+          let pats = rev (param_tys g.g_sig.ss_in) in
+          if length pats > length sh
+          then Inl ("stack underflow calling " ^ w ^ ": it needs "
+                    ^ string_of_int (length pats) ^ " inputs")
+          else
+            (match match_tys [] pats (slot_tys sh) with
+             | None -> Inl (w ^ ": the stack does not match its declared inputs")
+             | Some su ->
+               (match all_bound su g.g_params with
+                | Some p ->
+                  Inl (w ^ ": #" ^ p ^ " is not determined by the inputs, so a \
+                        call site cannot say what it should be")
+                | None ->
+                  (match elab_sig (subst_ssig su g.g_sig) with
+                   | Inl e -> Inl (w ^ ": " ^ e)
+                   | Inr row ->
+                     (match drop_n (length row.pre) sh with
+                      | None -> Inl ("stack underflow calling " ^ w)
+                      | Some sh' ->
+                        elab_terms env cs (base + sterm_size t)
+                          (anon_slots row.post @ sh')
+                          (TWord base :: acc) (GInst base w su :: dacc) rest))))
+
+        | None ->
+          (match lookup_name env w with
+           | None -> Inl ("unknown word: " ^ w)
+           | Some n ->
+             (match drop_n (length n.n_sig.pre) sh with
+              | None ->
+                Inl ("stack underflow calling " ^ w ^ ": it needs "
+                     ^ string_of_int (length n.n_sig.pre) ^ " inputs")
+              | Some sh' ->
+                elab_terms env cs (base + sterm_size t)
+                  (anon_slots n.n_sig.post @ sh')
+                  (TWord n.n_id :: acc) dacc rest)))
 
      | StBlock _ ->
        Inl "a { } block is only meaningful as a definition body or a branch"
@@ -493,7 +567,7 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
                        (THandle eff_case [] TNil [(o0, b0); (o1, b1)]
                           (TDispatch [o0; o1] bool_variants)
                         :: TPrimOp PBoolSum :: acc)
-                       ((o0, odecl) :: (o1, odecl) :: (dacc' @ dacc)) rest
+                       (GOp o0 odecl :: GOp o1 odecl :: (dacc' @ dacc)) rest
                    | _ -> Inl "if: expected exactly two branches")))
 
      /// The handler's own parts are elaborated against stacks that are fully
@@ -590,8 +664,8 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
 /// re-derives the same fact row-polymorphically and independently.
 and elab_branches (env:nenv) (cs:counts) (base:nat) (sh0:shape)
                   (expect:option shape) (acc:list term)
-                  (dacc:list (op_id & op_decl)) (bs:list (list sterm))
-  : Tot (either string (shape & list term & list (op_id & op_decl)))
+                  (dacc:list gdecl) (bs:list (list sterm))
+  : Tot (either string (shape & list term & list gdecl))
         (decreases %[sterm_lists_size bs; 1]) =
   match bs with
   | [] -> (match expect with
@@ -620,7 +694,7 @@ and elab_branches (env:nenv) (cs:counts) (base:nat) (sh0:shape)
 and elab_handle_parts (env:nenv) (base:nat) (ename:string) (sttys:list sty)
                       (init:list sterm) (impls:list (string & list sterm))
   : Tot (either string (eff_id & seg & term & list (op_id & term)
-                        & list (op_id & op_decl)))
+                        & list gdecl))
         (decreases %[(sterms_size init + simpls_size impls <: nat); 2]) =
   match lookup_eff env ename with
   | None -> Inl ("unknown effect: " ^ ename)
@@ -649,8 +723,8 @@ and elab_handle_parts (env:nenv) (base:nat) (ename:string) (sttys:list sty)
 /// of a Dictionary possible (D04). What is an error is implementing something
 /// that is not an operation of this effect.
 and elab_impls (env:nenv) (base:nat) (eid:eff_id) (st:seg) (acc:list (op_id & term))
-               (dacc:list (op_id & op_decl)) (im:list (string & list sterm))
-  : Tot (either string (list (op_id & term) & list (op_id & op_decl)))
+               (dacc:list gdecl) (im:list (string & list sterm))
+  : Tot (either string (list (op_id & term) & list gdecl))
         (decreases %[simpls_size im; 1]) =
   match im with
   | [] -> Inr (rev acc, dacc)
@@ -1026,7 +1100,7 @@ let infer_sig (env:nenv) (body:list sterm) : Tot (either string srow) =
 
 /// Elaborate a definition body against its declared signature.
 let elab_define (env:nenv) (base:nat) (sg:ssig) (body:list sterm)
-  : Tot (either string (srow & term & list (op_id & op_decl))) =
+  : Tot (either string (srow & term & list gdecl)) =
   match elab_sig sg with
   | Inl e -> Inl e
   | Inr row ->
@@ -1044,7 +1118,7 @@ let elab_define (env:nenv) (base:nat) (sg:ssig) (body:list sterm)
 /// parameters in this form — naming happens in a signature — so the entry shape
 /// is anonymous and no end-of-body drop is needed.
 let elab_define_infer (env:nenv) (base:nat) (body:list sterm)
-  : Tot (either string (srow & term & list (op_id & op_decl))) =
+  : Tot (either string (srow & term & list gdecl)) =
   match infer_sig env body with
   | Inl e -> Inl e
   | Inr row ->
@@ -1054,7 +1128,7 @@ let elab_define_infer (env:nenv) (base:nat) (body:list sterm)
 
 /// Elaborate a bare expression against a known incoming stack shape.
 let elab_expr (env:nenv) (base:nat) (incoming:list dtype) (body:list sterm)
-  : Tot (either string (term & list (op_id & op_decl))) =
+  : Tot (either string (term & list gdecl)) =
   match elab_terms env [] base (anon_slots incoming) [] [] body with
   | Inl e            -> Inl e
   | Inr (_, ts, ds)  -> Inr (seq_of ts, ds)

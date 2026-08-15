@@ -478,10 +478,56 @@ let show_macro (p:mprod) : Tot string =
 /// a leading word matching the macro table invokes the macro, whatever else is
 /// bound to the name. Reporting the dictionary entry instead would tell the
 /// user about a binding their program cannot reach.
+/// A generic's signature, printed from the SURFACE form, because that is what a
+/// generic is: a template that has never been elaborated. `show_row` cannot be
+/// used, since the types are still `sty` and some of them are variables.
+let show_sparam (p:sparam) : Tot string =
+  match p.sp_name with
+  | None   -> show_sty p.sp_ty
+  | Some n -> "$" ^ n ^ ":" ^ show_sty p.sp_ty
+
+let rec show_sparams (ps:list sparam) : Tot string (decreases ps) =
+  match ps with
+  | []      -> ""
+  | p :: [] -> show_sparam p
+  | p :: r  -> show_sparam p ^ " " ^ show_sparams r
+
+let rec show_seffs (ns:list string) : Tot string (decreases ns) =
+  match ns with
+  | []      -> ""
+  | n :: [] -> "!" ^ n
+  | n :: r  -> "!" ^ n ^ " " ^ show_seffs r
+
+let show_ssig (s:ssig) : Tot string =
+  let a = show_sparams s.ss_in in
+  let b = show_stys s.ss_out in
+  let c = (match s.ss_eff with
+           | None      -> ""
+           | Some []   -> "! "
+           | Some ns   -> show_seffs ns ^ " ") in
+  "( " ^ (if a = "" then "" else a ^ " ") ^ "-- "
+       ^ (if b = "" then "" else b ^ " ") ^ c ^ ")"
+
+let rec show_gparams (ps:list string) : Tot string (decreases ps) =
+  match ps with
+  | []      -> ""
+  | p :: [] -> "#" ^ p
+  | p :: r  -> "#" ^ p ^ " " ^ show_gparams r
+
+/// A generic prints as its TEMPLATE, not as any instance (D-79). Its instances
+/// have no names of their own and appear in a caller as `#id`, which is the
+/// honest rendering of a word no program can write.
+let show_gen (g:gentry) : Tot string =
+  "define " ^ g.g_name ^ "[" ^ show_gparams g.g_params ^ "] "
+  ^ show_ssig g.g_sig ^ " {\n  " ^ show_sterms g.g_body ^ "\n}"
+
 let locate (mt:list mprod) (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
   match lookup_macro mt x with
   | Some p -> show_macro p
   | None ->
+    match lookup_gen_in e.ne_gens x with
+    | Some g -> show_gen g
+    | None ->
     match lookup_name e x with
     | None -> "error: no word named '" ^ x ^ "'"
     | Some n ->
