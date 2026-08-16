@@ -2331,3 +2331,90 @@ stored body has the smaller inferred one. Inlining `w` therefore replaces a term
 by one with a more general signature. That is sound — `compose` frames — but it
 means M11's E1 (`specialize_typed`) is now a statement up to framing rather than
 up to equality, and its eventual proof has to say so.
+
+---
+
+## D-85. Identical instantiations are built once
+
+`E06.install_instance` consults a cache keyed on the generic's name and what its
+parameters were bound to, and a hit returns the very same term. Nothing else
+about D-83 changes: an instance is still spliced, still has no dictionary entry.
+
+### Why it is sound, which is the whole argument
+
+Instantiation is a **pure function** of the schema, the substitution and the name
+environment. `install_instance` reads none of the call site: not the modelled
+stack, not the caller's signature, not where the splice will land. The instance
+body is elaborated against its OWN declared signature — `elab_define … (subst_ssig
+su g.g_sig) body` — so even the entry shape is a function of the key. Two
+requests with equal keys therefore have equal answers, and the second may take
+the first's.
+
+The environment is the third argument and it is why the cache is **per
+declaration, not per session**. A generic's body is elaborated against the names
+in force when it is INSTANTIATED, and a later `define` may shadow a word that
+body calls, so `(name, types)` does not identify a residual across declarations:
+
+    catcat> define greet ( -- str ) { "hi" }
+    catcat> define g[#T] ( #T -- #T str ) { greet }
+    catcat> define a ( i64 -- i64 str ) { g }
+    catcat> define greet ( -- str ) { "bye" }
+    catcat> define b ( i64 -- i64 str ) { g }
+    catcat> 1 a
+    ok  1 "hi"
+    catcat> 1 b
+    ok  1 "bye"
+
+A session-wide cache would have served `"hi"` to `b`. Within one declaration
+`ne_words` cannot change — nothing between two lookups adds to it — so the key is
+exact there, and that is also where the cost is: nesting is what multiplies, and
+nesting happens inside one declaration.
+
+Whether late binding is the RIGHT semantics is a separate question and is left
+open (N02 Q-20). Pinning a schema to the environment of its declaration would
+make the key exact forever; it would also change what shadowing means.
+
+### The key has to be canonicalised
+
+`inst_key` lists the bindings in the generic's DECLARATION order rather than
+reading `su` off as it comes. The implicit form builds the substitution by
+walking the declared inputs, so `( #B #A -- … )` binds `#B` first, while the
+explicit form builds it in `[#A #B]` order. Two calls meaning the same thing
+would otherwise miss each other.
+
+### What it was actually costing
+
+Exponential elaboration, not a constant factor. `deep` calling `quad` three
+times, each calling `twice` three times, elaborated `twice` nine times — and it
+compounds with depth. A chain `g0 … gN` where each body calls its predecessor
+three times, `define top ( i64 -- i64 ) { gN }`:
+
+    depth        6        8        10        12
+    before      50 ms   2.9 s     228 s     >5 min (killed)
+    after        5 ms     7 ms      27 ms    255 ms
+
+### Recursion is now caught by name, not by depth
+
+`gen_fuel` remains, because F* needs a decreasing measure for the mutual
+recursion, but it is no longer what reports the error. `install_instance`
+carries the chain of generics currently being instantiated and refuses a repeat:
+
+    catcat> define loopy[#T] ( #T -- #T ) { loopy[#T] }
+    catcat> 1 loopy
+    error: loopy is already being instantiated; a generic may not be recursive,
+           directly or through another
+
+By NAME rather than by key, which is what makes it catch two cases depth could
+only catch slowly: mutual recursion between two generics, and **polymorphic
+recursion** — `f[#T]` whose body calls `f[Box[#T]]` has a different key at every
+level, so a key-based check would never repeat.
+
+### What is still duplicated, and where it now belongs
+
+The RESIDUAL still carries one copy of the instance per call site; only the work
+of building it is shared. But because the cache hands back the identical term,
+those copies are now **structurally equal** rather than merely alpha-equivalent —
+they have the same `case` operation ids and everything else. That turns sharing
+them into ordinary common-subexpression elimination over the core, which is a
+compiler pass, applies to every inlined term and not only to generics, and needs
+no elaborator support. See N02 Q-19.

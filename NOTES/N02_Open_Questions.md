@@ -267,19 +267,44 @@ deleted, along with four dead list traversals in M05.
 
 ---
 
-**Q-19. Two instantiations at the same types build the body twice.** D-83 splices
-each generic call site with its own copy of the residual, so `quad quad quad` at
-`i64` carries three elaborations of `quad`, and a program that calls one generic
-from ten places pays for ten. Nothing is wrong — it is what monomorphization
-costs, and `TSpecialize` says so honestly — but nothing shares either.
+**Q-19. The residual carries one copy of an instance per call site.** — **Half
+closed by D-85.** The *work* of building an instance is now shared: identical
+instantiations are elaborated once, which took the nesting cost from exponential
+to linear (228 s to 27 ms on a depth-10 chain). What is not shared is the emitted
+code — `quad quad quad` at `i64` still splices three copies.
 
-The obvious fix, hash-consing residuals by `(name, sub)` and emitting a `WDef`
-for the shared one, is the design D-83 deliberately reversed, so it should not be
-reached for casually: it reintroduces the dictionary entry, and with it the
-ordering constraint that made nested generics impossible. A pass over the CORE
-that finds repeated subterms and abstracts them has neither problem and is not
-specific to generics — it would share `with` residuals too.
+The obvious fix, emitting a `WDef` for the shared residual, is the design D-83
+deliberately reversed and should not be reached for casually: it reintroduces the
+dictionary entry, and with it the ordering constraint that made nested generics
+impossible. It would need instance ids allocated BELOW the word being defined,
+which means allocating that word's own id after its body is elaborated and
+rewriting `recurse` — a real change to D-70's id scheme, and worth doing only
+with a measurement behind it.
 
-*Closes when:* there is a measurement showing the duplication matters. Until
-then this is a note, not a defect; it is recorded so the first person to see a
-large residual knows it is expected.
+The cheaper route is what D-85 opened up. Because the cache hands back the
+identical term, the copies are now **structurally equal**, so sharing them is
+ordinary common-subexpression elimination over the core: a compiler pass, no
+elaborator support, and it applies to every inlined term rather than to generics
+specifically.
+
+*Closes when:* a CSE pass exists over `M05.term`, or a measurement shows residual
+size matters enough to justify the id-scheme change.
+
+**Q-20. A generic body binds its names at instantiation, not at declaration.**
+D-85 spells this out because the cache ran into it: a `define` between two calls
+of the same generic changes what the second one means, since the stored body is
+elaborated against whatever `ne_words` holds at the call.
+
+That is C++'s dependent-name behaviour and it is not obviously what this language
+wants. Pinning a schema to the environment of its *declaration* — storing the
+name tables in the `gentry` — would make `(name, types)` identify a residual
+forever, so the cache could be session-wide, and it is the rule most languages
+with generics actually use.
+
+Against it: `!Dict` is deliberately late-bound (D-37, D-75), and `with` exists
+precisely so a caller can change what a word means underneath a body. A generic
+that ignored rebinding would be the one construct in the language that does.
+
+*Closes when:* it is decided whether a generic body is a closure over its
+declaration environment or a template read at each use. Nothing forces it today
+because the cache is scoped to one declaration either way.

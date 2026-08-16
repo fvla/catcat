@@ -326,8 +326,26 @@ define q ( i64 -- i64 i64 i64 i64 ) {
 }
 ```
 
-Two calls at the same types therefore build the body twice. That is what
-monomorphization costs; nothing is shared yet.
+**Identical instantiations are built once.** Two calls at the same types share
+the elaboration — the second takes the first's result — so nesting costs what it
+looks like it costs rather than multiplying out. What is not yet shared is the
+emitted code: each call site still carries its own copy of the residual.
+
+The sharing is per declaration, not per session, and that is deliberate: a
+generic's body resolves its names when it is *instantiated*, so a `define` in
+between can change what a later call means.
+
+```
+catcat> define greet ( -- str ) { "hi" }
+catcat> define g[#T] ( #T -- #T str ) { greet }
+catcat> define a ( i64 -- i64 str ) { g }
+catcat> define greet ( -- str ) { "bye" }
+catcat> define b ( i64 -- i64 str ) { g }
+catcat> 1 a
+ok  1 "hi"
+catcat> 1 b
+ok  1 "bye"
+```
 
 Because the copy is made at the call, **the body is checked there too** — so a
 generic is fine at every type that satisfies what it does, and fails at the ones
@@ -402,15 +420,15 @@ catcat> 9 outer
 ok  9 9
 ```
 
-**What it may not do is call itself.** Each call is expanded where it stands, so
-a self-call asks to be expanded forever; nesting is cut off at 32 deep.
+**What it may not do is call itself**, directly or through another generic. Each
+call is expanded where it stands, so a self-call asks to be expanded forever.
 
 ```
 catcat> define loopy[#T] ( #T -- #T ) { loopy[#T] }
 generic loopy[#T]
 catcat> 1 loopy
-error: loopy: generic instantiation nested more than 32 deep; a generic may not
-be recursive
+error: loopy is already being instantiated; a generic may not be recursive,
+directly or through another
 ```
 
 See §9.
@@ -1196,8 +1214,8 @@ is otherwise invisible.
 |---|---|
 | mutual recursion | impossible without being marked, since the Dictionary is ordered and there are no forward references (§6) |
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
-| recursion in a generic | refused, deliberately: a call is expanded where it stands, so a self-call asks to be expanded forever. Cut off at 32 deep (§3) |
-| sharing between identical instantiations | none: two calls at the same types build the body twice (§3). Correct, just not compact |
+| recursion in a generic | refused, deliberately: a call is expanded where it stands, so a self-call asks to be expanded forever (§3) |
+| code sharing between identical instantiations | the *elaboration* is shared (§3); the emitted code is not, so each call site carries its own copy. The copies are structurally equal, so what is missing is a common-subexpression pass over the core, not anything about generics |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |

@@ -584,11 +584,51 @@ let show_tparam_block (ps:list string) : Tot string =
 
 /// How deep generic instantiation may nest.
 ///
-/// A LIMIT, NOT A BUDGET: D-79 rules out recursive generics, so a program that
-/// reaches this has written one, and the number only decides how long it takes
-/// to say so. It is also what makes the mutual recursion below terminate, which
-/// is why it is a parameter rather than an afterthought.
+/// PURELY THE TERMINATION ARGUMENT (D-85). F* needs a decreasing measure for the
+/// mutual recursion below and this supplies it; what actually reports a
+/// recursive generic is the in-progress list, which names the culprit. If this
+/// limit is ever the thing that fires, that is a bug in the in-progress check
+/// and not a program too deeply nested.
 let gen_fuel : nat = 32
+
+(* --- the instantiation cache (D-85) --------------------------------------- *)
+
+/// What identifies an instantiation: the generic's name and what its parameters
+/// were bound to, listed in DECLARATION order.
+///
+/// Declaration order is what makes it canonical, and it has to be recovered
+/// rather than read off `su` directly: the implicit form builds the substitution
+/// by walking the declared inputs, so `( #B #A -- … )` binds `#B` first, while
+/// the explicit form builds it in `[#A #B]` order. Two calls that mean the same
+/// thing would otherwise miss each other.
+let rec inst_key (ps:list string) (su:tsub) : Tot (list sty) (decreases ps) =
+  match ps with
+  | []     -> []
+  | p :: r -> (match assoc p su with
+               | Some t -> t
+               /// Unreachable: `E04.all_bound` refuses a call site that leaves a
+               /// parameter unbound. `StyVar p` is used rather than a made-up
+               /// name because a real binding is always `StyFixed`, so this can
+               /// never collide with one.
+               | None   -> StyVar p) :: inst_key r su
+
+/// Instances built during ONE declaration, keyed by `inst_key`.
+///
+/// WHY NOT SESSION-WIDE, which is the obvious thing to want. A generic's body is
+/// elaborated against the name environment in force when it is INSTANTIATED, and
+/// a later `define` may shadow a word that body calls. So `(name, types)` does
+/// not identify a residual across declarations, and a session-wide cache would
+/// silently serve the older meaning. Within one declaration `ne_words` cannot
+/// change — nothing between the two lookups adds to it — so the key is exact,
+/// which is also where the cost being paid actually is: nesting is what
+/// multiplies, and nesting happens inside one declaration. See N02 Q-19.
+let icache = list ((string & list sty) & term)
+
+let rec lookup_inst (c:icache) (n:string) (k:list sty)
+  : Tot (option term) (decreases c) =
+  match c with
+  | []               -> None
+  | ((n', k'), t) :: r -> if n' = n && k' = k then Some t else lookup_inst r n k
 
 /// Install one instance of a generic (D-79, D-83).
 ///
@@ -612,24 +652,43 @@ let gen_fuel : nat = 32
 ///   * NO `w_ops`, `w_effs` OR `se_dict` REGISTRATION for the instance. `M06`
 ///     types the spliced body directly, so the three tables that existed to
 ///     describe a word nobody could name are no longer written.
-///   * TWO CALLS AT THE SAME TYPES BUILD THE BODY TWICE. That is what
-///     monomorphization costs and it is the honest reading of `TSpecialize`;
-///     sharing it is a job for a later pass over the residual, not for the
-///     elaborator.
+///   * IDENTICAL INSTANTIATIONS ARE BUILT ONCE (D-85). `cache` is consulted
+///     before anything is elaborated, and a hit returns the very same term. What
+///     licenses it is that instantiation is a PURE function of the schema, the
+///     substitution and the environment — nothing here reads the stack, the
+///     caller, or the call site — so two requests with equal keys have equal
+///     answers, and the second may take the first's. Without it, nesting is
+///     exponential: `deep` calling `quad` three times, each calling `twice`
+///     three times, elaborated `twice` nine times.
 ///
 /// The instance's own `case` operations still get ids and entries, because a
 /// dispatch calls them at run time. They are `WOp`, never inlined, so where
 /// they sit is unconstrained (D-81).
-let rec install_instance (s:session) (fuel:nat) (id:word_id) (gname:string)
-                         (su:tsub)
-  : Tot (either string (session & (word_id & term))) (decreases %[fuel; 0; 0]) =
+///
+/// `active` is the chain of generics currently being instantiated. A repeat is
+/// a recursive generic (D-79), which is refused by NAME rather than by depth so
+/// that the message says which one and so that polymorphic recursion — `f[#T]`
+/// whose body calls `f[Box[#T]]`, a different key every time — is caught by the
+/// same test.
+let rec install_instance (s:session) (fuel:nat) (active:list string)
+                         (cache:icache) (id:word_id) (gname:string) (su:tsub)
+  : Tot (either string (session & icache & (word_id & term)))
+        (decreases %[fuel; 0; 0]) =
+  /// Never reached while the `active` check above it is correct; see `gen_fuel`.
   if fuel = 0
   then Inl (gname ^ ": generic instantiation nested more than "
-            ^ string_of_int gen_fuel ^ " deep; a generic may not be recursive")
+            ^ string_of_int gen_fuel ^ " deep")
+  else if mem gname active
+  then Inl (gname ^ " is already being instantiated; a generic may not be \
+                     recursive, directly or through another")
   else
   match lookup_gen_in s.se_nenv.ne_gens gname with
   | None -> Inl ("internal error: no generic named " ^ gname)
   | Some g ->
+    let key = inst_key g.g_params su in
+    (match lookup_inst cache gname key with
+     | Some t -> Inr (s, cache, (id, t))
+     | None ->
     let body = subst_tys_list su g.g_body in
     (match elab_define s.se_nenv s.se_next (subst_ssig su g.g_sig) body with
      | Inl e -> Inl (gname ^ ", instantiated: " ^ e)
@@ -643,10 +702,12 @@ let rec install_instance (s:session) (fuel:nat) (id:word_id) (gname:string)
          se_dict = add_case_dict s.se_dict ds;
          se_next = s.se_next + sterms_size body } in
        /// Innermost first. A generic this body calls is built and spliced before
-       /// this body is typechecked, so `M06` sees one closed term.
-       (match install_insts s1 (fuel - 1) [] ds with
+       /// this body is typechecked, so `M06` sees one closed term. The cache
+       /// travels IN and OUT, so a sibling of this instance gets whatever its
+       /// nested calls built.
+       (match install_insts s1 (fuel - 1) (gname :: active) cache [] ds with
         | Inl e -> Inl e
-        | Inr (s2, binds) ->
+        | Inr (s2, cache', binds) ->
           let t = discharge s2 (resolve_defs binds s2.se_next t) in
           (match infer s2.se_wenv t with
            | None -> Inl (gname ^ ", instantiated: the body does not typecheck \
@@ -655,20 +716,23 @@ let rec install_instance (s:session) (fuel:nat) (id:word_id) (gname:string)
              if not (sig_frames got row)
              then Inl (gname ^ ", instantiated: declares " ^ render_row row
                        ^ " but its body has " ^ render_row got)
-             else Inr (s2, (id, TSpecialize t)))))
+             else
+               let sp = TSpecialize t in
+               Inr (s2, ((gname, key), sp) :: cache', (id, sp))))))
 
 /// Fulfil every instantiation request a body produced, accumulating the
 /// bindings its caller must splice.
-and install_insts (s:session) (fuel:nat) (binds:list (word_id & term))
-                  (ds:list gdecl)
-  : Tot (either string (session & list (word_id & term)))
+and install_insts (s:session) (fuel:nat) (active:list string) (cache:icache)
+                  (binds:list (word_id & term)) (ds:list gdecl)
+  : Tot (either string (session & icache & list (word_id & term)))
         (decreases %[fuel; 1; length ds]) =
   match ds with
-  | []                  -> Inr (s, binds)
-  | GOp _ _ :: r        -> install_insts s fuel binds r
-  | GInst id gn su :: r -> (match install_instance s fuel id gn su with
-                            | Inl e       -> Inl e
-                            | Inr (s', b) -> install_insts s' fuel (b :: binds) r)
+  | []                  -> Inr (s, cache, binds)
+  | GOp _ _ :: r        -> install_insts s fuel active cache binds r
+  | GInst id gn su :: r ->
+    (match install_instance s fuel active cache id gn su with
+     | Inl e            -> Inl e
+     | Inr (s', c', b)  -> install_insts s' fuel active c' (b :: binds) r)
 
 /// Replace every generic call site in `t` by the instance it asked for.
 ///
@@ -872,9 +936,9 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
           (match elab_define (self_nenv s body row0) (case_base s) sg body with
            | Inl e -> DDone s ("error: " ^ e)
            | Inr (row, t, ds) ->
-             (match install_insts (with_case_ops s ds body) gen_fuel [] ds with
+             (match install_insts (with_case_ops s ds body) gen_fuel [] [] [] ds with
               | Inl e -> DDone s ("error: " ^ e)
-              | Inr (s1, binds) ->
+              | Inr (s1, _, binds) ->
                 let (s2, m) = install_def s1 (self_id s body) name
                                           (Some row) es row
                                           (splice_insts s1 binds t) in
@@ -897,9 +961,9 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
       (match elab_define_infer s.se_nenv (case_base s) body with
        | Inl e -> DDone s ("error: " ^ e)
        | Inr (row, t, ds) ->
-         (match install_insts (with_case_ops s ds body) gen_fuel [] ds with
+         (match install_insts (with_case_ops s ds body) gen_fuel [] [] [] ds with
           | Inl e -> DDone s ("error: " ^ e)
-          | Inr (s1, binds) ->
+          | Inr (s1, _, binds) ->
             let (s2, m) = install_def s1 (self_id s body) name None None row
                                       (splice_insts s1 binds t) in
             DDone s2 m))
@@ -963,9 +1027,9 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
      | Inl e -> DDone s ("error: " ^ e)
      | Inr (t, ds) ->
        let s0 = with_case_ops s ds body in
-       (match install_insts s0 gen_fuel [] ds with
+       (match install_insts s0 gen_fuel [] [] [] ds with
         | Inl e -> DDone s ("error: " ^ e)
-        | Inr (s, binds) ->
+        | Inr (s, _, binds) ->
        let t = discharge s (splice_insts s binds t) in
        let env = s.se_wenv in
        (match infer env t with
