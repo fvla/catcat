@@ -1,0 +1,110 @@
+catcat> \ ======================================================================
+\ 05 — talking to C, and mocking it.
+\
+\ THE CLAIM (D03 §7, D-49, D-57): a foreign call is an operation of an
+\ ordinary effect. Nothing about it is special-cased, so everything demos 02
+\ and 03 showed applies to it — including that you can HANDLE it. Testing code
+\ that calls libc needs no test double, no link-time seam and no build variant.
+\
+\ Two effects appear in every `extern`'s row and they say different things:
+\   !C      — this talks to C. Honest, and worth keeping in the type.
+\   !Unsafe — nobody has checked the memory safety of the call.
+\ ======================================================================
+catcat> \ --- Declaring a foreign function. The word name IS the C symbol. The
+\ signature is mandatory — there is no body to infer one from — and the row is
+\ not written, because it is always the same two effects.
+catcat> extern strlen ( str -- i64 )
+extern abs    ( i64 -- i64 )
+extern getenv ( str -- str )
+extern getpid ( -- i64 )
+extern time   ( -- i64 )
+extern strlen ( str -- i64 !C !Unsafe )
+extern abs ( i64 -- i64 !C !Unsafe )
+extern getenv ( str -- str !C !Unsafe )
+extern getpid ( -- i64 !C !Unsafe )
+extern time ( -- i64 !C !Unsafe )
+catcat> \ That is libc, linked into this binary. Not an imitation of it:
+catcat> unsafe { "hello, world" strlen } show print "\n" print
+unsafe { -5 abs } show print "\n" print
+12
+5
+ok  (empty)
+catcat> \ Only `i64` and `str` cross the boundary, and that is checked where the
+\ `extern` is written rather than where it is called:
+catcat> extern f ( bool -- )
+error: extern f: only i64 and str cross the C boundary so far
+catcat> \ ======================================================================
+\ Unsafety propagates, and the type system makes you say so
+\ ======================================================================
+catcat> \ A word that calls one and claims to be clean is rejected:
+catcat> define name_size ( str -- i64 ! ) { strlen }
+error: name_size declares no effects but its body has !C !Unsafe
+catcat> \ `unsafe { … }` is how you vouch for the call. It is an effect with no
+\ operations, so discharging it is a claim and not a check — exactly as much
+\ of a promise as the word says it is. Note what survives: `!C` stays, because
+\ vouching for the memory safety of a call does not stop it being a call.
+catcat> define name_size ( str -- i64 !C ) { unsafe { strlen } }
+defined name_size ( str -- i64 !C )
+catcat> "catcat" name_size show print "\n" print
+6
+ok  (empty)
+catcat> \ `unsafe` is a handler, not a keyword with a compiler rule behind it:
+catcat> locate name_size
+define name_size ( str -- i64 !C ) {
+  handle Unsafe over (  ) init { } { } { strlen }
+}
+catcat> \ ======================================================================
+\ The point: a deterministic test of code that calls libc
+\ ======================================================================
+catcat> \ Something worth testing, and hard to test. It reads the environment, asks
+\ the OS for a pid and asks the clock for the time, so it answers differently
+\ on every machine and in every second.
+catcat> define session_tag ( -- i64 !C ) {
+  unsafe { "HOME" getenv strlen getpid + time + }
+}
+defined session_tag ( -- i64 !C )
+catcat> \ This file's output is checked against a golden transcript by `make demos`,
+\ so it cannot print that number — which is precisely the problem. Call it and
+\ throw the answer away:
+catcat> session_tag pop
+ok  (empty)
+catcat> \ Now handle `C`. One handler, four implementations, and the program under
+\ test is untouched: `session_tag` was compiled against the real symbols and
+\ knows nothing about this.
+catcat> define fixed ( -- i64 ) {
+  handle C over ( ) init { } {
+    getenv { pop "/home/tester" }
+    strlen { pop 12 }
+    getpid { 4242 }
+    time   { 1700000000 }
+  } { session_tag }
+}
+defined fixed ( -- i64 )
+catcat> "mocked: " print fixed show print "\n" print
+"mocked: " print fixed show print "\n" print
+mocked: 1700004254
+mocked: 1700004254
+ok  (empty)
+catcat> \ Twice the same, and the same on any machine — which is why those two lines
+\ can live in a golden file and `session_tag`'s cannot.
+catcat> \ Read `fixed`'s signature again: it is NOT `!C`. Handling the effect
+\ discharged it, so the type records that this version does not talk to the
+\ outside world. The test is typed as the pure computation it is.
+catcat> \ ======================================================================
+\ What is missing here
+\ ======================================================================
+catcat> \ `extern` reaches a fixed table of six libc symbols rather than `dlsym`,
+\ because calling an arbitrary symbol needs libffi to build a call frame at
+\ run time. Nothing on the catcat side would change if it did. A name outside
+\ the table declares fine and is reported at the CALL, as an operation that
+\ escaped — which is exactly what it is:
+catcat> extern nosuchfn ( -- i64 )
+extern nosuchfn ( -- i64 !C !Unsafe )
+catcat> unsafe { nosuchfn }
+unhandled: nosuchfn escaped with no handler in scope
+catcat> \ And it can be mocked like any other, which is how you would develop against
+\ a symbol the host does not have yet:
+catcat> handle C over ( ) init { } { nosuchfn { 7 } } { unsafe { nosuchfn } }
+show print "\n" print
+7
+ok  (empty)

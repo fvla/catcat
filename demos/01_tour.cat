@@ -1,0 +1,91 @@
+\ ======================================================================
+\ 01 — a tour. What the language does before any of the interesting parts.
+\
+\ Run:  make demos      (checks this against 01_tour.expected)
+\ or:   ./_build/default/bin/catcat.exe -f demos/01_tour.cat
+\
+\ Every paragraph below is fed to the REPL as one line, so the transcript
+\ you get back reads as a session. Comments are `\` to end of line.
+\ ======================================================================
+
+\ --- 1. Postfix arithmetic. The top of the stack is the RIGHT operand.
+
+10 3 - show print "\n" print
+
+\ --- 2. `define`. The signature is INFERRED; you do not have to write one.
+
+define sq { dup * }
+
+\ Writing one is an assertion, checked against what the body actually does.
+
+define cube ( i64 -- i64 ) { dup dup * * }
+
+7 sq show print "\n" print
+3 cube show print "\n" print
+
+\ A wrong assertion is rejected at the definition, not at the call.
+
+define wrong ( i64 -- str ) { dup * }
+
+\ --- 3. Named parameters. `$x` binds the top of the input segment.
+\ They exist so that deep stack shuffling never has to be written by hand:
+\ `dup`, `pop` and `swap` reach two slots and no composition of them reaches
+\ a third.
+
+define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
+
+3 4 hypotsq show print "\n" print
+
+\ --- 4. Conditionals. `if { cond } then { conseq } else { alt } endif`.
+\ The condition block runs INLINE and leaves a bool; it may be empty when the
+\ bool is already there.
+
+define abs { dup 0 < if { } then { 0 swap - } endif }
+
+-5 abs show print " " print
+5 abs show print "\n" print
+
+\ The branches must agree on what they leave behind, not on how they are
+\ written. Here `then` is ( -- ) and the implicit `else` is ( i64 -- i64 );
+\ framing the first by an i64 makes them agree.
+
+define dec_if_big { dup 10 < if { } then { 1 - } endif }
+
+\ Disagreeing on the result is what gets rejected.
+
+define mismatch { dup 0 < if { } then { true } else { 1 } endif }
+
+\ --- 5. Recursion. A word's own name is not in scope in its body; `recurse`
+\ is. The signature is mandatory, because inferring the type of a word that
+\ calls itself is solving a fixpoint.
+
+define fact ( i64 -- i64 !Rec ) { dup 0 <= if { } then { pop 1 } else { dup 1 - recurse * } endif }
+
+\ `!Rec` is what "may not terminate" looks like in a type, and it propagates.
+\ A written stack effect does NOT mean the effects are written too — the row is
+\ inferred unless some `!` appears, so this picks up `!Rec` without asking.
+
+define fact10 ( -- i64 ) { 10 fact }
+
+\ A bare `!` is how you assert there are none, and it is held to.
+
+define pure10 ( -- i64 ! ) { 10 fact }
+
+fact10 show print "\n" print
+
+\ A loop is a tail call. The continuation does not grow.
+
+define countdown ( $n:i64 -- !IO !Rec ) { $n 0 <= if { } then { } else { $n show print " " print $n 1 - recurse } endif }
+
+5 countdown "\n" print
+
+\ --- 6. Strings.
+
+"catcat" " is " cat "concatenative" cat "\n" cat print
+
+\ --- 7. `locate` decompiles a word from the core term. There is no source
+\ text kept anywhere; what you see is what the elaborator produced.
+
+locate hypotsq
+
+locate abs

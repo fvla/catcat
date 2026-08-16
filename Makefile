@@ -98,6 +98,38 @@ catcat: generated/E06_Repl.ml
 	dune build bin/catcat.exe
 	@echo "built ./_build/default/bin/catcat.exe"
 
+# Demos. Each `demos/NN.cat` has a `demos/NN.expected` holding the exact session
+# transcript it produces, so the demos are a golden-output regression suite and
+# not decoration: a change to the elaborator that alters what a demo prints
+# fails here. `demos-accept` regenerates the goldens — it accepts whatever the
+# binary does, so the real check is reading the diff before running it.
+DEMO_SRC := $(sort $(wildcard demos/*.cat))
+CATCAT   := ./_build/default/bin/catcat.exe
+
+.PHONY: demos demos-accept
+
+demos: catcat
+	@fail=0; \
+	for d in $(DEMO_SRC); do \
+	  exp="$${d%.cat}.expected"; \
+	  got=$$($(CATCAT) -f $$d 2>&1); \
+	  if [ ! -f "$$exp" ]; then \
+	    echo "--- $$d  NO GOLDEN (run 'make demos-accept')"; fail=1; \
+	  elif [ "$$got" = "$$(cat $$exp)" ]; then \
+	    echo "--- $$d  ok"; \
+	  else \
+	    echo "--- $$d  FAILED"; \
+	    printf '%s\n' "$$got" | diff -u "$$exp" - | head -60; fail=1; \
+	  fi; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "demos FAILED"; exit 1; else echo "all demos ok"; fi
+
+demos-accept: catcat
+	@for d in $(DEMO_SRC); do \
+	  $(CATCAT) -f $$d > "$${d%.cat}.expected" 2>&1; \
+	  echo "accepted $$d"; \
+	done
+
 admits:
 	@grep -rn 'admit ()\|^assume val' $(SPEC_SRC) $(REF_SRC) || echo "no admits"
 

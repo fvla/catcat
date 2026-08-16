@@ -308,3 +308,49 @@ that ignored rebinding would be the one construct in the language that does.
 *Closes when:* it is decided whether a generic body is a closure over its
 declaration environment or a template read at each use. Nothing forces it today
 because the cache is scoped to one declaration either way.
+
+**Q-21. `with` does not reach into a generic instance.** Found by writing
+`demos/04_generics_and_staging.cat`, which set out to show that the code a
+generic splices in is ordinary code and discovered that it is not reachable:
+
+```
+catcat> define bump ( i64 -- i64 ) { 1 + }
+catcat> define stepper[#T] ( #T i64 -- #T i64 ) { bump }
+catcat> define run     ( -- str i64 ) { "tag" 0 stepper }
+catcat> define run_big ( -- str i64 ) { with { bump big_bump } { "tag" 0 stepper } }
+catcat> locate run
+define run ( -- str i64 ) {
+  "tag" 0 1 +
+}
+```
+
+Both answer 1. The residual says why: `bump` is already gone.
+
+*Mechanism.* An instance is a `TSpecialize` (D-83), and `E06.discharge_dict`'s
+`TSpecialize` case resolves the body against the Dictionary right there. That
+runs inside `install_instance`, which `E06.eval_decl` calls **before**
+`install_def` discharges the caller's static `Dict` frames — so by the time the
+`with` is processed there is no `TWord bump` left to rewrite. Nothing is wrong
+with either pass; they are correctly ordered for what each was built to do, and
+the interaction was not considered.
+
+*Why it is a question and not a bug.* Reversing the order is not obviously
+right. An instance is supposed to be fully resolved — that is what makes
+`locate q` show `dup dup dup` and what makes the zero-cost claim checkable —
+and deferring resolution until the caller's frames are discharged means an
+instance is no longer a self-contained residual. It also interacts with the
+D-85 cache: two call sites with different `with` frames around them would need
+different instances at the same key, so the key would have to include the
+enclosing frames.
+
+*It is the same question as Q-20*, from the other end. Q-20 asks whether a
+generic body closes over its declaration environment or reads it at each use;
+this asks whether the ambient Dictionary at the CALL is part of that
+environment. A single answer settles both, and the answer that keeps the cache
+cheapest — pin the schema to its declaration environment — is the one that makes
+`with` reaching in impossible rather than merely unimplemented.
+
+*Cost of leaving open:* a composition a reader will expect to work and which
+silently does nothing. It is silent, not wrong: the program still means what its
+text says, it just ignores the rebinding. Documented in `U01` §9 and demo 04.
+*Closes when:* Q-20 closes.

@@ -1,0 +1,117 @@
+\ ======================================================================
+\ 06 — failing, and recovering.
+\
+\ THE CLAIM (D-71): aborting is not a control-flow primitive. `Fail` is an
+\ effect with one operation, `try`/`catch` is its handler, and `!Fail` in a
+\ row means "this may not return normally" the same way `!IO` means "this may
+\ print". It composes with everything in demos 02–05 because it is not
+\ special.
+\
+\ This is also the demo with the most honest gaps in it, and they are all one
+\ gap: failure carries no value yet.
+\ ======================================================================
+
+\ --- Unhandled, `fail` escapes to the top like any other operation.
+
+fail
+
+\ --- `try { … } catch { … }` discharges it. The row of the whole expression
+\ has no `!Fail` in it.
+
+define validate ( $n:i64 -- i64 !Fail ) { $n 0 < if { } then { fail 0 } else { $n } endif }
+
+try { 7 validate } catch { 0 } show print " " print
+try { -7 validate } catch { 0 } show print "\n" print
+
+\ --- A LIMIT, up front, because it shapes everything below. A `try` block
+\ runs on a FRESH stack: it cannot reach what was already there, and a local
+\ is a stack slot, so it cannot reach one of those either. The value to be
+\ validated has to be produced INSIDE the block, which is why both lines above
+\ carry their own literal.
+
+define or_zero ( $n:i64 -- i64 ) { try { $n validate } catch { 0 } }
+
+\ The core does not require this. The elaborator's stack model cannot compute
+\ how deep a block reached, so it gives the block nothing rather than guessing.
+\ It is the single biggest thing standing between `try` and ordinary use.
+
+\ Look at `validate`'s body: `fail 0`. `fail` is `( -- !Fail )`, so it cannot
+\ stand where a value is expected, and the two branches of an `if` must agree
+\ on what they leave behind. The `0` is dead — nothing runs after `fail` — and
+\ it is there only to make the branch types line up. What is wanted is a `fail`
+\ at the empty type, `( -- #A !Fail )`; the core already HAS the empty type
+\ (`TSum []`, uninhabited) and generics now exist, so this is a small change
+\ that has not been made. See U01 §9.
+
+\ --- Everything the try block built is discarded, so `catch` takes no inputs
+\ and must leave what the try block would have left.
+
+try { 1 2 3 + + fail } catch { -1 } show print "\n" print
+
+\ --- Disagreeing about that is what gets rejected:
+
+try { 42 } catch { "nope" }
+
+\ ======================================================================
+\ Composing
+\ ======================================================================
+
+effect Log { declare say ( str -- ) }
+
+\ A word that both logs and may fail carries both:
+
+define risky ( $n:i64 -- i64 !Log !Fail ) {
+  "  checking\n" say
+  $n 100 < if { } then { $n } else { "  too big\n" say fail 0 } endif
+}
+
+\ Handle them in either order — they are independent rows, not a monad stack
+\ that has to be assembled in the right sequence.
+
+define small ( -- i64 ) {
+  handle Log over ( ) init { } { say { print } } { try { 42 risky } catch { -1 } }
+}
+
+define big ( -- i64 ) {
+  handle Log over ( ) init { } { say { print } } { try { 999 risky } catch { -1 } }
+}
+
+"(a) 42:\n" print small show print "\n" print
+"(b) 999:\n" print big show print "\n" print
+
+\ Note that (b) printed "checking" and "too big" before failing. The log
+\ survives the abort because the handler is OUTSIDE the `try`: the abort cuts
+\ the stack back, not the effects already performed. Put the handler inside
+\ and the captured log would be discarded with everything else.
+
+\ --- And with the Dictionary: `validate` is an ordinary word, so demo 03's
+\ rebinding replaces the whole failing policy from outside.
+
+define permissive ( i64 -- i64 ) { }
+
+define lenient ( -- i64 ) { with { validate permissive } { try { -7 validate } catch { 0 } } }
+
+lenient show print "\n" print
+
+\ ======================================================================
+\ The gaps, named
+\ ======================================================================
+
+\ 1. `fail` takes no payload and `catch` receives none, so a failure cannot
+\    say what went wrong. That is why the prelude's `parse` returns 0 on bad
+\    input and `getenv` returns "" when unset: their honest signatures are
+\    `( str -- i64 !Fail )` and `( str -- str !Fail )`, and the reason they
+\    still return sentinels is not that failure is unavailable but that a
+\    caller who WANTS the sentinel has no way to ask for it back.
+
+"not a number" parse show print "\n" print
+
+\ 2. The fresh-stack rule from the top of this file, restated as the error you
+\    actually hit:
+
+define reaches ( i64 -- i64 ) { try { 1 + } catch { 0 } }
+
+\ 3. An abort discards values without consulting their capabilities, so a
+\    linear value in flight when a `fail` fires is leaked rather than
+\    released. Tracked as Q-17 in NOTES/N02_Open_Questions.md. Nothing
+\    demonstrates it yet, because no surface word constructs a `Box`.

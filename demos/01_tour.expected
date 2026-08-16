@@ -1,0 +1,89 @@
+catcat> \ ======================================================================
+\ 01 — a tour. What the language does before any of the interesting parts.
+\
+\ Run:  make demos      (checks this against 01_tour.expected)
+\ or:   ./_build/default/bin/catcat.exe -f demos/01_tour.cat
+\
+\ Every paragraph below is fed to the REPL as one line, so the transcript
+\ you get back reads as a session. Comments are `\` to end of line.
+\ ======================================================================
+catcat> \ --- 1. Postfix arithmetic. The top of the stack is the RIGHT operand.
+catcat> 10 3 - show print "\n" print
+7
+ok  (empty)
+catcat> \ --- 2. `define`. The signature is INFERRED; you do not have to write one.
+catcat> define sq { dup * }
+defined sq ( i64 -- i64 )
+catcat> \ Writing one is an assertion, checked against what the body actually does.
+catcat> define cube ( i64 -- i64 ) { dup dup * * }
+defined cube ( i64 -- i64 )
+catcat> 7 sq show print "\n" print
+3 cube show print "\n" print
+49
+27
+ok  (empty)
+catcat> \ A wrong assertion is rejected at the definition, not at the call.
+catcat> define wrong ( i64 -- str ) { dup * }
+error: wrong declares ( i64 -- str ) but its body has ( i64 -- i64 )
+catcat> \ --- 3. Named parameters. `$x` binds the top of the input segment.
+\ They exist so that deep stack shuffling never has to be written by hand:
+\ `dup`, `pop` and `swap` reach two slots and no composition of them reaches
+\ a third.
+catcat> define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
+defined hypotsq ( i64 i64 -- i64 )
+catcat> 3 4 hypotsq show print "\n" print
+25
+ok  (empty)
+catcat> \ --- 4. Conditionals. `if { cond } then { conseq } else { alt } endif`.
+\ The condition block runs INLINE and leaves a bool; it may be empty when the
+\ bool is already there.
+catcat> define abs { dup 0 < if { } then { 0 swap - } endif }
+defined abs ( i64 -- i64 )
+catcat> -5 abs show print " " print
+5 abs show print "\n" print
+5 5
+ok  (empty)
+catcat> \ The branches must agree on what they leave behind, not on how they are
+\ written. Here `then` is ( -- ) and the implicit `else` is ( i64 -- i64 );
+\ framing the first by an i64 makes them agree.
+catcat> define dec_if_big { dup 10 < if { } then { 1 - } endif }
+defined dec_if_big ( i64 -- i64 )
+catcat> \ Disagreeing on the result is what gets rejected.
+catcat> define mismatch { dup 0 < if { } then { true } else { 1 } endif }
+error: the branches of an if leave different types on the stack
+catcat> \ --- 5. Recursion. A word's own name is not in scope in its body; `recurse`
+\ is. The signature is mandatory, because inferring the type of a word that
+\ calls itself is solving a fixpoint.
+catcat> define fact ( i64 -- i64 !Rec ) { dup 0 <= if { } then { pop 1 } else { dup 1 - recurse * } endif }
+defined fact ( i64 -- i64 !Rec )
+catcat> \ `!Rec` is what "may not terminate" looks like in a type, and it propagates.
+\ A written stack effect does NOT mean the effects are written too — the row is
+\ inferred unless some `!` appears, so this picks up `!Rec` without asking.
+catcat> define fact10 ( -- i64 ) { 10 fact }
+defined fact10 ( -- i64 !Rec )
+catcat> \ A bare `!` is how you assert there are none, and it is held to.
+catcat> define pure10 ( -- i64 ! ) { 10 fact }
+error: pure10 declares no effects but its body has !Rec
+catcat> fact10 show print "\n" print
+3628800
+ok  (empty)
+catcat> \ A loop is a tail call. The continuation does not grow.
+catcat> define countdown ( $n:i64 -- !IO !Rec ) { $n 0 <= if { } then { } else { $n show print " " print $n 1 - recurse } endif }
+defined countdown ( i64 -- !IO !Rec )
+catcat> 5 countdown "\n" print
+5 4 3 2 1 
+ok  (empty)
+catcat> \ --- 6. Strings.
+catcat> "catcat" " is " cat "concatenative" cat "\n" cat print
+catcat is concatenative
+ok  (empty)
+catcat> \ --- 7. `locate` decompiles a word from the core term. There is no source
+\ text kept anywhere; what you see is what the elaborator produced.
+catcat> locate hypotsq
+define hypotsq ( i64 i64 -- i64 ) {
+  pick.1 pick.2 * pick.1 pick.2 * + roll.1 pop roll.1 pop
+}
+catcat> locate abs
+define abs ( i64 -- i64 ) {
+  dup 0 < if { } then { 0 swap - } else { } endif
+}

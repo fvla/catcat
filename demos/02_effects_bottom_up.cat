@@ -1,0 +1,103 @@
+\ ======================================================================
+\ 02 — effects, bottom-up.
+\
+\ THE CLAIM (D01 §1, D-01): a word performs an operation and says so in its
+\ type. What the operation MEANS is not decided there; it is supplied by
+\ whoever handles it further out. So one program text has as many meanings as
+\ you care to write handlers for, and the program never mentions any of them.
+\ ======================================================================
+
+\ --- An effect is a set of operation signatures. `declare` requires one:
+\ there is no body to infer it from.
+
+effect Log { declare say ( str -- ) }
+
+\ --- Words that log. The effect appears in the type and PROPAGATES: only
+\ `step1` and `step2` mention `say`, yet `pipeline` picks up `!Log` without
+\ being asked, because a written stack effect leaves the row to be inferred.
+
+define step1    ( i64 -- i64 !Log ) { "  squaring\n" say dup * }
+define step2    ( i64 -- i64 !Log ) { "  adding one\n" say 1 + }
+define pipeline ( i64 -- i64 )      { step1 step2 }
+
+\ The propagation is not advisory. A word that claims to be pure and calls one
+\ that is not is rejected — this is the "must be specified up the line" half of
+\ the claim, enforced.
+
+define sneaky ( i64 -- i64 ! ) { pipeline }
+
+\ Unhandled, the operation escapes to the host, which has no implementation
+\ for a user-declared effect and says so.
+
+3 pipeline
+
+\ ======================================================================
+\ Now the same four words, four times, unmodified.
+\ ======================================================================
+
+\ --- (a) Print it. The handler turns `say` into IO, so the handled
+\ expression is `!IO` — the row records what the MEANING costs, not what the
+\ program asked for.
+
+"(a) printing:\n" print
+handle Log over ( ) init { } { say { print } } { 3 pipeline } show print "\n" print
+
+\ --- (b) Throw it away. Now the same expression is pure. Not "pure except
+\ for logging" — pure, and a caller may treat it as such.
+
+"(b) discarding:\n" print
+handle Log over ( ) init { } { say { pop } } { 3 pipeline } show print "\n" print
+
+\ --- (c) Count the messages. A handler may carry STATE, which is what makes
+\ it an object rather than a function (D-36): `over ( i64 )` declares the
+\ state segment, `init` gives its value, and each implementation is checked at
+\ `( state args -- state results )` with the state on TOP.
+\
+\ On exit the handler leaves its final state above the result.
+
+"(c) counting: " print
+handle Log over ( i64 ) init { 0 } { say { swap pop 1 + } } { 3 pipeline }
+show print " messages, result " print show print "\n" print
+
+\ --- (d) Capture it. Same shape as (c), with a `str` for state instead of a
+\ counter — so the log becomes a VALUE, with no file, no buffer and no IO.
+
+"(d) capturing:\n" print
+handle Log over ( str ) init { "" } { say { swap cat } } { 3 pipeline }
+swap pop print
+
+\ ======================================================================
+\ Two more properties worth seeing.
+\ ======================================================================
+
+\ --- Handlers LAYER. An implementation may itself perform an operation, so a
+\ handler is a transformer and not only a sink: this one adds a tag and passes
+\ the message on to a second effect, which the enclosing handler prints. The
+\ program in the middle is still `pipeline`, still unmodified.
+
+effect Audit { declare note ( str -- ) }
+
+"(e) layered — inner tags, outer prints:\n" print
+handle Audit over ( ) init { } { note { print } } {
+  handle Log over ( ) init { } { say { "    [tagged] " swap cat note } } { 3 pipeline }
+} show print "\n" print
+
+\ --- What is NOT allowed is a handler re-entering itself. Its state is lent
+\ to the implementation while that runs, so an operation that reaches the same
+\ frame finds no state and the machine stops. This is a DYNAMIC check in a
+\ language whose linearity is otherwise static, and it is tracked as Q-12 in
+\ NOTES/N02_Open_Questions.md. Failing loudly is the acceptable direction.
+
+handle Log over ( ) init { } { say { "x" swap cat say } } { 3 pipeline }
+
+\ --- A hole, shown deliberately. A handler that implements NONE of its
+\ effect's operations still discharges the effect from the row, while the
+\ machine forwards the operation outward. So this typechecks as pure...
+
+define notpure ( i64 -- i64 ! ) { handle Log over ( ) init { } { } { pipeline } }
+
+\ ...and still escapes at run time. That is how `unsafe` and `handle Rec` work
+\ — those effects have no operations to leave unimplemented — but for `Log` it
+\ is a real gap, tracked as Q-16. A demo should show its language's holes.
+
+3 notpure

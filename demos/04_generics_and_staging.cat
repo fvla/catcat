@@ -1,0 +1,136 @@
+\ ======================================================================
+\ 04 — generics, and what staging means.
+\
+\ THE CLAIM (D01 §3.2, D-02, D-83): a generic is not a second mechanism. It is
+\ the SAME `specialize` that runs the Dictionary in demo 03, run at
+\ elaboration time instead of at run time. So a generic call leaves no name,
+\ no dictionary entry, no lookup and no type argument in the compiled program
+\ — the code that is there is the code for the types you called it at, and
+\ `locate` will show you.
+\ ======================================================================
+
+\ --- Declaring one. Type parameters go in `[…]` and appear as `#T`.
+\ A generic MUST write its signature: inference never generalises, so there
+\ would be nothing to generalise from.
+
+define twice[#T] ( #T -- #T #T ) { dup }
+
+5 twice show print " " print show print "\n" print
+
+"hi" twice print print "\n" print
+
+\ --- The types come from the stack, and each call gets its own copy, spliced
+\ into the caller. `quad` is written once over `#T` and calls `twice` three
+\ times; `q` calls it at `i64`. Nothing polymorphic survives:
+
+define quad[#T] ( #T -- #T #T #T #T ) { twice twice twice }
+
+define q ( i64 -- i64 i64 i64 i64 ) { quad }
+
+locate q
+
+\ That is the whole zero-cost story, and it is not a promise about an
+\ optimizer. There is nowhere for a cost to hide: the residual is the program.
+
+\ --- Generics call generics, at concrete types or at their own parameters.
+
+define outer[#T] ( #T -- #T #T ) { twice[#T] }
+
+9 outer show print " " print show print "\n" print
+
+\ What one may NOT do is call itself, directly or through another. A call is
+\ expanded where it stands, so a self-call asks to be expanded forever — and
+\ this is caught by NAME, so it also catches mutual and polymorphic recursion.
+
+define loopy[#T] ( #T -- #T ) { loopy[#T] }
+
+1 loopy
+
+\ ======================================================================
+\ Writing the types out
+\ ======================================================================
+
+\ Matched types have to be pinned down by the INPUTS — the outputs are what
+\ the call is trying to work out. A generic whose parameter appears only in
+\ the output must be instantiated explicitly.
+
+define mk0[#T] ( -- #T ) { 0 }
+
+mk0
+
+mk0[i64] show print "\n" print
+
+\ Written types are CHECKED, not believed. They go to the same matcher, so the
+\ stack must still agree and the body must still typecheck at them.
+
+mk0[str]
+
+1 twice[str]
+
+\ ======================================================================
+\ Linearity crosses generics with no extra rule
+\ ======================================================================
+
+\ `twice` is `{ dup }`, and `dup` needs its type to be `Copy`. `Box[t]` is
+\ neither `Copy` nor `Drop` — it is linear — so `twice` is simply not
+\ available at that type. The error comes from the body, checked at the call.
+
+define boxy ( Box[i64] -- Box[i64] Box[i64] ) { twice }
+
+\ ======================================================================
+\ Generics compose with effects, and with the Dictionary
+\ ======================================================================
+
+effect Log { declare say ( str -- ) }
+
+\ A generic body may perform operations. The row is part of the schema, so
+\ every instance carries it.
+
+define watched[#T] ( #T -- #T !Log ) { "  saw a value\n" say }
+
+define use ( i64 -- i64 !Log ) { watched 1 + }
+
+"(a) a generic that logs:\n" print
+handle Log over ( i64 ) init { 0 } { say { swap pop 1 + } } { 41 use }
+show print " message(s), result " print show print "\n" print
+
+\ --- A LIMIT, and it is the price of the staging above. Demo 03's rebinding
+\ does NOT reach into a generic instance. An instance is a `TSpecialize`, and
+\ specializing resolves every word it calls right there — so by the time a
+\ caller's `with` runs there is no call left to rebind:
+
+define bump ( i64 -- i64 ) { 1 + }
+define stepper[#T] ( #T i64 -- #T i64 ) { bump }
+define big_bump ( i64 -- i64 ) { 1000 + }
+
+define run ( -- str i64 ) { "tag" 0 stepper }
+define run_big ( -- str i64 ) { with { bump big_bump } { "tag" 0 stepper } }
+
+run swap pop show print " " print
+run_big swap pop show print "\n" print
+
+\ Both print 1. The residual says why — `bump` is already gone:
+
+locate run
+
+\ Rebinding a word a generic calls therefore has to happen before the
+\ instantiation, not around it. Whether that is the right order is open, and
+\ tracked as Q-21 in NOTES/N02_Open_Questions.md; it is the same question as
+\ Q-20, which asks whether a generic body should close over the environment of
+\ its declaration or read it at each use.
+
+\ --- Sharing. Identical instantiations are ELABORATED once and the result
+\ reused, which is what keeps nesting from multiplying out: this chain would
+\ otherwise build 3^4 copies of `twice`, and it returns immediately.
+
+define g2[#T] ( #T -- #T #T #T #T ) { quad[#T] pop pop pop quad[#T] pop pop pop quad[#T] }
+define g3[#T] ( #T -- #T #T #T #T ) { g2[#T] pop pop pop g2[#T] pop pop pop g2[#T] }
+
+define deep ( i64 -- i64 i64 i64 i64 ) { g3[i64] }
+
+locate deep
+
+\ What is not yet shared is the emitted CODE — each call site carries its own
+\ copy of the residual. The copies are now structurally equal, so what is
+\ missing is a common-subexpression pass over the core rather than anything
+\ about generics. Tracked as Q-19 in NOTES/N02_Open_Questions.md.

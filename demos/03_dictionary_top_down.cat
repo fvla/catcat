@@ -1,0 +1,126 @@
+\ ======================================================================
+\ 03 — the Dictionary, top-down.
+\
+\ THE CLAIM (D01 §1, D-09, D-37): the Dictionary — the map from a name to what
+\ it means — is itself an effect, `Dict`, ambient in every program and never
+\ written down. So the words a program calls can be REBOUND from outside it,
+\ with no cooperation from the program, no interface it had to implement, and
+\ no indirection it had to pay for in advance.
+\
+\ Demo 02 needed the program to declare `!Log`. Nothing below needs anything.
+\ ======================================================================
+
+\ --- Ordinary code. Nothing here anticipates being reinterpreted.
+
+define rate  ( -- i64 )        { 10 }
+define tax   ( $amt:i64 -- i64 ) { $amt rate * 100 / }
+define total ( $amt:i64 -- i64 ) { $amt $amt tax + }
+
+200 total show print "\n" print
+
+\ ======================================================================
+\ (a) `with` — rebinding resolved at ELABORATION time.
+\ ======================================================================
+
+\ `with { old new } { body }` runs the body with `old` meaning `new`. It is
+\ sugar for a `Dict` handler, discharged while the program is being built.
+
+define eu_rate ( -- i64 ) { 20 }
+
+define eu_total ( $amt:i64 -- i64 ) { with { rate eu_rate } { $amt total } }
+
+200 eu_total show print "\n" print
+
+\ It reaches THROUGH `total` into `tax`, which is where `rate` is actually
+\ called. That is not scope-based: `rate` is not a parameter of anything, and
+\ the block does not lexically contain the call site.
+
+\ And it costs nothing. `locate` decompiles the stored core term — there is no
+\ source text kept — so this is the compiled program, and the `with` is gone:
+
+locate eu_total
+
+\ How much further it inlines depends on definition order, and ONLY the
+\ residual's size does, never the answer. The discharge pass walks the words
+\ once from newest to oldest, so `eu_rate` — defined *after* the `rate` it
+\ replaces — survives as a call. A replacement that is OLDER gets inlined in
+\ its turn, and the whole thing folds to a constant:
+
+define zero_rate ( -- i64 ) { 0 }
+define rate2  ( -- i64 )         { 10 }
+define tax2   ( $amt:i64 -- i64 ) { $amt rate2 * 100 / }
+define duty_free ( $amt:i64 -- i64 ) { with { rate2 zero_rate } { $amt tax2 } }
+
+locate duty_free
+
+\ --- The replacement must have the same STACK effect. Effects may differ
+\ freely; that is the point of the construct.
+
+define bad ( $amt:i64 -- i64 ) { with { rate not } { $amt total } }
+
+\ --- Rebinding can REMOVE an effect from the type. `audited` is `!IO`;
+\ swapping the noisy word for a quiet one makes the caller pure, and the
+\ purity is in the signature, not a comment.
+
+define log_rate ( -- i64 ) { "  rate looked up\n" print 10 }
+define quiet_rate ( -- i64 ) { 10 }
+
+define audited ( $amt:i64 -- i64 ) { with { rate log_rate } { $amt total } }
+define silent  ( $amt:i64 -- i64 ) { with { log_rate quiet_rate } { $amt audited } }
+
+200 audited show print "\n" print
+200 silent show print "\n" print
+
+\ ======================================================================
+\ (b) `handle Dict` — the same rebinding resolved at RUN time.
+\ ======================================================================
+
+\ Same construct, later. `with` is discharged during elaboration and costs
+\ nothing; `handle Dict` is a frame consulted at the call and costs a lookup.
+\ The ANSWER is the same, because they are one thing resolved at two times —
+\ which is D-02, "compile-time specialization and runtime JIT are the same
+\ operation", shown rather than asserted.
+
+handle Dict over ( ) init { } { rate { eu_rate } } { 200 total } show print "\n" print
+
+\ ======================================================================
+\ (c) A profiler, over code that knows nothing about profiling.
+\ ======================================================================
+
+\ A `Dict` handler may carry state, so it is a class over a WORD. Here the
+\ state is a call counter and the replacement does the original work and then
+\ bumps it. State sits on TOP, so the implementation is `( amt count -- result count )`.
+
+define tax_impl ( $amt:i64 -- i64 ) { $amt rate * 100 / }
+
+"(c) profiling `total`, unmodified:\n  " print
+handle Dict over ( i64 ) init { 0 } { tax { swap tax_impl swap 1 + } } { 200 total }
+show print " call(s) to tax, total " print show print "\n" print
+
+\ Read that again: `tax` is an ORDINARY WORD, not an operation. It has no
+\ effect in its signature, `total` was compiled against the real one, and the
+\ handler still intercepted it. Instrumentation with no instrumentation.
+
+\ The wrapper is a separate word on purpose. Calling `tax` from inside its own
+\ replacement would reach the same frame while its state is lent out, which
+\ the machine refuses (Q-12) — the same rule demo 02 showed for `Log`:
+
+handle Dict over ( i64 ) init { 0 } { tax { swap tax swap 1 + } } { 200 total }
+
+\ ======================================================================
+\ (d) Mocking a dependency.
+\ ======================================================================
+
+\ The practical form of all of the above: replace what a program depends on,
+\ at the call, without a seam having been designed in. `now` is not injected,
+\ not a parameter, and not behind an interface.
+
+define now ( -- i64 !IO ) { "  (asking the clock)\n" print 1000 }
+define stamped ( $x:i64 -- i64 !IO ) { $x now + }
+
+define frozen ( -- i64 ) { 5 }
+
+7 stamped show print "\n" print
+
+"(d) with a frozen clock: " print
+handle Dict over ( ) init { } { now { frozen } } { 7 stamped } show print "\n" print

@@ -119,6 +119,41 @@ let rec loop session =
       loop session
   | line -> loop (step session line)
 
+(* Script mode: `-f FILE` turns a file into a list of lines.
+
+   A file is split on BLANK LINES and each paragraph is run as one line. Not
+   line by line, because a declaration may span lines; and not whole-file as a
+   single line, because `eval_line` streams whatever IO the line performs but
+   batches its own results (`defined …`, `ok …`) to the end — so a one-line file
+   would print every result after every effect, which is the wrong transcript.
+
+   Blank-line splitting needs no knowledge of catcat syntax, which is the point:
+   the granularity is the file author's, and the host stays out of the parser's
+   business (D-54 — only E06 knows where a declaration ends). The one input it
+   reads wrongly is a string literal spanning a blank line, which U01 §2 permits;
+   that fails loudly as an unterminated string rather than quietly. *)
+let paragraphs text =
+  let is_blank s = String.trim s = "" in
+  let flush acc cur =
+    if cur = [] then acc else String.concat "\n" (List.rev cur) :: acc
+  in
+  let rec go acc cur = function
+    | [] -> List.rev (flush acc cur)
+    | l :: rest ->
+        if is_blank l then go (flush acc cur) [] rest else go acc (l :: cur) rest
+  in
+  go [] [] (String.split_on_char '\n' text)
+
+let read_file path =
+  match open_in_bin path with
+  | exception Sys_error msg ->
+      prerr_endline ("catcat: " ^ msg);
+      exit 2
+  | ic ->
+      let s = really_input_string ic (in_channel_length ic) in
+      close_in ic;
+      s
+
 let () =
   let args = List.tl (Array.to_list Sys.argv) in
   if args = [] then begin
@@ -126,10 +161,20 @@ let () =
     loop E06_Repl.init_session
   end
   else
-    (* Non-interactive: run each argument as a line. *)
+    (* Non-interactive: run each argument as a line, and each `-f FILE` as the
+       paragraphs of that file. One session throughout, so a file may set up
+       definitions that a later argument uses. *)
+    let rec expand = function
+      | [] -> []
+      | ("-f" | "--file") :: path :: rest -> paragraphs (read_file path) @ expand rest
+      | [ ("-f" | "--file") ] ->
+          prerr_endline "catcat: -f needs a file";
+          exit 2
+      | line :: rest -> line :: expand rest
+    in
     ignore
       (List.fold_left
          (fun session line ->
            print_endline ("catcat> " ^ line);
            step session line)
-         E06_Repl.init_session args)
+         E06_Repl.init_session (expand args))

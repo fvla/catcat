@@ -1,0 +1,118 @@
+\ ======================================================================
+\ 07 — one script, three modes: production, dry run, audit.
+\
+\ The capstone, and the one that is about utility rather than about a design
+\ claim. Every real deployment script grows a `--dry-run` flag, and the flag
+\ leaks: an `if dry_run` at every step, checked by nobody, and a code path
+\ that is only exercised when someone remembers to test it.
+\
+\ Here the script has no flag and no branch. It says WHAT to do; a handler
+\ chosen at the call says what doing it means. The dry run is not a mode of
+\ the script — it is a different meaning for the same script.
+\ ======================================================================
+
+\ --- The vocabulary of the job, as an effect. Nothing here is an
+\ implementation; these are the things a deployment is allowed to do.
+
+effect Deploy {
+    declare fetch   ( str -- str )
+    declare install ( str -- )
+    declare restart ( str -- )
+}
+
+\ --- The script. This is the whole program, and it is the same text in all
+\ three modes below. Its type says exactly what it can touch: `!Deploy`, and
+\ nothing else. It cannot print, cannot call C, cannot fail.
+
+define one ( $svc:str -- !Deploy ) { $svc fetch install $svc restart }
+
+define script ( -- !Deploy ) { "web" one "db" one "cache" one }
+
+\ Unhandled, it does nothing at all — there is no default meaning:
+
+script
+
+\ ======================================================================
+\ Mode 1 — production
+\ ======================================================================
+
+define production ( -- !IO ) {
+  handle Deploy over ( ) init { } {
+    fetch   { "  fetching " print dup print "\n" print "/pkg/" swap cat }
+    install { "  installing " print print "\n" print }
+    restart { "  restarting " print print "\n" print }
+  } { script }
+}
+
+"[production]\n" print production
+
+\ ======================================================================
+\ Mode 2 — dry run
+\ ======================================================================
+
+\ Same script. The handler narrates instead of acting, and `fetch` still has
+\ to produce a plausible artifact name, because the script's TYPE says it
+\ does. A dry run that returns nothing would not typecheck, which is the
+\ property a boolean flag cannot give you.
+
+define dry_run ( -- !IO ) {
+  handle Deploy over ( ) init { } {
+    fetch   { "  would fetch " print dup print "\n" print "/pkg/" swap cat }
+    install { "  would install " print print "\n" print }
+    restart { "  would restart " print print "\n" print }
+  } { script }
+}
+
+"[dry run]\n" print dry_run
+
+\ ======================================================================
+\ Mode 3 — audit
+\ ======================================================================
+
+\ Same script again, and this handler does no IO whatsoever: it folds the run
+\ into a counter. So `audit` is a PURE FUNCTION — look at the signature the
+\ REPL reports. The deployment script, run, with no effects in its type.
+\
+\ That is what makes it usable as a test: it returns a value you can compare.
+
+define audit ( -- i64 ) {
+  handle Deploy over ( i64 ) init { 0 } {
+    fetch   { swap "/pkg/" swap cat swap 1 + }
+    install { swap pop 1 + }
+    restart { swap pop 1 + }
+  } { script }
+}
+
+"[audit] steps: " print audit show print "\n" print
+
+\ ======================================================================
+\ Why this is not dependency injection
+\ ======================================================================
+
+\ Nothing was injected. `script` takes no handler parameter, holds no
+\ reference to one, and was compiled before any of the three existed. The
+\ handler is not a value it received; it is a frame the CALLER installed.
+\
+\ And the choice is not all-or-nothing. A handler is a set of implementations,
+\ one per operation, so a single step can be stubbed while the rest runs for
+\ real — the thing a `--dry-run` boolean can never express, because there is
+\ only one of it:
+
+define mixed ( -- !IO ) {
+  handle Deploy over ( ) init { } {
+    fetch   { "  fetching " print dup print "\n" print "/pkg/" swap cat }
+    install { "  installing " print print "\n" print }
+    restart { "  SKIPPED restart of " print print "\n" print }
+  } { script }
+}
+
+"[install for real, skip restarts]\n" print mixed
+
+\ ======================================================================
+\ What this demo cannot do yet
+\ ======================================================================
+
+\ The service list is three literals in `script` rather than a collection,
+\ because there are no arrays and no lists. That is the ceiling the roadmap
+\ (NOTES/N04_Roadmap.md §4.1) puts first, and it is the only thing standing
+\ between this and a script someone would actually run.
