@@ -463,29 +463,25 @@ and discharge_dict_impls (defs:list (word_id & term)) (n:nat)
 let discharge (s:session) (t:term) : Tot term =
   discharge_dict (session_defs s.se_dict) s.se_next t
 
-/// Does a body whose minimal signature is `got` have the declared signature
-/// `row`? (D-84)
+/// A written signature is checked with `M06.sig_frames`, NOT equality (D-84).
 ///
-/// NOT EQUALITY, and the difference is the whole point. Every term in this
-/// language is row-polymorphic — `∀r. pre@r ⇒ post@r` — so a body that touches
-/// less than its signature says is not a mismatch but an instantiation of the
-/// implicit row variable at a segment the body ignores. `( i64 -- i64 )` over a
-/// body of `( -- )` is a word that leaves its argument alone.
+/// Every term in this language is row-polymorphic — `∀r. pre@r ⇒ post@r` — so a
+/// body that touches less than its signature says is not a mismatch but an
+/// instantiation of the implicit row variable at a segment the body ignores.
+/// `( i64 -- i64 )` over a body of `( -- )` is a word that leaves its argument
+/// alone.
 ///
 /// It has to be allowed, because the constructs that most need it cannot be
 /// written otherwise. A handler implementation threads a state segment it may
-/// not read; a method on an object takes the receiver whether or not this
-/// method uses it; a generic instance is checked against a signature written in
-/// `#T` at types the body never touches — `shout[#T] ( #T -- #T !IO )` over
+/// not read; a method on an object takes the receiver whether or not this method
+/// uses it; a generic instance is checked against a signature written in `#T` at
+/// types the body never touches — `shout[#T] ( #T -- #T !IO )` over
 /// `{ "hi\n" print }` is exactly that, and equality rejected it.
 ///
-/// `M06.impl_frame` at the empty state segment IS this test: `Some k` means
-/// `row.pre = got.pre @ k` and `row.post = got.post @ k` for the residual `k` it
-/// recovers off the declared `pre`. Reusing it rather than writing a second one
-/// keeps the framing rule for definitions and the framing rule for handler
-/// implementations the same rule — which they are.
-let sig_frames (got:srow) (row:srow) : Tot bool =
-  Some? (impl_frame got [] { op_pre = row.pre; op_post = row.post })
+/// The test lives in M06 because M11's E1 asks the same question of what
+/// `specialize` preserves, and because it IS `impl_frame` at the empty state
+/// segment — so the framing rule for definitions and the framing rule for
+/// handler implementations are one rule, which they should be.
 
 let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
                 (deceffs:option (list eff_id)) (row:srow) (t:term)

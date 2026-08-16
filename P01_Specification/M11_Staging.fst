@@ -274,20 +274,29 @@ let lemma_no_specialize_needs_nothing (env:wenv) (t:term { well_typed env t })
 /// deficiency of `specialize` that the hypothesis is needed — it is what makes
 /// the dictionary a dictionary.
 ///
-/// THE EQUALITY IN THE CONCLUSION IS TOO STRONG SINCE D-84, and the eventual
-/// proof will have to weaken it. A declared signature may now FRAME the body's
-/// inferred one, so `infer` of `TWord w` reads a signature the stored body only
-/// satisfies up to a residual `k`. Inlining therefore replaces a term by one
-/// with a MORE GENERAL signature, and `==` should be "frames to" —
-/// `M06.impl_frame` at the empty state segment, exactly as `E06.sig_frames` uses
-/// it. Soundness is unaffected, since `compose` frames; the statement is what is
-/// wrong, and stating it wrongly here would be worse than saying so.
+/// THE CONCLUSION IS `sig_frames`, NOT EQUALITY, and D-84 is why. A word's
+/// declared signature may FRAME the body's inferred one, so `infer` of `TWord w`
+/// reads a signature the stored body satisfies only up to a residual `k`.
+/// Inlining therefore replaces a term by one whose signature is MORE GENERAL,
+/// and equality is simply false of it: `define f ( i64 -- i64 ) { }` inlines to
+/// a term of `( -- )`.
+///
+/// This is not a weakening forced on the lemma, it is the lemma stated at the
+/// right strength. "Changes cost, never interface" means every context that
+/// accepted the original accepts the residual, and `sig_frames got want` says
+/// exactly that — `M06.compose` frames, so a term of the smaller signature goes
+/// wherever one of the larger did. Equality would additionally forbid the
+/// residual from being USABLE in more places, which is not a property anyone
+/// wants.
+///
+/// Direction matters and is easy to get backwards: the RESIDUAL is `got` and
+/// the original is `want`.
 let e1_type : Type =
     (env:wenv) -> (d:dict) -> (t:term { well_typed env t })
   -> Lemma (requires dict_agrees env d)
            (ensures  well_typed env (specialize env d t) /\
-                     fst (Some?.v (infer env (specialize env d t)))
-                     == fst (Some?.v (infer env t)))
+                     sig_frames (fst (Some?.v (infer env (specialize env d t))))
+                                (fst (Some?.v (infer env t))))
 
 /// E3. A fully static, fully resolved row leaves nothing behind.
 ///
@@ -328,9 +337,12 @@ let e3_type : Type =
 (* ------------------------------------------------------------------------ *)
 
 /// E1  RESIDUAL TYPING.
-///     `well_typed env (specialize env d t)`, and its inferred signature is
-///     the signature of `t`. Specialization changes the program's cost, never
-///     its interface.
+///     `well_typed env (specialize env d t)`, and its inferred signature FRAMES
+///     to the signature of `t` (`M06.sig_frames`, D-84). Specialization changes
+///     the program's cost, never its interface: every context that accepted the
+///     original accepts the residual. Not equality — inlining a word declared at
+///     a framing of its body's signature yields the body's, which is more
+///     general, and forbidding that would forbid nothing anyone wants.
 ///
 /// E2  SEMANTIC PRESERVATION -- THE ZERO-COST THEOREM.
 ///     For `t` well typed with row `row`, and `d` resolving every static

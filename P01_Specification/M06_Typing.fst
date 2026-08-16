@@ -259,6 +259,21 @@ let lemma_impl_frame (s:srow) (st:seg) (osig:op_sig)
   | Some ([], _) -> lemma_unify_common s.pre decl_pre; append_l_nil decl_pre
   | _            -> ()
 
+/// Does a term whose inferred signature is `got` satisfy the signature `want`?
+///
+/// `impl_frame` at the EMPTY state segment, which is the general question of
+/// which `THandle`'s rule is the special case: `want` is `got` framed by some
+/// residual the term never touches. Named separately because three callers ask
+/// it of things that are not handler implementations — `E06.install_def` of a
+/// written signature (D-84), `E06.install_instance` of a generic's, and M11's E1
+/// of what `specialize` preserves — and one definition is what keeps those three
+/// the same rule.
+///
+/// NOT SYMMETRIC. `got` is what the term does and `want` what is claimed of it,
+/// so this says the claim is an instantiation of the truth, never the reverse.
+let sig_frames (got want:srow) : Tot bool =
+  Some? (impl_frame got [] { op_pre = want.pre; op_post = want.post })
+
 /// Every operation of a dispatch declares the same joined behaviour beneath its
 /// own variant (D-68): variant `i` is `( variants[i] @ j.pre -- j.post )`.
 ///

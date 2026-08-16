@@ -2319,18 +2319,29 @@ function, at the same empty state segment, that frames a handler implementation
 to its operation's declaration (D-68) — so the framing rule for definitions and
 the framing rule for implementations are one rule, which they should be.
 
+It is spelled `M06.sig_frames` and lives in the spec rather than in `E06`,
+because three callers ask it: `install_def` of a written signature,
+`install_instance` of a generic's, and M11's E1 of what `specialize` preserves.
+One definition is what keeps those three the same rule.
+
 Nothing weakens: the residual must be consistent across `pre` and `post`.
 
     catcat> define bad ( i64 -- str ) { }
     error: bad declares ( i64 -- str ) but its body has ( -- )
 
-### One consequence to keep in view
+### The consequence for E1, now taken
 
 `M06.infer (TWord w)` reads the DECLARED signature out of `w_ops`, while the
 stored body has the smaller inferred one. Inlining `w` therefore replaces a term
-by one with a more general signature. That is sound — `compose` frames — but it
-means M11's E1 (`specialize_typed`) is now a statement up to framing rather than
-up to equality, and its eventual proof has to say so.
+by one with a more general signature — `define f ( i64 -- i64 ) { }` inlines to
+a term of `( -- )`. M11's `e1_type` said the residual's signature is `==` the
+original's, which that falsifies; it now says `sig_frames`.
+
+This is the lemma stated at the right strength rather than a weakening forced on
+it. "Specialization changes cost, never interface" means every context that
+accepted the original accepts the residual, and framing says exactly that, since
+`M06.compose` frames. Equality would additionally forbid the residual from being
+usable in MORE places, which is not a property anyone wants.
 
 ---
 
