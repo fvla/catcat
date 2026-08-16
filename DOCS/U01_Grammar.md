@@ -25,6 +25,7 @@ decl       = define | effect | extern | macro | locate | expression ;
 define     = "define" word [ tparams ] "(" signature ")" "{" term* "}"
            | "define" word                        "{" term* "}" ;  (* inferred *)
 tparams    = "[" ( "#" name )+ "]" ;                           (* see §3 *)
+targs      = "[" type+ "]" ;                                   (* see §3 *)
 
 effect     = "effect" word "{" declare* "}" ;                  (* see §6 *)
 declare    = "declare" word "(" signature ")" ;
@@ -51,6 +52,7 @@ type       = "Box" "[" type "]"
 term       = integer
            | string
            | word
+           | word targs                                        (* see §3 *)
            | "$" name
            | conditional
            | try
@@ -152,7 +154,7 @@ which region of a signature it is in:
 | Sigil | Meaning | Status |
 |---|---|---|
 | `$x` | local variable | works |
-| `#T` | parametric type | works — declared in `[…]`, matched at the call (§3) |
+| `#T` | parametric type | works — declared in `[…]`, matched at the call or written as `f[…]` (§3) |
 | `!Eff` | effect | works — resolved and checked (§6) |
 | `!` | asserted-empty effect row | works (§3) |
 
@@ -253,6 +255,29 @@ catcat> define fact ( i64 -- i64 ) { dup 0 = if { } then { pop 1 }
 defined fact ( i64 -- i64 !Rec )
 ```
 
+**An asserted stack effect may say more than the body uses.** A word that
+ignores an input still declares it; the body just never touches it.
+
+```
+catcat> define keep ( i64 -- i64 !IO ) { "tick\n" print }
+defined keep ( i64 -- i64 !IO )
+catcat> 7 keep
+tick
+ok  7
+```
+
+This is not a loophole — every word is polymorphic in the stack beneath what it
+names, so declaring `( i64 -- i64 )` over a body of `( -- )` is fixing part of
+that "beneath" at a type the body leaves alone. It has to be allowed, because a
+handler implementation threads state it may not read, and a generic is checked
+at types its body may never touch. What is still refused is a declaration the
+body cannot be framed to — the ignored part has to come out the way it went in:
+
+```
+catcat> define bad ( i64 -- str ) { }
+error: bad declares ( i64 -- str ) but its body has ( -- )
+```
+
 **A bare `!` asserts there are no effects.** The sigil is written and its name
 is deliberately absent: the effect region is present and empty. Use it where
 purity is part of the contract and you want the compiler to hold you to it. It
@@ -264,6 +289,8 @@ to every caller, which is the opposite of what this says.
 
 ```
 define name[#T #U] ( … ) { … }
+name              \ types matched from the stack
+name[i64 str]     \ types written out
 ```
 
 Type parameters are declared in `[…]` and used as `#T` in the signature. A
@@ -283,8 +310,24 @@ ok  "x" 1
 ```
 
 **A generic is a template, and each call gets its own copy.** The types come
-from the stack at the call: `5 twice` matches `#T` against `i64` and builds a
-word that duplicates an `i64`. Nothing polymorphic reaches the compiled program.
+from the stack at the call: `5 twice` matches `#T` against `i64` and builds code
+that duplicates an `i64`. Nothing polymorphic reaches the compiled program.
+
+The copy is **spliced into the caller**, not installed as a word — so a generic
+call costs no name, no lookup and no dictionary entry, and `locate` shows the
+code that is actually there:
+
+```
+catcat> define quad[#T] ( #T -- #T #T #T #T ) { twice twice twice }
+catcat> define q ( i64 -- i64 i64 i64 i64 ) { quad }
+catcat> locate q
+define q ( i64 -- i64 i64 i64 i64 ) {
+  dup dup dup
+}
+```
+
+Two calls at the same types therefore build the body twice. That is what
+monomorphization costs; nothing is shared yet.
 
 Because the copy is made at the call, **the body is checked there too** — so a
 generic is fine at every type that satisfies what it does, and fails at the ones
@@ -297,17 +340,44 @@ error: twice, instantiated: dup: this value's type is not Copy
 
 That is linearity (§U02 §4) applying across generics with no extra rule.
 
-Every parameter must be pinned down by the **inputs**, since the outputs are
-what the call is trying to work out:
+When the types are **matched** from the stack, every parameter has to be pinned
+down by the inputs — the outputs are what the call is trying to work out. When
+they are **written**, that restriction lifts, which is the main thing writing
+them buys:
 
 ```
 catcat> define bad[#T] ( -- #T ) { }
+generic bad[#T]
 catcat> 1 bad
-error: bad: #T is not determined by the inputs, so a call site cannot say what
-it should be
+error: bad: #T is not determined by the inputs; write the types at the call
+site, as in bad[i64]
+catcat> define mk0[#T] ( -- #T ) { 0 }
+catcat> mk0[i64]
+ok  0
 ```
 
-A `#T` in the signature that names no declared parameter is caught earlier, when
+Written types are **checked**, not believed: they are fed to the same matcher,
+so the stack must still agree, and the body must still typecheck at them.
+
+```
+catcat> 1 twice[str]
+error: twice: the stack does not match its declared inputs
+catcat> mk0[str]
+error: mk0, instantiated: declares ( -- str ) but its body has ( -- i64 )
+catcat> twice[i64 str]
+error: twice has 1 type parameters but was given 2
+```
+
+The other place written types are needed is a **definition with no signature**.
+Matching reads the types off the modelled stack, and a body being inferred has
+no concrete types yet, so an implicit call cannot resolve there:
+
+```
+catcat> define f { 4 twice[i64] }
+defined f ( -- i64 i64 )
+```
+
+A `#T` in a signature that names no declared parameter is caught earlier, when
 the generic is declared.
 
 A generic body may contain a conditional, carry effects, and abort:
@@ -323,10 +393,27 @@ catcat> try { 9 safe } catch { 0 }
 ok  0
 ```
 
-**What it may not do is call another generic, or call itself.** Each instance is
-a separate word created at the call, so an inner one would have to be numbered
-after the outer one that contains it, and a self-call would ask for an instance
-of itself forever. See §9.
+**A generic may call another generic**, at concrete types or at its own
+parameters:
+
+```
+catcat> define outer[#T] ( #T -- #T #T ) { twice[#T] }
+catcat> 9 outer
+ok  9 9
+```
+
+**What it may not do is call itself.** Each call is expanded where it stands, so
+a self-call asks to be expanded forever; nesting is cut off at 32 deep.
+
+```
+catcat> define loopy[#T] ( #T -- #T ) { loopy[#T] }
+generic loopy[#T]
+catcat> 1 loopy
+error: loopy: generic instantiation nested more than 32 deep; a generic may not
+be recursive
+```
+
+See §9.
 
 ### What inference can and cannot do
 
@@ -1091,6 +1178,12 @@ could be the `else` of this conditional or an ordinary word after it, and only
 the token after that could tell. Requiring `endif` means every alternation
 point consumes a keyword instead.
 
+`f[i64]` (§3) is the same permission used again, not an exception. `[` is
+self-delimiting, so `f[i64]` is already four tokens and the choice between an
+ordinary call and an instantiation is made on the `[` that is in hand after the
+name — one token, not two. The same rule already governs the `[`/`(`/`{` choice
+after the name in a `define`.
+
 ---
 
 ## 9. Not yet implemented
@@ -1103,8 +1196,8 @@ is otherwise invisible.
 |---|---|
 | mutual recursion | impossible without being marked, since the Dictionary is ordered and there are no forward references (§6) |
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
-| a generic body calling another generic | refused (§3): an instance is an ordinary word, so an inner one would be numbered after the outer one containing it. Installing instances innermost-first and renumbering the call would lift it |
-| recursion in a generic | refused, deliberately: an instance is minted per call site, so a self-call would request itself forever |
+| recursion in a generic | refused, deliberately: a call is expanded where it stands, so a self-call asks to be expanded forever. Cut off at 32 deep (§3) |
+| sharing between identical instantiations | none: two calls at the same types build the body twice (§3). Correct, just not compact |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
@@ -1119,9 +1212,6 @@ is otherwise invisible.
 | `fail` at a value type | `fail` is `( -- )`, so it cannot stand where a value is expected (§6); it wants the empty type, which wants generics |
 | a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
 | a `try` block reading the enclosing stack | the block runs on a fresh stack (§6). The core does not restrict this — the elaborator's stack model cannot compute how deep a block reached |
-| `fail` at a value type | `fail` is `( -- )`, so it cannot stand where a value is expected (§6); it wants the empty type, which wants generics |
-| a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
-| a `try` block that reads the enclosing stack | the block runs on a fresh stack (§6); the core does not restrict this, the elaborator does |
 
 Seven entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and
@@ -1135,6 +1225,12 @@ the reason §5 gives, and the entry above records only what is left of it. And
 **dynamic `with`** used to say there was no runtime dictionary lookup; there is,
 spelled `handle Dict` (§7). And **`#T` generics** used to parse and be rejected;
 they run (§3), with the two entries above recording what is left of them.
+
+Two more left it since: **a generic body calling another generic**, which was
+refused because an instance was an ordinary word and an inner one would have been
+numbered after the outer one containing it — instances are now spliced into the
+caller instead of installed, so there is no numbering to get wrong (§3) — and
+**explicit instantiation**, which did not exist.
 
 **Handler state aliasing is checked at runtime**, not statically (§6). That is a
 gap in a different sense: the language is safe, but the check is dynamic where

@@ -283,7 +283,9 @@ This is what `parse` and `getenv` want and cannot yet use. Their honest
 signatures are `( str -- i64 !Fail )` and `( str -- str !Fail )`, and the reason
 they still return sentinels is not that failure is unavailable — it is that a
 caller who *wants* the sentinel would have no way to ask for it back. That needs
-`catch` to receive the error, which needs generics.
+`catch` to receive the error. Generics now exist ([U01](U01_Grammar.md) §3), so
+what is left is giving `fail` a payload and `catch` an input — the effect
+declaration and `M05.TTry` both still say `( -- )`.
 
 ---
 

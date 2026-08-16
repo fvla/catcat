@@ -2145,3 +2145,189 @@ installing instances innermost-first with ascending ids and rewriting the
 caller's `TWord` — a different change, and one recursion would need too, which
 is why it is not being taken (the user's call: compile-time evaluation of pure
 words is the likelier route to what recursive generics would be wanted for).
+
+---
+
+## D-82. Explicit instantiation: `f[i64 str]`
+
+A generic may be called with its type arguments written out. The implicit form
+`f` stays, and stays the default.
+
+### Why, given that matching already worked
+
+Because matching cannot reach every generic. `all_bound` refuses a parameter
+that appears only in the outputs — `( -- #T )` is a request to invent a type,
+and a call site cannot say what it should be — so `define mk[#T] ( -- #T )` was
+declarable and uncallable. Writing the types is the missing information, in
+exactly the sense D-31 means it for a recursive word's signature.
+
+Two more things it buys, both of which were workarounds before:
+
+* **Disambiguation.** The implicit form reads the types off the modelled stack,
+  so it is the stack that decides. When that is not what the programmer meant,
+  the written form says so and the mismatch is reported rather than obeyed.
+* **The inference pass.** `E04.infer_terms` — the pass that gives an unsignatured
+  `define` its signature — works with metavariables, and `match_ty` needs a
+  concrete `M01.dtype` to match against. So an implicit generic call in a body
+  with no written signature cannot resolve, and now says so with the fix in the
+  message. An explicit one needs no stack model at all and simply works:
+
+      catcat> define f { 4 twice[i64] }
+      defined f ( -- i64 i64 )
+
+### It is one path, not two
+
+`E04.gen_call` takes the starting substitution as an argument. The implicit form
+passes `[]`; the explicit form passes the written types, elaborated to
+`StyFixed`. Everything after that is shared — and because `match_ty` treats a
+parameter already bound to a `StyFixed` as a constraint to CHECK rather than a
+binding to make, feeding `match_tys` a pre-filled substitution turns the written
+types into an assertion about the stack for free:
+
+    catcat> 1 twice[str]
+    error: twice: the stack does not match its declared inputs
+
+So an explicit instantiation is verified against the stack exactly as an
+implicit one is, rather than believed. No second rule, no unifier — D-31 again.
+
+### Syntax and LL(1)
+
+`f[t1 t2 …]`, space-separated, mirroring the `[#T #U]` of the declaration (D-80)
+and using `#` only where a parameter is bound. `[` is self-delimiting, so `f[i64`
+is already three tokens and the decision to enter `parse_tyargs` is made on the
+one token in hand — LL(1) with nothing to look ahead at (D-30).
+
+The branch sits BEFORE the macro branch in `parse_terms`, deliberately: a macro
+takes its slots from what follows its name, and `[` cannot begin any slot, so a
+macro that lost this race could not have parsed anyway.
+
+---
+
+## D-83. An instance is spliced, not installed: generics ARE `TSpecialize`
+
+A generic call site elaborates to `TSpecialize <instance body>` inlined in
+place. The generic SCHEMA is the only thing the session names. An instance gets
+no `word_id`, no `se_dict` entry, no `w_ops` entry and no `w_effs` entry.
+
+### The mechanism
+
+`E04` emits `TWord base` at the call site and a `GInst base name su` request.
+That `TWord` is a **splice key**, not a call: no word with that id is ever
+installed. `E06.install_instance` elaborates the instance and returns a binding
+`(base, TSpecialize body)`; `E06.splice_insts` substitutes it into the caller
+with `M05.resolve_defs` — the same substitution `with` uses (D-76).
+`E06.discharge_dict` then discharges the `TSpecialize` node by running
+`resolve_defs` on its body, so nothing about the instantiation survives into the
+installed word:
+
+    catcat> define twice[#T] ( #T -- #T #T ) { dup }
+    catcat> define quad[#T] ( #T -- #T #T #T #T ) { twice twice twice }
+    catcat> define deep[#T] ( #T -- #T ×10 ) { quad quad quad }
+    catcat> define d64 ( i64 -- i64 ×10 ) { deep }
+    catcat> locate d64
+    define d64 ( i64 -- i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 ) {
+      dup dup dup dup dup dup dup dup dup
+    }
+
+Three levels of nesting, and the residual is nine `dup`s. No words, no
+dictionary entries, no trace of a type parameter.
+
+### Why this is the right shape and not a trick
+
+`M06`'s rule for `TSpecialize` is "keep the signature, drop the static effects".
+Discharging the node by inlining is what makes that rule TRUE of the residual
+rather than merely asserted of the term. The same `M05.resolve_defs` now serves
+three callers — `with` at elaboration time, a generic instance at elaboration
+time, and `M11.specialize` at any other time — which is D-02's "specialization
+and JIT are one operation" with running witnesses instead of an analogy.
+
+`M11.specialize` still passes the node through. That is E2's remaining gap and
+is stated in M11's header; the elaboration-time specializer discharges it, the
+mechanized one does not yet. They agree on what discharging means.
+
+### What it removed
+
+Every one of these was a consequence, not extra work:
+
+* **Nested generics.** D-81 left them refused for a specific reason: an instance
+  was a `WDef`, so an inner one placed above an outer one was exactly the case
+  the Dictionary ordering forbids. Spliced code has no id, so there is nothing
+  to order. The `calls_later` check in `install_instance` is **deleted**, not
+  weakened, and both `outer[#T] { twice[#T] }` and the implicit
+  `quad[#T] { twice twice twice }` work.
+* **Three registrations.** `w_ops`, `w_effs` and `se_dict` all described a word
+  no program could name. `M06` types the spliced body directly.
+* **`locate`'s `#id` case for instances.** There is no id to print.
+* **The one-id budget question.** A call site's `sterm_size` is 1 and stays 1
+  however large the generic is, because the id it buys is a splice key. The
+  instance's own `case` operations come from `se_next` when it is built.
+
+### What it costs
+
+Two calls at the same types build the body twice. That is what monomorphization
+costs and it is the honest reading of `TSpecialize`; sharing identical residuals
+is a job for a later pass over the core, not for the elaborator.
+
+### Termination
+
+`install_instance` and `install_insts` are mutually recursive and bounded by
+`gen_fuel = 32`. A LIMIT, not a budget: D-79 rules out recursive generics, so a
+program that reaches it has written one, and the number only decides how long it
+takes to say so.
+
+    catcat> define loopy[#T] ( #T -- #T ) { loopy[#T] }
+    generic loopy[#T]
+    catcat> 1 loopy
+    error: loopy: generic instantiation nested more than 32 deep;
+           a generic may not be recursive
+
+Note that the schema is registered before its body is read, so a generic CAN
+name itself — which is why the limit reports the real problem rather than
+"unknown word".
+
+---
+
+## D-84. A declared signature may FRAME the body's, not only equal it
+
+`E06.install_def` compared the body's inferred signature to the declared one
+with `<>`. It now asks whether the declared one is a framing of it.
+
+### Why equality was wrong
+
+Every term in this language is row-polymorphic: `∀r. pre@r ⇒ post@r`. A body
+that touches less than its signature says is not a mismatch, it is an
+instantiation of the implicit row variable (D-04) at a segment the body ignores.
+`( i64 -- i64 )` over a body of `( -- )` is a word that leaves its argument
+alone, and there was no way to write one:
+
+    catcat> define sh2 ( i64 -- i64 !IO ) { "hi\n" print }
+    error: sh2 declares ( i64 -- i64 ) but its body has ( -- )
+
+The constructs that need it most are the ones D-01 says are the same construct.
+A handler implementation threads a state segment it may not read. A method takes
+its receiver whether or not this method uses it. A generic instance is checked
+against a signature written in `#T` at types the body never touches — `shout[#T]
+( #T -- #T !IO )` over `{ "hi\n" print }` is precisely that, so D-83 needed this
+before it could accept its own instances.
+
+### The test is one that already existed
+
+`M06.impl_frame got [] { op_pre = row.pre; op_post = row.post }`. `Some k` means
+`row.pre = got.pre @ k` and `row.post = got.post @ k`, with `k` RECOVERED off
+the declared `pre` by `strip_pre` rather than searched for. That is the same
+function, at the same empty state segment, that frames a handler implementation
+to its operation's declaration (D-68) — so the framing rule for definitions and
+the framing rule for implementations are one rule, which they should be.
+
+Nothing weakens: the residual must be consistent across `pre` and `post`.
+
+    catcat> define bad ( i64 -- str ) { }
+    error: bad declares ( i64 -- str ) but its body has ( -- )
+
+### One consequence to keep in view
+
+`M06.infer (TWord w)` reads the DECLARED signature out of `w_ops`, while the
+stored body has the smaller inferred one. Inlining `w` therefore replaces a term
+by one with a more general signature. That is sound — `compose` frames — but it
+means M11's E1 (`specialize_typed`) is now a statement up to framing rather than
+up to equality, and its eventual proof has to say so.

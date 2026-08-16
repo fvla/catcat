@@ -111,6 +111,31 @@ let rec parse_ty (ts:list token)
     else POk (StyName w) rest
   | t :: _ -> PErr ("expected a type, found " ^ render_token t)
 
+/// `[ t1 t2 … ]` after a word in term position — an explicit instantiation
+/// (D-82). Space-separated, like the `[#T #U]` of the declaration it answers.
+///
+/// LL(1) with nothing to look ahead at, for the same reason `parse_tparams` is:
+/// `[` is self-delimiting, so `f[i64` is already three tokens and the decision
+/// to come here is made on the one token in hand (D-30).
+let rec parse_tyargs (acc:list sty) (ts:list token)
+  : Tot (r:presult (list sty) { POk? r ==> length (POk?._1 r) < length ts })
+        (decreases (length ts)) =
+  match ts with
+  | [] -> PErr "expected ']' closing the type arguments, found end of input"
+  | TkRBrack :: rest ->
+    if Nil? acc
+    then PErr "a generic needs at least one type argument, as in f[i64]"
+    else POk (rev acc) rest
+  | _ ->
+    (match parse_ty ts with
+     | PErr e -> PErr e
+     | POk t after ->
+       /// `parse_ty` consumes at least one token on every success, which is what
+       /// stops `f[Box]` — an error, not a loop — from spinning here.
+       if length after >= length ts
+       then PErr "expected a type argument or ']'"
+       else parse_tyargs (t :: acc) after)
+
 (* ------------------------------------------------------------------------ *)
 (* Signatures                                                               *)
 (* ------------------------------------------------------------------------ *)
@@ -473,6 +498,16 @@ let rec parse_terms (mt:list mprod) (closing:bool) (acc:list sterm) (ts:list tok
         | _ -> PErr "expected '{' opening the body of a 'with'"))
   | TkWord "with" :: _ ->
     PErr "expected '{ old new … }' after 'with'"
+
+  /// `f[i64]` — an explicit instantiation (D-82). BEFORE the macro branch, and
+  /// deliberately: a macro takes its slots from what follows its name, so a
+  /// macro called `f` and a generic called `f` would both want this token. The
+  /// generic wins because `[` cannot begin any slot, so a macro that lost here
+  /// could not have parsed anyway.
+  | TkWord w :: TkLBrack :: r1 ->
+    (match parse_tyargs [] r1 with
+     | PErr e -> PErr e
+     | POk tys r2 -> parse_terms mt closing (StWordAt w tys :: acc) r2)
 
   | TkWord w :: rest ->
     (match lookup_macro mt w with

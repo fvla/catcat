@@ -89,9 +89,11 @@ let rec lookup_gen_in (gs:list gentry) (x:string)
 noeq type gdecl =
   /// An operation a `case` site dispatches through.
   | GOp   : op_id -> op_decl -> gdecl
-  /// Instantiate generic `name` at `sub`, and install it as word `id`. The id
-  /// comes from the call site's own one-id budget, which is exactly what an
-  /// instance needs.
+  /// Instantiate generic `name` at `sub`. `id` is the SPLICE KEY the call site
+  /// emitted as `TWord id`, taken from its own one-id budget; `E06` builds the
+  /// instance and substitutes its body for that call (D-83). No word with this
+  /// id is ever installed, which is why one id suffices however large the
+  /// generic is.
   | GInst : word_id -> string -> tsub -> gdecl
 
 /// Names live in two namespaces because effects are not words — `handle E`
@@ -391,6 +393,53 @@ let rec rebind_impls (ids:list (word_id & word_id))
   | []            -> []
   | (a, b) :: r   -> (a, TWord b) :: rebind_impls r
 
+(* ------------------------------------------------------------------------ *)
+(* Generic call sites                                                       *)
+(* ------------------------------------------------------------------------ *)
+
+/// The substitution an explicit instantiation writes out (D-82).
+///
+/// The types are elaborated HERE, to `StyFixed`, which is why the explicit and
+/// implicit paths can then share everything: `match_ty` treats a parameter
+/// already bound to a `StyFixed` as a constraint to check rather than a binding
+/// to make, so passing this as `match_tys`' starting substitution turns the
+/// written types into an assertion about the stack for free.
+let rec explicit_sub (ps:list string) (tys:list sty)
+  : Tot (either string tsub) (decreases ps) =
+  match ps, tys with
+  | [], []           -> Inr []
+  | p :: pr, t :: tr ->
+    (match elab_ty t with
+     | Inl e -> Inl e
+     | Inr d -> (match explicit_sub pr tr with
+                 | Inl e  -> Inl e
+                 | Inr su -> Inr ((p, StyFixed d) :: su)))
+  | _, _             -> Inl "arity"
+
+/// Resolve one generic call site to a substitution and an instantiated
+/// signature. `su0` is `[]` for `f` and pre-filled for `f[…]`, and that is the
+/// ONLY difference between the two forms — everything after it is shared, so an
+/// explicit instantiation is checked against the stack exactly as an implicit
+/// one is rather than believed.
+let gen_call (w:string) (g:gentry) (su0:tsub) (sh:shape)
+  : Tot (either string (tsub & srow)) =
+  let pats = rev (param_tys g.g_sig.ss_in) in
+  if length pats > length sh
+  then Inl ("stack underflow calling " ^ w ^ ": it needs "
+            ^ string_of_int (length pats) ^ " inputs")
+  else
+    (match match_tys su0 pats (slot_tys sh) with
+     | None -> Inl (w ^ ": the stack does not match its declared inputs")
+     | Some su ->
+       (match all_bound su g.g_params with
+        | Some p ->
+          Inl (w ^ ": #" ^ p ^ " is not determined by the inputs; write the \
+                types at the call site, as in " ^ w ^ "[i64]")
+        | None ->
+          (match elab_sig (subst_ssig su g.g_sig) with
+           | Inl e   -> Inl (w ^ ": " ^ e)
+           | Inr row -> Inr (su, row))))
+
 let elab_lit (n:int) : Tot (either string term) =
   if -(pow2 63) <= n && n < pow2 63
   then Inr (TPrimOp (PLit (LPrim PI64 n)))
@@ -459,44 +508,50 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
             (TPrimOp (PStack (SSwap a.sl_ty b.sl_ty)) :: acc) dacc rest
         | _ -> Inl "swap: needs two values on the stack")
 
-     /// A GENERIC CALL IS AN ORDINARY CALL TO A WORD THAT DOES NOT EXIST YET
-     /// (D-79). The types come from the stack model by matching, an instance id
-     /// comes from this term's own one-id budget, and `E06` is told to build the
-     /// word. Nothing about the emitted term is special: `TWord id` like any
-     /// other call, which is what "generics are erased at elaboration" means
-     /// concretely.
+     /// A GENERIC CALL SITE EMITS A PLACEHOLDER AND A REQUEST (D-79, D-83).
+     ///
+     /// `TWord base` is not a call to a word: no such word is ever installed.
+     /// It is a SPLICE KEY, and `E06` replaces it with `TSpecialize body` once
+     /// it has elaborated the instance — which is why the call site needs only
+     /// its own one-id budget however large the generic is, and why an instance
+     /// gets no dictionary entry. "Generics erase at elaboration" is that
+     /// substitution, and the `TSpecialize` it leaves is the term that says so.
+     | StWordAt w tys ->
+       (match lookup_gen_in env.ne_gens w with
+        | None -> Inl (w ^ " is not generic, so it takes no type arguments")
+        | Some g ->
+          if length g.g_params <> length tys
+          then Inl (w ^ " has " ^ string_of_int (length g.g_params)
+                    ^ " type parameters but was given "
+                    ^ string_of_int (length tys))
+          else
+            (match explicit_sub g.g_params tys with
+             | Inl e   -> Inl (w ^ ": " ^ e)
+             | Inr su0 ->
+               (match gen_call w g su0 sh with
+                | Inl e -> Inl e
+                | Inr (su, row) ->
+                  (match drop_n (length row.pre) sh with
+                   | None -> Inl ("stack underflow calling " ^ w)
+                   | Some sh' ->
+                     elab_terms env cs (base + sterm_size t)
+                       (anon_slots row.post @ sh')
+                       (TWord base :: acc) (GInst base w su :: dacc) rest))))
+
      | StWord w ->
        (match lookup_gen_in env.ne_gens w with
-        /// A GENERIC CALL IS AN ORDINARY CALL TO A WORD THAT DOES NOT EXIST YET
-        /// (D-79). The types come from the stack model by matching, the instance
-        /// id comes from this term's own one-id budget — a `StWord` has exactly
-        /// one, which is exactly what an instance needs — and `E06` is told to
-        /// build the word. Nothing about the emitted term is special: `TWord id`
-        /// like any other call, which is what "generics erase at elaboration"
-        /// means concretely.
+        /// The implicit form. Identical to `StWordAt` from `gen_call` onward;
+        /// the types are recovered from the modelled stack instead of written.
         | Some g ->
-          let pats = rev (param_tys g.g_sig.ss_in) in
-          if length pats > length sh
-          then Inl ("stack underflow calling " ^ w ^ ": it needs "
-                    ^ string_of_int (length pats) ^ " inputs")
-          else
-            (match match_tys [] pats (slot_tys sh) with
-             | None -> Inl (w ^ ": the stack does not match its declared inputs")
-             | Some su ->
-               (match all_bound su g.g_params with
-                | Some p ->
-                  Inl (w ^ ": #" ^ p ^ " is not determined by the inputs, so a \
-                        call site cannot say what it should be")
-                | None ->
-                  (match elab_sig (subst_ssig su g.g_sig) with
-                   | Inl e -> Inl (w ^ ": " ^ e)
-                   | Inr row ->
-                     (match drop_n (length row.pre) sh with
-                      | None -> Inl ("stack underflow calling " ^ w)
-                      | Some sh' ->
-                        elab_terms env cs (base + sterm_size t)
-                          (anon_slots row.post @ sh')
-                          (TWord base :: acc) (GInst base w su :: dacc) rest))))
+          (match gen_call w g [] sh with
+           | Inl e -> Inl e
+           | Inr (su, row) ->
+             (match drop_n (length row.pre) sh with
+              | None -> Inl ("stack underflow calling " ^ w)
+              | Some sh' ->
+                elab_terms env cs (base + sterm_size t)
+                  (anon_slots row.post @ sh')
+                  (TWord base :: acc) (GInst base w su :: dacc) rest))
 
         | None ->
           (match lookup_name env w with
@@ -957,13 +1012,46 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
        let (b, st2) = ipop st1 in
        infer_terms env cs ({ st2 with i_above = b :: a :: st2.i_above }) rest
 
+     /// An explicit instantiation needs no stack model to resolve, which is
+     /// exactly what makes it usable here (D-82): this pass runs BEFORE any
+     /// signature is known and works with metavariables, so `match_ty` — which
+     /// needs a concrete `M01.dtype` to match against — has nothing to bite on.
+     /// Written types sidestep that, so `define f { g[i64] }` infers.
+     | StWordAt w tys ->
+       (match lookup_gen_in env.ne_gens w with
+        | None -> Inl (w ^ " is not generic, so it takes no type arguments")
+        | Some g ->
+          if length g.g_params <> length tys
+          then Inl (w ^ " has " ^ string_of_int (length g.g_params)
+                    ^ " type parameters but was given "
+                    ^ string_of_int (length tys))
+          else
+            (match explicit_sub g.g_params tys with
+             | Inl e   -> Inl (w ^ ": " ^ e)
+             | Inr su ->
+               (match elab_sig (subst_ssig su g.g_sig) with
+                | Inl e   -> Inl (w ^ ": " ^ e)
+                | Inr row ->
+                  (match iapply_pre w st row.pre with
+                   | Inl e   -> Inl e
+                   | Inr st1 -> infer_terms env cs (ipush_post row.post st1) rest))))
+
      | StWord w ->
+       (match lookup_gen_in env.ne_gens w with
+        /// The implicit form is the one case this pass cannot serve, and the
+        /// message says what to write instead rather than reporting the word
+        /// missing. Matching needs concrete types; a body with no written
+        /// signature has metavariables where they would be.
+        | Some _ ->
+          Inl (w ^ " is generic; in a definition with no written signature, \
+                instantiate it explicitly, as in " ^ w ^ "[i64]")
+        | None ->
        (match lookup_name env w with
         | None -> Inl ("unknown word: " ^ w)
         | Some n ->
           (match iapply_pre w st n.n_sig.pre with
            | Inl e   -> Inl e
-           | Inr st1 -> infer_terms env cs (ipush_post n.n_sig.post st1) rest))
+           | Inr st1 -> infer_terms env cs (ipush_post n.n_sig.post st1) rest)))
 
      | StBlock _ ->
        Inl "a { } block is only meaningful as a definition body or a branch"

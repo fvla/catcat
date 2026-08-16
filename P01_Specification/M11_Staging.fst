@@ -82,6 +82,13 @@ let resolve_below (d:dict) (n:nat) (t:term) : Tot term =
 ///     `TSpecialize` is passed through — visible in the output rather than
 ///     silently discarded, which is the failure mode to prefer.
 ///
+///     THE ELABORATOR ALREADY DOES IT (D-83). `E06.discharge_dict` discharges
+///     the node the same way — `resolve_defs` over its body — because that is
+///     where every generic instance arrives, and it can: at elaboration time the
+///     residual is handed straight to `M06.infer`, so E1's question is answered
+///     by running the checker rather than by a proof. The two agree on what
+///     discharging MEANS; what E1 buys is the right to do it without checking.
+///
 /// The `well_typed` refinement is not consumed. It is kept because E1, E2 and E3
 /// are all stated at it and a signature change here would ripple through three
 /// obligation types for no gain.
@@ -266,6 +273,15 @@ let lemma_no_specialize_needs_nothing (env:wenv) (t:term { well_typed env t })
 /// the residual is a different program rather than a cheaper one. It is NOT a
 /// deficiency of `specialize` that the hypothesis is needed — it is what makes
 /// the dictionary a dictionary.
+///
+/// THE EQUALITY IN THE CONCLUSION IS TOO STRONG SINCE D-84, and the eventual
+/// proof will have to weaken it. A declared signature may now FRAME the body's
+/// inferred one, so `infer` of `TWord w` reads a signature the stored body only
+/// satisfies up to a residual `k`. Inlining therefore replaces a term by one
+/// with a MORE GENERAL signature, and `==` should be "frames to" —
+/// `M06.impl_frame` at the empty state segment, exactly as `E06.sig_frames` uses
+/// it. Soundness is unaffected, since `compose` frames; the statement is what is
+/// wrong, and stating it wrongly here would be worse than saying so.
 let e1_type : Type =
     (env:wenv) -> (d:dict) -> (t:term { well_typed env t })
   -> Lemma (requires dict_agrees env d)

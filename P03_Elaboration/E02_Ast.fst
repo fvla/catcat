@@ -106,6 +106,15 @@ type sterm =
   /// resolved in `E01`, so nothing downstream re-interprets a backslash.
   | StStr   : string -> sterm
   | StWord  : string -> sterm
+  /// `f[i64 str]` — a generic called at types the call site names (D-82).
+  ///
+  /// The implicit form `f` recovers the same list by matching the declared
+  /// inputs against the modelled stack, so this is DISAMBIGUATION, not a second
+  /// mechanism: `E04` builds the substitution from these types and then runs
+  /// exactly the implicit path, which re-checks them against the stack. What it
+  /// buys is the case matching cannot reach — a parameter that appears only in
+  /// the outputs, which no call site could otherwise determine.
+  | StWordAt : string -> list sty -> sterm
   /// `$x` — a read of a named local.
   | StVar   : string -> sterm
   /// `{ … }` — a block. Currently a `define` body or a branch of `StCase`;
@@ -150,6 +159,11 @@ let rec sterm_size (t:sterm) : Tot pos =
   | StInt _    -> 1
   | StStr _    -> 1
   | StWord _   -> 1
+  /// One, like `StWord`, and for a reason that survived the instances losing
+  /// their dictionary entries (D-83): the id this budget buys is a SPLICE KEY,
+  /// not a word. The instance's own ids come from the session's counter when it
+  /// is built, so the call site needs exactly one id however big the generic is.
+  | StWordAt _ _ -> 1
   | StVar _    -> 1
   | StBlock ts -> 1 + sterms_size ts
   | StCase bs  -> 1 + sterm_lists_size bs
@@ -462,6 +476,11 @@ let rec subst_tys (su:tsub) (t:sterm)
   match t with
   | StBlock ts -> StBlock (subst_tys_list su ts)
   | StCase bs  -> StCase (subst_tys_lists su bs)
+  /// The second place a body mentions a type, and the one that makes a generic
+  /// able to call a generic AT ITS OWN PARAMETERS (D-83): `outer[#T]`'s body
+  /// writing `inner[#T]` has that `#T` rewritten here, before the instance is
+  /// elaborated, so `E04` never sees a variable.
+  | StWordAt w tys -> StWordAt w (subst_stys su tys)
   | StHandle e tys i im b ->
     StHandle e (subst_stys su tys) (subst_tys_list su i)
              (subst_tys_impls su im) (subst_tys_list su b)

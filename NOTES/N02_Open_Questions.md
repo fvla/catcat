@@ -195,7 +195,8 @@ it. The right answer is likely the same one that gives `catch` an error value.
 `Box` in flight when a `fail` fires leaks.
 *Closes when:* generics arrive and `catch` can take a typed payload.
 
-**Q-18. `!Dict` or generics first, and what leaves the core when each lands.**
+**Q-18. `!Dict` or generics first, and what leaves the core when each lands.** —
+**CLOSED by D-76 and D-79…D-84.**
 Both are specified in D03/D04/D05 and neither exists. They are not independent:
 generic instantiation and a capability bound are *Dictionary lookups*, so the
 order decides whether generics arrive as a client of existing machinery or as a
@@ -245,14 +246,40 @@ unification. The claim probably narrows to "no unifier for stack rows" with a
 separate one over `dtype`, but that is a decision, not a detail, and it should
 be made before generics rather than discovered during them.
 
-*Recommendation: `!Dict` first*, on the ground that generic instantiation is
-Dictionary lookup and building it first means building a second mechanism to
-throw away. The cost of that order is that the big core reduction waits. The
-sequence is: `M11.specialize` (D-70 unblocked its termination), then the runtime
-Dictionary path, then `with` as a derived form, then settle D-31, then generics.
+*Recommendation, taken: `!Dict` first*, on the ground that generic instantiation
+is Dictionary lookup and building it first means building a second mechanism to
+throw away. The sequence run was `M11.specialize` (D-74), the runtime Dictionary
+path (D-75), `with` as a derived form (D-76), D-31 settled as D-77, then generics
+(D-79 onward).
 
-*Loose end, independent of both.* **`M03.srow_join` is called by nothing** since
-D-68 — it survives with two proved lemmas and a stated obligation. It is either
-dead spec surface to delete, or the tool `E04` should use to tighten a `case`'s
-operation declarations, which it currently writes at the full modelled shape.
-One or the other; leaving it is the only wrong answer.
+*Outcome.* The prediction held, for a reason slightly different from the one
+given. Generic instantiation did not turn out to be Dictionary **lookup** — an
+instance has no dictionary entry at all (D-83) — but it is Dictionary
+**substitution**, `M05.resolve_defs`, which is the function `with` had already
+forced into existence. Building generics first would have meant building that
+twice, which is what the recommendation was really protecting against.
+
+Of the core reductions listed above, none has been taken; all are now unblocked.
+D-56's six `prim_op` rows are the largest and should go first.
+
+*Loose end, independent of both:* **closed by D-78.** `M03.srow_join` was
+deleted, along with four dead list traversals in M05.
+
+---
+
+**Q-19. Two instantiations at the same types build the body twice.** D-83 splices
+each generic call site with its own copy of the residual, so `quad quad quad` at
+`i64` carries three elaborations of `quad`, and a program that calls one generic
+from ten places pays for ten. Nothing is wrong — it is what monomorphization
+costs, and `TSpecialize` says so honestly — but nothing shares either.
+
+The obvious fix, hash-consing residuals by `(name, sub)` and emitting a `WDef`
+for the shared one, is the design D-83 deliberately reversed, so it should not be
+reached for casually: it reintroduces the dictionary entry, and with it the
+ordering constraint that made nested generics impossible. A pass over the CORE
+that finds repeated subterms and abstracts them has neither problem and is not
+specific to generics — it would share `with` residuals too.
+
+*Closes when:* there is a measurement showing the duplication matters. Until
+then this is a note, not a defect; it is recorded so the first person to see a
+large residual knows it is expected.

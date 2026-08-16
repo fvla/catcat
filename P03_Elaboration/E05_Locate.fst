@@ -386,6 +386,7 @@ let rec show_sterm (t:sterm) : Tot string (decreases %[(sterm_size t <: nat); 0]
   | StInt n    -> string_of_int n
   | StStr s    -> "\"" ^ s ^ "\""
   | StWord w   -> w
+  | StWordAt w tys -> w ^ "[" ^ show_stys tys ^ "]"
   | StVar x    -> "$" ^ x
   | StBlock ts -> braces (show_sterms ts)
   /// A two-branch `StCase` is what `if` expands to and the only shape the

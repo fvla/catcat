@@ -242,7 +242,8 @@ let subset_effs (a b:list eff_id) : Tot bool = for_all (fun i -> mem i b) a
 /// `declared` is `Some row` when the user wrote a signature and `None` when it
 /// was inferred. In the written case a disagreement is the user's error; in the
 /// inferred case it would be a bug in `infer_sig`, so the message says so
-/// rather than blaming the program.
+/// rather than blaming the program. "Agrees" is `sig_frames`, not equality
+/// (D-84).
 /// `deceffs` is `Some is` when the user wrote `!E` markers. An UNWRITTEN
 /// effect list is not an assertion of purity — a `define` with no signature at
 /// all would otherwise be unable to use any effect — so it is only checked
@@ -432,7 +433,22 @@ let rec discharge_dict (defs:list (word_id & term)) (n:nat) (t:term)
     else THandle e st (discharge_dict defs n i)
                  (discharge_dict_impls defs n impls) b'
   | TTry e p b c -> TTry e p (discharge_dict defs n b) (discharge_dict defs n c)
-  | TSpecialize b -> TSpecialize (discharge_dict defs n b)
+  /// A `TSpecialize` NODE IS DISCHARGED, not carried (D-83). The elaborator
+  /// emits one around every generic instance; running `resolve_defs` on its body
+  /// is what makes `M06`'s rule for the node — keep the signature, drop the
+  /// static effects — true of the residual rather than merely asserted of the
+  /// term. Nothing about the instantiation survives into the installed word.
+  ///
+  /// So the SAME `resolve_defs` now serves three callers: `with` (D-76), a
+  /// generic instance here, and `M11.specialize` at any other time. That is
+  /// D-02's "specialization and JIT are one operation" with two running
+  /// witnesses instead of an analogy.
+  ///
+  /// `M11.specialize` still passes the node through — that is E2's remaining
+  /// gap, stated in M11's header — so this is the elaboration-time specializer
+  /// discharging it, not the mechanized one. The two agree on what discharging
+  /// means; only one of them does it yet.
+  | TSpecialize b -> resolve_defs defs n (discharge_dict defs n b)
   | _ -> t
 
 and discharge_dict_impls (defs:list (word_id & term)) (n:nat)
@@ -446,6 +462,30 @@ and discharge_dict_impls (defs:list (word_id & term)) (n:nat)
 /// it is fuel enough for `resolve_defs` (D-70, D-74).
 let discharge (s:session) (t:term) : Tot term =
   discharge_dict (session_defs s.se_dict) s.se_next t
+
+/// Does a body whose minimal signature is `got` have the declared signature
+/// `row`? (D-84)
+///
+/// NOT EQUALITY, and the difference is the whole point. Every term in this
+/// language is row-polymorphic — `∀r. pre@r ⇒ post@r` — so a body that touches
+/// less than its signature says is not a mismatch but an instantiation of the
+/// implicit row variable at a segment the body ignores. `( i64 -- i64 )` over a
+/// body of `( -- )` is a word that leaves its argument alone.
+///
+/// It has to be allowed, because the constructs that most need it cannot be
+/// written otherwise. A handler implementation threads a state segment it may
+/// not read; a method on an object takes the receiver whether or not this
+/// method uses it; a generic instance is checked against a signature written in
+/// `#T` at types the body never touches — `shout[#T] ( #T -- #T !IO )` over
+/// `{ "hi\n" print }` is exactly that, and equality rejected it.
+///
+/// `M06.impl_frame` at the empty state segment IS this test: `Some k` means
+/// `row.pre = got.pre @ k` and `row.post = got.post @ k` for the residual `k` it
+/// recovers off the declared `pre`. Reusing it rather than writing a second one
+/// keeps the framing rule for definitions and the framing rule for handler
+/// implementations the same rule — which they are.
+let sig_frames (got:srow) (row:srow) : Tot bool =
+  Some? (impl_frame got [] { op_pre = row.pre; op_post = row.post })
 
 let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
                 (deceffs:option (list eff_id)) (row:srow) (t:term)
@@ -465,7 +505,7 @@ let install_def (s:session) (id:word_id) (name:string) (declared:option srow)
   match infer env t with
   | None -> (s, "error: " ^ name ^ " does not typecheck")
   | Some (got, grow) ->
-    if got <> row
+    if not (sig_frames got row)
     then (match declared with
           | Some _ -> (s, "error: " ^ name ^ " declares " ^ render_row row
                           ^ " but its body has " ^ render_row got)
@@ -542,7 +582,15 @@ let rec show_tparams (ps:list string) : Tot string (decreases ps) =
 let show_tparam_block (ps:list string) : Tot string =
   if Nil? ps then "" else "[" ^ show_tparams ps ^ "]"
 
-/// Install one instance of a generic (D-79).
+/// How deep generic instantiation may nest.
+///
+/// A LIMIT, NOT A BUDGET: D-79 rules out recursive generics, so a program that
+/// reaches this has written one, and the number only decides how long it takes
+/// to say so. It is also what makes the mutual recursion below terminate, which
+/// is why it is a parameter rather than an afterthought.
+let gen_fuel : nat = 32
+
+/// Install one instance of a generic (D-79, D-83).
 ///
 /// The generic's stored signature and body are copied with its parameters
 /// replaced (`E02.subst_ssig` / `subst_tys_list`) and then run through the
@@ -550,27 +598,35 @@ let show_tparam_block (ps:list string) : Tot string =
 /// be written once. Nothing here knows about type variables, because the
 /// substitution removed them before this ran.
 ///
-/// It gets no `nenv` entry, like a `case` operation and for the same reason:
-/// the instance has no surface name a program could write, and giving it the
-/// generic's name would shadow the template. `locate` prints it as `#id`, which
-/// is what an unnameable word should print.
+/// AN INSTANCE GETS NO DICTIONARY ENTRY (D-83). It is returned as a binding
+/// `(id, TSpecialize body)` for the caller to splice into the term that asked
+/// for it — `M05.resolve_defs`, the same substitution `with` uses — so the
+/// generic SCHEMA is the only thing the session names, and the instance is code
+/// the call site carries. Three consequences, all of them simplifications:
 ///
-/// A CONDITIONAL IN A GENERIC BODY WORKS (D-81), and what unblocked it was not
-/// finding ids for it but noticing the ordering rule was stronger than anything
-/// needed it to be. An instance is named from the call site's one-id budget, so
-/// anything its body allocates necessarily sits ABOVE the instance — and that is
-/// only a problem for ids `M11.resolve_defs` would rewrite. A `case` site's
-/// operations are `WOp`, never inlined, so they may sit anywhere at all.
-/// `calls_later` is the test that says so, and the instance's own body budget is
-/// therefore taken from `se_next` like any other fresh allocation.
+///   * NESTED GENERICS WORK. The restriction that stopped them was the
+///     Dictionary ordering, and it applied because an instance used to be a
+///     `WDef` sitting above the word that called it. Spliced code has no id, so
+///     there is nothing to order. The `calls_later` check that enforced it is
+///     gone from this function, not weakened.
+///   * NO `w_ops`, `w_effs` OR `se_dict` REGISTRATION for the instance. `M06`
+///     types the spliced body directly, so the three tables that existed to
+///     describe a word nobody could name are no longer written.
+///   * TWO CALLS AT THE SAME TYPES BUILD THE BODY TWICE. That is what
+///     monomorphization costs and it is the honest reading of `TSpecialize`;
+///     sharing it is a job for a later pass over the residual, not for the
+///     elaborator.
 ///
-/// A NESTED GENERIC CALL still does not work, and now for a reason that is
-/// specific rather than incidental: an instance IS a `WDef`, so an inner one
-/// placed above an outer one is exactly the case the ordering forbids. Lifting
-/// it means installing instances innermost-first with ascending ids and
-/// rewriting the caller's `TWord`, which is a different change.
-let install_instance (s:session) (id:word_id) (gname:string) (su:tsub)
-  : Tot (either string session) =
+/// The instance's own `case` operations still get ids and entries, because a
+/// dispatch calls them at run time. They are `WOp`, never inlined, so where
+/// they sit is unconstrained (D-81).
+let rec install_instance (s:session) (fuel:nat) (id:word_id) (gname:string)
+                         (su:tsub)
+  : Tot (either string (session & (word_id & term))) (decreases %[fuel; 0; 0]) =
+  if fuel = 0
+  then Inl (gname ^ ": generic instantiation nested more than "
+            ^ string_of_int gen_fuel ^ " deep; a generic may not be recursive")
+  else
   match lookup_gen_in s.se_nenv.ne_gens gname with
   | None -> Inl ("internal error: no generic named " ^ gname)
   | Some g ->
@@ -586,40 +642,41 @@ let install_instance (s:session) (id:word_id) (gname:string) (su:tsub)
                      w_ops = add_case_ops s.se_wenv.w_ops ds };
          se_dict = add_case_dict s.se_dict ds;
          se_next = s.se_next + sterms_size body } in
-       if existsb GInst? ds
-       then Inl (gname ^ ": a generic body may not call another generic yet")
-       else if calls_later s1.se_dict id t
-       then Inl (gname ^ ": an instance may not call a definition made after it")
-       else
-         (match infer s1.se_wenv t with
-          | None -> Inl (gname ^ ", instantiated: the body does not typecheck \
-                                  at these types")
-          | Some (got, grow) ->
-            if got <> row
-            then Inl (gname ^ ", instantiated: declares " ^ render_row row
-                      ^ " but its body has " ^ render_row got)
-            else
-              Inr { s1 with
-                se_wenv = { w_effs = (id, row_visible grow) :: s1.se_wenv.w_effs;
-                            w_ops  = { se_ops =
-                              (id, { od_eff   = eff_dict_r;
-                                     od_stage = SStatic;
-                                     od_sig   = { op_pre = row.pre;
-                                                  op_post = row.post } })
-                              :: s1.se_wenv.w_ops.se_ops } };
-                se_dict = dict_extend s1.se_dict id (WDef t) }))
+       /// Innermost first. A generic this body calls is built and spliced before
+       /// this body is typechecked, so `M06` sees one closed term.
+       (match install_insts s1 (fuel - 1) [] ds with
+        | Inl e -> Inl e
+        | Inr (s2, binds) ->
+          let t = discharge s2 (resolve_defs binds s2.se_next t) in
+          (match infer s2.se_wenv t with
+           | None -> Inl (gname ^ ", instantiated: the body does not typecheck \
+                                   at these types")
+           | Some (got, _) ->
+             if not (sig_frames got row)
+             then Inl (gname ^ ", instantiated: declares " ^ render_row row
+                       ^ " but its body has " ^ render_row got)
+             else Inr (s2, (id, TSpecialize t)))))
 
-/// Fulfil every instantiation request a body produced, before the body itself
-/// is typechecked: `M06.infer` reads the instance's signature out of `w_ops`,
-/// so the word has to be there first.
-let rec install_insts (s:session) (ds:list gdecl)
-  : Tot (either string session) (decreases ds) =
+/// Fulfil every instantiation request a body produced, accumulating the
+/// bindings its caller must splice.
+and install_insts (s:session) (fuel:nat) (binds:list (word_id & term))
+                  (ds:list gdecl)
+  : Tot (either string (session & list (word_id & term)))
+        (decreases %[fuel; 1; length ds]) =
   match ds with
-  | []                    -> Inr s
-  | GOp _ _ :: r          -> install_insts s r
-  | GInst id gn su :: r   -> (match install_instance s id gn su with
-                              | Inl e  -> Inl e
-                              | Inr s' -> install_insts s' r)
+  | []                  -> Inr (s, binds)
+  | GOp _ _ :: r        -> install_insts s fuel binds r
+  | GInst id gn su :: r -> (match install_instance s fuel id gn su with
+                            | Inl e       -> Inl e
+                            | Inr (s', b) -> install_insts s' fuel (b :: binds) r)
+
+/// Replace every generic call site in `t` by the instance it asked for.
+///
+/// `M05.resolve_defs` unchanged: the bindings are `(word_id & term)` pairs and
+/// splicing them is inlining. The call-site ids all lie below `s.se_next`, which
+/// has advanced past every instance built for them, so that is fuel enough.
+let splice_insts (s:session) (binds:list (word_id & term)) (t:term) : Tot term =
+  resolve_defs binds s.se_next t
 (* --- effect declarations -------------------------------------------------- *)
 
 /// Install one effect's operations. Each gets the next WORD id — one namespace
@@ -815,11 +872,12 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
           (match elab_define (self_nenv s body row0) (case_base s) sg body with
            | Inl e -> DDone s ("error: " ^ e)
            | Inr (row, t, ds) ->
-             (match install_insts (with_case_ops s ds body) ds with
+             (match install_insts (with_case_ops s ds body) gen_fuel [] ds with
               | Inl e -> DDone s ("error: " ^ e)
-              | Inr s1 ->
+              | Inr (s1, binds) ->
                 let (s2, m) = install_def s1 (self_id s body) name
-                                          (Some row) es row t in
+                                          (Some row) es row
+                                          (splice_insts s1 binds t) in
                 DDone s2 m))))
 
   /// The inferred form prints the signature it worked out, which is the same
@@ -839,10 +897,11 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
       (match elab_define_infer s.se_nenv (case_base s) body with
        | Inl e -> DDone s ("error: " ^ e)
        | Inr (row, t, ds) ->
-         (match install_insts (with_case_ops s ds body) ds with
+         (match install_insts (with_case_ops s ds body) gen_fuel [] ds with
           | Inl e -> DDone s ("error: " ^ e)
-          | Inr s1 ->
-            let (s2, m) = install_def s1 (self_id s body) name None None row t in
+          | Inr (s1, binds) ->
+            let (s2, m) = install_def s1 (self_id s body) name None None row
+                                      (splice_insts s1 binds t) in
             DDone s2 m))
 
   /// An effect declaration installs nothing runnable — it names operations and
@@ -904,10 +963,10 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
      | Inl e -> DDone s ("error: " ^ e)
      | Inr (t, ds) ->
        let s0 = with_case_ops s ds body in
-       (match install_insts s0 ds with
+       (match install_insts s0 gen_fuel [] ds with
         | Inl e -> DDone s ("error: " ^ e)
-        | Inr s ->
-       let t = discharge s t in
+        | Inr (s, binds) ->
+       let t = discharge s (splice_insts s binds t) in
        let env = s.se_wenv in
        (match infer env t with
         | None -> DDone s "error: expression does not typecheck"
