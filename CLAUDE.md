@@ -16,9 +16,15 @@ how to work on this project without re-deriving context.
    with its reasoning. Check here before proposing anything; it is probably
    already decided.
 3. `NOTES/N02_Open_Questions.md` — what is deliberately unsettled.
-4. `P00_Design/D02`–`D06` — the design proper.
-5. `DOCS/U01_Grammar.md`, `U02_Word_Reference.md` — the language **as it runs**,
-   which is a strict subset of the above. Fastest way to see the real gap.
+4. `NOTES/N04_Roadmap.md` — what is planned next and the argument for the order.
+5. `P00_Design/D02`–`D06` — the design proper.
+6. `DOCS/U03_Tutorial.md` then `U01_Grammar.md`, `U02_Word_Reference.md` — the
+   language **as it runs**, which is a strict subset of the above. Fastest way
+   to see the real gap.
+7. `demos/` — seven runnable programs, one design claim each. `make demos`.
+   Faster than any of the above if you want to know what the language *does*.
+8. `P01_Specification/M00_Reading_Guide.md` — a map of the mechanized core:
+   which 400 of its 4,200 lines carry the design, and what is actually proved.
 
 The two ideas everything else follows from, so you have them immediately:
 
@@ -37,13 +43,15 @@ within them likewise. Proofs read top to bottom; so does this project.
 | Path | What | Status |
 |---|---|---|
 | `P00_Design/` | `D01`–`D06`, prose design specification | current |
-| `P01_Specification/` | `M01`–`M11`, mechanized core in F* | M01–M06 complete, M07–M11 skeletons |
+| `P01_Specification/` | `M00` reading guide; `M01`–`M11`, mechanized core in F* | M01–M07 complete, M08–M11 skeletons |
 | `P02_Reference/` | `R01`–`R06`, reference interpreter | runs; extracts to OCaml |
-| `P03_Elaboration/` | `E01`–`E05`, lexer → parser → elaborator → REPL | **REPL works**; subset of D05 |
-| `DOCS/` | `U01`–`U02`, user-facing docs for the language as it runs | current |
-| `NOTES/` | decision log, open questions, session handoff | current |
+| `P03_Elaboration/` | `E01`–`E06`, lexer → parser → elaborator → REPL | **REPL works**; subset of D05 |
+| `DOCS/` | `U01`–`U03`, user-facing docs for the language as it runs | current |
+| `demos/` | seven runnable programs + golden transcripts | `make demos` |
+| `NOTES/` | decision log, open questions, roadmap, session handoff | current |
 | `.claude/skills/` | project skills | `delegate` |
-| `bin/`, `generated/` | OCaml glue and extraction output | generated — do not hand-edit |
+| `generated/` | extraction output | generated — do not hand-edit |
+| `bin/` | OCaml glue: the REPL loop, the C table | hand-written; small |
 | `P01_Specification-old/` | abandoned first attempt | **dead, do not read for guidance** |
 | `INITIAL_DRAFT_1.md` | original vision doc | historical |
 
@@ -53,8 +61,7 @@ them is recoverable — but still don't, without being asked. Neither is a guide
 **Commit as you go.** The user asked for this; do not leave a session's work
 uncommitted. `make verify` must pass first.
 
-Planned, not yet created: `P03_Elaboration/`, `P04_Compiler/`, `P05_Backend/`,
-`P06_Tooling/`.
+Planned, not yet created: `P04_Compiler/`, `P05_Backend/`, `P06_Tooling/`.
 
 ---
 
@@ -67,6 +74,8 @@ make verify-ref    # P02 only
 make verify-elab   # P03 only
 make catcat        # build the REPL  -> ./_build/default/bin/catcat.exe
 make interp        # extract, build, run the core example programs
+make demos         # run demos/*.cat and diff against the golden transcripts
+make demos-accept  # regenerate the goldens — read the diff before running it
 make admits        # inventory every admit / assume val
 make repl          # the original template binary; keep it building
 ```
@@ -77,9 +86,13 @@ also runs non-interactively for scripted tests:
 
 ```
 ./_build/default/bin/catcat.exe '2 3 +' 'define sq { dup * }' '6 sq'
+./_build/default/bin/catcat.exe -f demos/07_three_modes.cat
 ```
 
-Planned, not yet created: `P04_Compiler/`, `P05_Backend/`, `P06_Tooling/`.
+`-f FILE` splits the file on **blank lines** and runs each paragraph as one
+line, so a declaration may span lines but must not contain a blank one.
+`make demos` is a second acceptance test alongside `make verify`: it catches
+changes in what the language *does*, which typechecking cannot.
 
 ---
 

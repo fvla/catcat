@@ -84,15 +84,20 @@ demo suite is not mistaken for a claim that the ceiling is elsewhere.
 Each demo is one claim, and each claim is one the language actually makes.
 Ordered so that a reader can start at 01 and stop anywhere.
 
+As built (`demos/README.md` is the index; `make demos` checks all seven):
+
 | # | Demo | The claim it demonstrates |
 |---|---|---|
 | 01 | tour | it runs: inference, `if`, `recurse`, strings, signatures as assertions |
-| 02 | effects, bottom-up | one program, three `Log` handlers: print, discard, count. D-01 |
-| 03 | dictionary, top-down | `with` and `handle Dict` reinterpret code that was not written for it; a profiler over untouched words |
-| 04 | staging | `with` is discharged at elaboration and `handle Dict` at runtime; **same answer, different residual**, shown with `locate`. D-02 |
+| 02 | effects, bottom-up | one program, four `Log` handlers: print, discard, count, capture. D-01 |
+| 03 | dictionary, top-down | `with` and `handle Dict` reinterpret code that was not written for it — including a profiler over untouched words — and, being one construct at two times, give the same answer with different residuals. D-02 |
+| 04 | generics and staging | a generic is `specialize` run early; `locate` shows full monomorphization |
 | 05 | mocking C | `extern` + `handle C`: a deterministic test of a program that calls libc |
-| 06 | generics | explicit instantiation, generics calling generics, and the residual showing specialization happened |
-| 07 | failure | `try`/`catch`, and `Fail` composing with the other effects |
+| 06 | failure | `try`/`catch` as `Fail`'s handler, composing with the rest |
+| 07 | three modes | **capstone** — one deploy script run as production, dry run and audit, the third typed as pure |
+
+Staging got folded into 03 and 04 rather than getting a demo of its own: it is
+not a separate feature, and giving it one would have implied it was.
 
 ## 3. Documentation
 

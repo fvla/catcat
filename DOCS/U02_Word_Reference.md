@@ -326,6 +326,20 @@ the regression tests run:
 ./_build/default/bin/catcat.exe '2 3 +' 'define sq { dup * }' '6 sq'
 ```
 
+`-f FILE` runs a script. The file is split on **blank lines** and each
+paragraph is fed in as one line, so a declaration may span lines but must not
+contain a blank one. `-f` may be repeated and may be mixed with plain
+arguments; it is all one session, so a file can set up definitions a later
+argument uses:
+
+```
+./_build/default/bin/catcat.exe -f demos/01_tour.cat
+./_build/default/bin/catcat.exe -f lib.cat '3 4 hypotsq'
+```
+
+[`demos/`](../demos/README.md) is written this way, and `make demos` diffs each
+demo against the exact transcript it is expected to produce.
+
 The stack persists between lines and is shown bottom-to-top after each, or
 `(empty)`.
 

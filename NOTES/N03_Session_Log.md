@@ -7,60 +7,46 @@ Where things stand. A new thread should read `CLAUDE.md`, then
 
 ## Current state
 
+*Refreshed 2026-08-16. The list of admits below was 12 and is now 4; the
+paragraph describing the REPL as pre-effects was two feature waves out of
+date.*
+
 | Phase | Status |
 |---|---|
 | `P00_Design/` D01–D06 | current |
-| `P01_Specification/` M01–M11 | M01–M06 complete; M07–M11 skeletons with obligations recorded in place |
+| `P01_Specification/` M00–M11 | M01–M07 complete (M07 defined, T1/T2/T5 discharged); M08–M11 skeletons with obligations recorded in place. `M00` is the reading guide |
 | `P02_Reference/` R01–R06 | runs; extracts to OCaml; `make interp` evaluates the example programs |
-| `P03_Elaboration/` E01–E05 | **REPL works** — `make catcat`; lexer, parser, elaborator, session |
+| `P03_Elaboration/` E01–E06 | **REPL works** — `make catcat`; lexer, parser, elaborator, `locate`, session |
+| `demos/` | seven programs with golden transcripts; `make demos` |
+| `DOCS/` U01–U03 | grammar, word reference, tutorial |
 | `P04`–`P06` | not started |
 
-`make verify` passes on everything (28 modules). `make admits` lists 12 gaps,
-**all in P01** — P02 and P03 have none.
+`make verify` passes on everything (29 modules). `make admits` lists **4** gaps,
+all in P01 — P02 and P03 have none:
+
+| Where | What it costs |
+|---|---|
+| `M08.step`, `M08.run` | the machine is assumed in P01 and **implemented for real** in `R02_Machine`; S5 is the missing link. Not unimplemented — unverified |
+| `M09.state_typed` | needs `M08.step`'s frame representation pinned down |
+| `M11.specialize_typed` | E1: that a residual is still well typed |
 
 ### What the REPL does today
 
-```
-catcat> 2 3 + 4 *
-ok  20
-catcat> define sq { dup * }
-defined sq ( i64 -- i64 )
-catcat> 6 sq
-ok  20 36
-catcat> define hypotsq { sq swap sq + }
-defined hypotsq ( i64 i64 -- i64 )
-```
+`make demos` is the honest answer, and `DOCS/U03_Tutorial.md` is the readable
+one. In short: literals and strings, inferred or asserted signatures with a
+three-mode effect row (D-77), named parameters, `if`/`recurse`, user macros,
+user effects with stateful handlers, `try`/`catch`, `extern` to a fixed libc
+table, `with` and `handle Dict`, generics with explicit instantiation, and
+`locate` decompiling any word from its core term.
 
 Full pipeline per line: lex → parse → elaborate → **M06 typecheck** → evaluate
-on the R02 machine. A parse or type error leaves the session untouched. It also
-runs non-interactively (`catcat.exe 'line' 'line' …`), which is the regression
-harness.
+on the R02 machine, one declaration at a time (D-54). It runs non-interactively
+(`catcat.exe 'line' 'line' …`) and from a file (`-f FILE`), which is what the
+demo harness drives.
 
-**Implemented subset of D05:** integer and boolean literals, words with
-free-form names (so `+`/`*`, D-32), `define` with a signature *or* with the
-signature inferred (D-31), named parameters `$x:i64` with the suffix rule,
-`dup`/`pop`/`swap` instantiated from the compile-time shape, `Box[]`/`Rc[]` type
-syntax, `\` line comments, self-delimiting brackets.
-
-**Deliberately absent, each already specified in D05:** macros, modules and
-`::`, generics `[]`, effect rows and handler syntax, sums and classes, strings,
-`let` and its destructuring form, `.` member access.
-
-### The 12 admits, and the order to attack them
-
-1. `M03.lemma_compose_assoc` — signature composition is associative. Four-way
-   case analysis on which segment runs out; closes by `append_assoc` and
-   `lemma_unify_disjoint`. **Do this first**: M07's `denote` needs the same
-   transport reasoning.
-2. `M04.lemma_fbind_right_id`, `lemma_fbind_assoc` — true, but need functional
-   extensionality in the `Op` case. Requires restating `free`'s continuation
-   over `FStar.FunctionalExtensionality.(^->)`. Mechanical but invasive; doing
-   it early avoids redoing the M07 inductions.
-3. `M07.denote` (`assume val`) plus `thm_denote_nil`. The `TSeq` clause is the
-   only hard case.
-4. `M08.step`, `M10.handle` — do these **together**; the handler-frame
-   representation is shared and should not be guessed twice.
-5. `M09.state_typed`, `M11.specialize` / `specialize_typed` / `stage_required`.
+**Still absent, each specified in D05:** `let`, sums and classes a user can
+write, modules and `::`, quotation, arrays or any aggregate, surface `Box`/`Rc`
+construction, source positions in errors. `DOCS/U01` §9 is the maintained list.
 
 ---
 

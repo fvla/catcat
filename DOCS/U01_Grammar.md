@@ -497,8 +497,9 @@ branch is empty.
 type must be `Copy`. A move would consume the slot in one branch and not the
 other, leaving the two with different stacks.
 
-There is no `while` or recursion yet, so conditionals are the whole of control
-flow.
+Conditionals plus `recurse` (§6) are the whole of control flow. There is no
+`while`, and there are no anonymous loops — a loop is a tail call inside a
+`define`.
 
 ---
 
@@ -873,13 +874,17 @@ error: f uses 'recurse', which needs a written signature — the signature of a 
 ```
 
 **`!Rec` is what "may not terminate" looks like in a type**, and it propagates
-like any other effect:
+like any other effect. A written *stack* effect does not make the row written
+too (§3), so it is picked up without being asked for — and a bare `!` is what
+refuses it:
 
 ```
 catcat> define fact6 ( -- i64 ) { 6 fact }
-error: fact6 declares no effects but its body has !Rec
+defined fact6 ( -- i64 !Rec )
 catcat> define fact6 ( -- i64 !Rec ) { 6 fact }
 defined fact6 ( -- i64 !Rec )
+catcat> define pure6 ( -- i64 ! ) { 6 fact }
+error: pure6 declares no effects but its body has !Rec
 ```
 
 Carrying it all the way to the top level is the normal outcome, not a problem to
@@ -1216,6 +1221,7 @@ is otherwise invisible.
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
 | recursion in a generic | refused, deliberately: a call is expanded where it stands, so a self-call asks to be expanded forever (§3) |
 | code sharing between identical instantiations | the *elaboration* is shared (§3); the emitted code is not, so each call site carries its own copy. The copies are structurally equal, so what is missing is a common-subexpression pass over the core, not anything about generics |
+| `with` reaching into a generic instance | it does not, silently. An instance is a `TSpecialize` and resolves its calls where it stands, so a caller's rebinding (§7) arrives after there is anything left to rewrite. The program still means what its text says; the rebinding is ignored. Tracked as Q-21 |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
