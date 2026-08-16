@@ -89,10 +89,9 @@ show print " message(s), result " print show print "\n" print
 (a) a generic that logs:
 1 message(s), result 42
 ok  (empty)
-catcat> \ --- A LIMIT, and it is the price of the staging above. Demo 03's rebinding
-\ does NOT reach into a generic instance. An instance is a `TSpecialize`, and
-\ specializing resolves every word it calls right there — so by the time a
-\ caller's `with` runs there is no call left to rebind:
+catcat> \ --- The code a generic splices in is ordinary code, so demo 03's rebinding
+\ reaches into it. `bump` is called from inside an INSTANCE of `stepper`, and
+\ the `with` at the call site still finds it.
 catcat> define bump ( i64 -- i64 ) { 1 + }
 define stepper[#T] ( #T i64 -- #T i64 ) { bump }
 define big_bump ( i64 -- i64 ) { 1000 + }
@@ -105,18 +104,28 @@ defined run ( -- str i64 )
 defined run_big ( -- str i64 )
 catcat> run swap pop show print " " print
 run_big swap pop show print "\n" print
-1 1
+1 1000
 ok  (empty)
-catcat> \ Both print 1. The residual says why — `bump` is already gone:
+catcat> \ And the residuals show it happened at elaboration, not at run time: two
+\ different programs, neither of which mentions the rebinding or the generic.
 catcat> locate run
 define run ( -- str i64 ) {
   "tag" 0 1 +
 }
-catcat> \ Rebinding a word a generic calls therefore has to happen before the
-\ instantiation, not around it. Whether that is the right order is open, and
-\ tracked as Q-21 in NOTES/N02_Open_Questions.md; it is the same question as
-\ Q-20, which asks whether a generic body should close over the environment of
-\ its declaration or read it at each use.
+catcat> locate run_big
+define run_big ( -- str i64 ) {
+  "tag" 0 1000 +
+}
+catcat> \ It reaches through NESTING too — an instance whose body instantiates another
+\ generic, which calls the rebound word:
+catcat> define twostep[#T] ( #T i64 -- #T i64 ) { stepper[#T] stepper[#T] }
+generic twostep[#T]
+catcat> define both ( -- str i64 ) { with { bump big_bump } { "tag" 0 twostep } }
+defined both ( -- str i64 )
+catcat> locate both
+define both ( -- str i64 ) {
+  "tag" 0 1000 + 1000 +
+}
 catcat> \ --- Sharing. Identical instantiations are ELABORATED once and the result
 \ reused, which is what keeps nesting from multiplying out: this chain would
 \ otherwise build 3^4 copies of `twice`, and it returns immediately.

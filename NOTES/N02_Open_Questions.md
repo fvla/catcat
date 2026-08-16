@@ -309,7 +309,19 @@ that ignored rebinding would be the one construct in the language that does.
 declaration environment or a template read at each use. Nothing forces it today
 because the cache is scoped to one declaration either way.
 
-**Q-21. `with` does not reach into a generic instance.** Found by writing
+**Q-21. `with` does not reach into a generic instance.** — **CLOSED by D-86.**
+It does now, at any nesting depth, and the same repair fixed the stateless
+`handle Dict` spelling with it — both go through `discharge_dict`'s `THandle`
+clause, so both were wrong together and are now right together. A *stateful*
+`handle Dict` still does not reach in, and that is correct rather than left
+over: it is a runtime frame installed after the instance was specialized, so it
+is one spelling having already run, not two spellings disagreeing.
+
+The prediction below was wrong in an instructive way. It guessed that fixing
+this would force the D-85 cache key to include the enclosing frames. It did not:
+the cache stores what the schema says at those types, the ambient dictionary is
+applied where the instance is *used*, and the key is untouched. The account of
+the mechanism is kept because it is worth having on record. Found by writing
 `demos/04_generics_and_staging.cat`, which set out to show that the code a
 generic splices in is ordinary code and discovered that it is not reachable:
 

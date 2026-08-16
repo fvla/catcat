@@ -2429,3 +2429,69 @@ they have the same `case` operation ids and everything else. That turns sharing
 them into ordinary common-subexpression elimination over the core, which is a
 compiler pass, applies to every inlined term and not only to generics, and needs
 no elaborator support. See N02 Q-19.
+
+---
+
+## D-86. A static Dictionary frame reaches into a generic instance
+
+`with { bump big } { … stepper … }`, where `stepper` is a generic whose body
+calls `bump`, used to do **nothing** — silently. It now rebinds, at any nesting
+depth, and the residual shows the rebinding folded in:
+
+    catcat> define bump      ( i64 -- i64 )        { 1 + }
+    catcat> define big       ( i64 -- i64 )        { 1000 + }
+    catcat> define inner[#T] ( #T i64 -- #T i64 )  { bump }
+    catcat> define outer[#T] ( #T i64 -- #T i64 )  { inner[#T] inner[#T] }
+    catcat> define reb ( -- str i64 ) { with { bump big } { "t" 0 outer } }
+    catcat> locate reb
+    define reb ( -- str i64 ) {
+      "t" 0 1000 + 1000 +
+    }
+
+*Two causes, and both had to go.* `E06.discharge_dict`'s `THandle` clause
+discharged the body against `defs` and only applied the frame afterwards, via
+`resolve_defs (impls @ defs)`. But the `TSpecialize` clause **resolves its body
+where it stands**, so an instance inside the block was specialized against the
+ambient dictionary during that descent and there was no call left for the
+substitution to rewrite. And `install_instance` ran its own `discharge` over the
+spliced body, which resolved every NESTED instance at a point where no enclosing
+frame exists or could — so even after fixing the first, a rebinding reached a
+one-level instance and stopped at a two-level one.
+
+*The rule, stated positively:* **inside a `with` block the ambient Dictionary is
+the extended one**, so everything that consults the Dictionary — a direct call,
+a nested `with`, a generic instance at any depth — consults the same table. The
+frame is threaded down the descent instead of being applied only at the end, and
+an instance is spliced but not discharged, leaving its resolution to whoever
+uses it.
+
+*Why this is not a change of meaning but a repair.* D-75 killed `subst_words`
+because static and dynamic `with` disagreed on a result, and D-02 says that
+cannot happen. This was the same defect wearing a generic: `handle Dict over ( )
+init { } { … }` is discharged by the *same* clause — the stateless shape is what
+`discharge_dict` tests for — so both spellings were wrong together and are now
+right together.
+
+*What still does not reach in, and why that is correct.* A **stateful**
+`handle Dict` is a runtime frame, installed after the instance was built, and it
+finds no call because the code was specialized at elaboration. That is not two
+spellings disagreeing; it is one of them having already run. Specialization
+commits, which is the whole point of it.
+
+### The performance trap, and the flattening that pays for it
+
+Leaving nested instances undischarged put a `TSpecialize` at every level, and
+`discharge_dict` runs a full `resolve_defs` at each — itself `n` traversals of
+its argument. On a depth-12 chain that triples at each level this went from
+0.9 s to **7.2 s**, a factor of `depth`.
+
+`unwrap_spec` strips the wrapper off an instance being spliced into ANOTHER
+instance, because **specializing is idempotent**: a `TSpecialize` inside a
+`TSpecialize` says nothing the outer one does not. `splice_insts` puts the
+outermost wrapper back, which is where an instance meets a definition and where
+D-83 needs the node. One node per top-level generic call, one resolution pass.
+
+The same benchmark now runs in **0.58 s** — faster than before the fix, because
+the redundant per-level resolution was there all along and the flattening
+removed it. Measured, not reasoned: 10 / 65 / 583 ms at depths 8 / 10 / 12
+against 12 / 91 / 901 ms before.

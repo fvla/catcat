@@ -427,11 +427,27 @@ let rec discharge_dict (defs:list (word_id & term)) (n:nat) (t:term)
   match t with
   | TSeq a b -> TSeq (discharge_dict defs n a) (discharge_dict defs n b)
   | THandle e st i impls b ->
-    let b' = discharge_dict defs n b in
     if e = eff_dict_r && Nil? st && TNil? i
-    then resolve_defs (impls @ defs) n b'
+    then
+      /// THE FRAME IS IN SCOPE FOR THE WHOLE BODY, INCLUDING A NESTED
+      /// `TSpecialize` (Q-21). The descent used to run on `defs` and only the
+      /// final substitution on `impls @ defs`, which is wrong for one reason
+      /// and one only: the `TSpecialize` clause below RESOLVES its body where
+      /// it stands, so a generic instance inside the block was specialized
+      /// against the ambient dictionary before the rebinding was applied, and
+      /// there was no call left to rewrite. `with { bump big } { … stepper … }`
+      /// silently did nothing.
+      ///
+      /// Threading `defs'` down says the obvious thing instead: inside a `with`
+      /// block the ambient Dictionary IS the extended one, so anything that
+      /// consults it — a direct call, a nested `with`, a generic instance —
+      /// consults the same table. The outer `resolve_defs` is still needed,
+      /// because it is what rewrites the block's own `TWord` calls; the descent
+      /// only reaches the nodes that resolve on their own behalf.
+      let defs' = impls @ defs in
+      resolve_defs defs' n (discharge_dict defs' n b)
     else THandle e st (discharge_dict defs n i)
-                 (discharge_dict_impls defs n impls) b'
+                 (discharge_dict_impls defs n impls) (discharge_dict defs n b)
   | TTry e p b c -> TTry e p (discharge_dict defs n b) (discharge_dict defs n c)
   /// A `TSpecialize` NODE IS DISCHARGED, not carried (D-83). The elaborator
   /// emits one around every generic instance; running `resolve_defs` on its body
@@ -620,6 +636,25 @@ let rec inst_key (ps:list string) (su:tsub) : Tot (list sty) (decreases ps) =
 /// multiplies, and nesting happens inside one declaration. See N02 Q-19.
 let icache = list ((string & list sty) & term)
 
+/// Strip the `TSpecialize` wrapper off instances that are about to be spliced
+/// into ANOTHER instance's body.
+///
+/// Specializing is idempotent, so a `TSpecialize` inside a `TSpecialize` says
+/// nothing the outer one does not — and it costs. `discharge_dict` runs a full
+/// `resolve_defs` at every such node, and `resolve_defs` is itself `n`
+/// traversals of its argument, so leaving the nodes nested makes the discharge
+/// `depth` times more work than flattening them: measured at 7.2 s against
+/// 0.9 s on a depth-12 chain that triples at each level.
+///
+/// The outermost wrapper is put back by `splice_insts`, which is where an
+/// instance meets a definition and where the node has to survive for D-83.
+let rec unwrap_spec (bs:list (word_id & term))
+  : Tot (list (word_id & term)) (decreases bs) =
+  match bs with
+  | []                      -> []
+  | (i, TSpecialize b) :: r -> (i, b) :: unwrap_spec r
+  | b :: r                  -> b :: unwrap_spec r
+
 let rec lookup_inst (c:icache) (n:string) (k:list sty)
   : Tot (option term) (decreases c) =
   match c with
@@ -704,7 +739,25 @@ let rec install_instance (s:session) (fuel:nat) (active:list string)
        (match install_insts s1 (fuel - 1) (gname :: active) cache [] ds with
         | Inl e -> Inl e
         | Inr (s2, cache', binds) ->
-          let t = discharge s2 (resolve_defs binds s2.se_next t) in
+          /// SPLICED BUT NOT DISCHARGED (Q-21). This used to read
+          /// `discharge s2 (resolve_defs binds …)`, and the `discharge` was the
+          /// second half of the bug the `THandle` clause of `discharge_dict`
+          /// fixes: it resolved every NESTED `TSpecialize` here, against the
+          /// session's dictionary, at a point where no enclosing `with` frame
+          /// exists or could. So a rebinding reached a one-level instance and
+          /// stopped at a two-level one.
+          ///
+          /// Leaving both the nested nodes and any `with` written inside the
+          /// generic for the CALLER's discharge is what makes the frame reach
+          /// all the way down, and it is also the more honest reading of D-85:
+          /// the cache stores what the schema says at these types, and the
+          /// ambient dictionary is applied where the instance is used. A `with`
+          /// inside a generic body is discharged in the caller's context, which
+          /// is the same late binding the body's names already have (Q-20).
+          ///
+          /// `M06.infer` types both nodes, so the check below still sees a
+          /// closed, well-typed term.
+          let t = resolve_defs (unwrap_spec binds) s2.se_next t in
           (match infer s2.se_wenv t with
            | None -> Inl (gname ^ ", instantiated: the body does not typecheck \
                                    at these types")

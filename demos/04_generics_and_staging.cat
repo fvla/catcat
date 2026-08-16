@@ -94,10 +94,9 @@ define use ( i64 -- i64 !Log ) { watched 1 + }
 handle Log over ( i64 ) init { 0 } { say { swap pop 1 + } } { 41 use }
 show print " message(s), result " print show print "\n" print
 
-\ --- A LIMIT, and it is the price of the staging above. Demo 03's rebinding
-\ does NOT reach into a generic instance. An instance is a `TSpecialize`, and
-\ specializing resolves every word it calls right there — so by the time a
-\ caller's `with` runs there is no call left to rebind:
+\ --- The code a generic splices in is ordinary code, so demo 03's rebinding
+\ reaches into it. `bump` is called from inside an INSTANCE of `stepper`, and
+\ the `with` at the call site still finds it.
 
 define bump ( i64 -- i64 ) { 1 + }
 define stepper[#T] ( #T i64 -- #T i64 ) { bump }
@@ -109,15 +108,21 @@ define run_big ( -- str i64 ) { with { bump big_bump } { "tag" 0 stepper } }
 run swap pop show print " " print
 run_big swap pop show print "\n" print
 
-\ Both print 1. The residual says why — `bump` is already gone:
+\ And the residuals show it happened at elaboration, not at run time: two
+\ different programs, neither of which mentions the rebinding or the generic.
 
 locate run
 
-\ Rebinding a word a generic calls therefore has to happen before the
-\ instantiation, not around it. Whether that is the right order is open, and
-\ tracked as Q-21 in NOTES/N02_Open_Questions.md; it is the same question as
-\ Q-20, which asks whether a generic body should close over the environment of
-\ its declaration or read it at each use.
+locate run_big
+
+\ It reaches through NESTING too — an instance whose body instantiates another
+\ generic, which calls the rebound word:
+
+define twostep[#T] ( #T i64 -- #T i64 ) { stepper[#T] stepper[#T] }
+
+define both ( -- str i64 ) { with { bump big_bump } { "tag" 0 twostep } }
+
+locate both
 
 \ --- Sharing. Identical instantiations are ELABORATED once and the result
 \ reused, which is what keeps nesting from multiplying out: this chain would
