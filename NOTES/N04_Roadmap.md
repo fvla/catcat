@@ -128,37 +128,79 @@ namespaces/modules. They are not independent and they are not equally ready.
 is worth more than one that adds them, because the core is the thing being
 proved about. Two of the five do that; two do not; one is neutral.
 
-### 4.1 First: aggregates, via the F\*-library route — the real unblocking
+### 4.1 First: **surface type declarations.** Everything else is behind them.
 
-`Box` and `Rc` already exist in `M01.dtype` and their six operations
-(`PBoxNew`, `PBoxOpen`, `PRcNew`, `PRcClone`, `PRcDrop`, `PRcRead`) are six of
-`prim_op`'s fourteen rows. D-56 says they leave the core the moment a library
-can state `∀T. ( T -- Box[T] )`. **Generics now exist** (D-79…D-85), so the
-blocker named in Q-18 is gone and this is the largest single reduction available
-anywhere in the spec.
+*Revised after checking the elaborator rather than the design docs. The first
+draft of this section said the library mechanism came first; that was wrong by
+one step, and the step is load-bearing.*
 
-It is also the same work as "libraries implemented in F\* that extract to
-catcat", which is why it comes first. The full `emit : <F* subset> -> term` of
-`R06` §1 is a metaprogramming project; the useful 80% is not. A catcat program
-*is* a value of `M05.term`, so an F\*-checked library is an F\* module that
-**produces `term`s and signatures directly** and a session pass that installs
-them. No pretty-printer, no parser round-trip, no reflection on F\* syntax —
-`R06` §1's own argument for why the AST is the artifact applies at this scale
-too. That is a tractable module (call it `P02_Reference/R07_Library.fst` or a
-new `P04`), and once it exists:
+The plan was: an F\*-checked library contributes `Box`/`Rc`, the six `prim_op`
+rows leave the core (D-56), and an **array** arrives as a library declaration
+rather than as a seventh and eighth block of primitives with no proof story.
+That is still the destination. What blocks it is not the library mechanism.
 
-- `Box`/`Rc` move out of `prim_op` and `dtype` drops from six constructors to
-  four (`TBox`/`TRc` become `TSeal` declarations with type arguments);
-- an **array** type becomes a library declaration rather than a core change,
-  which is the only version of arrays worth building — an array in the core
-  would be a seventh and eighth `prim_op` block with no proof story;
-- `bool` can become a declared two-variant sum, removing `PBoolSum` and
+**A user cannot declare a type at all.** Checked against the binary:
+
+```
+catcat> type Point ( i64 i64 )
+error: unexpected ( in a term sequence
+catcat> define f ( Point -- ) { }
+error: unknown type: Point
+```
+
+`E04.elab_ty` resolves `StyName n` against `prim_of_name` and nothing else, so
+`TSeal` and `TSum` — the two core constructors that everything aggregate is
+built from — are **unreachable from the surface**. The elaborator builds them
+internally (`if` compiles to a `TDispatch` over a `TSum`) and no program can
+name one. And `Box[T]` is not evidence to the contrary: `E02.sty` has
+`StyBox`/`StyRc` as *hardcoded constructors*, not a general application form, so
+it is two special cases rather than the beginnings of type application.
+
+So the real order is:
+
+1. **A surface type declaration**, of both shapes the core has: a sum
+   (`TSum`) and a sealed record (`TSeal`, which carries its own capability
+   list, so this is also where a user-declared *linear* type comes from).
+   Needs: `nom_id` allocation in the session, a type table in `nenv`,
+   `elab_ty` consulting it, and constructor/eliminator words per declaration.
+2. **Type parameters on a declaration.** `sty` gains a general
+   `StyApp : string -> list sty -> sty`, which *subsumes* `StyBox`/`StyRc` and
+   deletes those two cases. This is the piece Q-18 called "generic NOMINAL
+   types"; `TSeal` currently takes `nom_id -> list cap -> list dtype` with no
+   parameters, so the core changes here too.
+3. **Then** the library mechanism, and then `Box`/`Rc` leave the core.
+
+Steps 1 and 2 pay for themselves several times over before step 3 arrives, which
+is why the correction improves the plan rather than lengthening it:
+
+- `bool` becomes a declared two-variant sum, removing `PBoolSum` and
   `prim.PBool`;
-- `fail` gets `∀a. ( -- a )` and `catch` a typed payload (D-71's two limits).
+- `option[T]` exists, so `parse` and `getenv` stop returning sentinels;
+- **D-71's two limits close**: `fail` gets `∀a. ( -- a )` and `catch` a typed
+  payload. The core already *has* the empty type — `TSum []` is uninhabited —
+  and its eliminator is already spelled, `TDispatch [] []`, which `M06.infer`
+  currently rejects on `Nil? variants`. Demo 06's `fail 0` padding goes away;
+- a user can write a `case`, which `U01` §5 lists as blocked on exactly this.
 
-So **arrays and memory management are downstream of the library mechanism, not
-of a memory model.** That is the non-obvious conclusion of this section and the
-reason it is first.
+**The library mechanism itself stays cheap**, and that part of the first draft
+holds. The full `emit : <F* subset> -> term` of `R06` §1 is a metaprogramming
+project; the useful 80% is not. A catcat program *is* a value of `M05.term`, so
+an F\*-checked library is an F\* module that **produces `term`s and signatures
+directly** plus a session pass that installs them — no pretty-printer, no parser
+round-trip, no reflection on F\* syntax. `R06` §1's own argument for why the AST
+is the artifact applies at this scale too.
+
+One thing to settle when step 3 arrives: a `gentry` stores `g_body : list
+sterm`, i.e. **surface** AST, and `install_instance` re-elaborates it per
+instantiation. A library generic emitting core `term`s directly does not fit
+that path. Either generics gain a second, already-elaborated body form, or a
+library ships surface source — which `-f` now makes viable and which is worth
+pricing before assuming the F\* route.
+
+So: **arrays and memory management are downstream of type declarations, and
+type declarations are the single highest-value thing left.** They are also the
+only item on the list that is pure addition — no decision in `N01` has to be
+revisited to build them.
 
 ### 4.2 Second: namespaces/modules — cheap, and already designed
 
@@ -172,6 +214,14 @@ The reason it is second rather than first is that it buys hygiene, not power,
 and the demos are small enough not to need it. The reason it is not last is that
 it gets much more expensive after the library mechanism ships with a flat
 namespace.
+
+### 4.2a A note on where the demos hit the ceiling
+
+Worth recording because it agrees with §4.1 from a different direction. Writing
+seven demos, the constraint that shaped every one of them was the absence of an
+aggregate — demo 07 ends with three service names as literals because there is
+no list to iterate. Not one demo wanted a memory model, an allocator, or
+borrowing. They wanted **a type with two variants and a type with two fields.**
 
 ### 4.3 Third: references, borrowing, and the memory model
 

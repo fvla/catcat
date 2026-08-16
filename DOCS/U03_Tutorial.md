@@ -4,7 +4,7 @@ A path into the language. [U01](U01_Grammar.md) is the grammar reference and
 [U02](U02_Word_Reference.md) is the word reference; both are for looking things
 up, and neither tells you where to start.
 
-> **Current as of commit `3c99672`.**
+> **Current as of commit `0f91882`.**
 > Source of truth: the binary. Every transcript below was produced by running
 > it, and most are quoted from [`demos/`](../demos/README.md), which `make
 > demos` checks against golden output. If a transcript here and the binary
@@ -480,10 +480,18 @@ The honest ceiling: **there are no arrays, no lists, no records and no string
 indexing.** Everything above is control- and effect-shaped, and demo 07 ends
 with three service names written out as literals for exactly that reason.
 
+The reason is narrower than it looks. **You cannot declare a type**: `E04`
+resolves a type name against the built-in primitives and nothing else, so the
+core's `TSum` and `TSeal` — which is where every aggregate would come from —
+are unreachable from the surface. `Box[T]` and `Rc[T]` are two hardcoded cases
+in the parser, not a general form, which is why they can appear in a signature
+and no word can build one.
+
 [U01 §9](U01_Grammar.md#9-not-yet-implemented) is the full list of what is
 specified and absent. [`NOTES/N04_Roadmap.md`](../NOTES/N04_Roadmap.md) §4 is
-what is planned and why in that order — the short version being that arrays
-turn out to be downstream of a *library mechanism*, not of a memory model.
+what is planned and why in that order — the short version being that arrays,
+`option`, a user-writable `case`, and a `fail` that can stand where a value is
+expected are all downstream of that one missing declaration form.
 
 ## Where to go next
 
