@@ -4,7 +4,7 @@ A path into the language. [U01](U01_Grammar.md) is the grammar reference and
 [U02](U02_Word_Reference.md) is the word reference; both are for looking things
 up, and neither tells you where to start.
 
-> **Current as of commit `0f91882`.**
+> **Current as of commit `b1248aa`.**
 > Source of truth: the binary. Every transcript below was produced by running
 > it, and most are quoted from [`demos/`](../demos/README.md), which `make
 > demos` checks against golden output. If a transcript here and the binary

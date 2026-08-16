@@ -1,6 +1,6 @@
 # M00 — a reading guide to the mechanized core
 
-**Current as of commit `3c99672`.**
+**Current as of commit `b1248aa`.**
 
 This is a map, not an authority. Everything here is derived from `M01`–`M11`
 and **the modules win on any disagreement** — they are checked by F\*, and this
