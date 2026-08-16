@@ -1007,17 +1007,47 @@ definable as word names.
   leave the stack alone. `if { } then { 1 } else { fail } endif` does not: the
   branches disagree, and the `fail` arm would have to be typed at the empty
   type for it to be accepted.
-* **The try block runs on a fresh stack.** It may not consume anything that was
-  on the stack before it:
+* **The try block runs on its own stack**, so it may not consume an anonymous
+  value that was there before it:
 
   ```
   catcat> 5 try { dup } catch { 0 }
   error: dup: the stack is empty
   ```
 
-  Put what the block needs inside it. This is an elaborator limit and not a
-  core one — the core records how deep the block reached, and the elaborator's
-  stack model cannot compute that number.
+  This is an elaborator limit and not a core one — `TTry` records how deep the
+  block reached, and the elaborator's model of the stack says what a block
+  *left*, never how far down it went.
+
+  **Named locals are the exception, and they are in scope**: each local the
+  block reads is copied in before it runs, so `pre` stays known by
+  construction:
+
+  ```
+  catcat> define or_zero ( $n:i64 -- i64 ) { try { $n validate } catch { 0 } }
+  defined or_zero ( i64 -- i64 )
+  catcat> locate or_zero
+  define or_zero ( i64 -- i64 ) {
+    pick.0 try { roll.0 validate } catch { 0 } roll.1 pop
+  }
+  ```
+
+  Copies rather than moves, because an abort cuts the stack back past whatever
+  the block was given — so the type has to be `Copy`, the same requirement a
+  read inside an `if` branch carries and for the same reason.
+
+* **A local is not in scope in the `catch` block.** By the time `catch` runs the
+  stack has been cut back, so it receives nothing at all:
+
+  ```
+  catcat> define incatch ( $n:i64 -- i64 ) { try { 1 } catch { $n } }
+  error: $n is not in scope in a catch block: an abort cuts the stack back
+  before catch runs, so it receives nothing. Read the local in the try block
+  instead
+  ```
+
+  This is the same missing piece as the first limit above: what both want is a
+  `fail` that carries a payload and a `catch` that receives one.
 
 Later, `catch` will be able to take an error value rather than nothing. That is
 the same missing feature as the first limit above.
@@ -1221,7 +1251,6 @@ is otherwise invisible.
 | anonymous loops | none; a loop is `recurse` inside a `define` (§6) |
 | recursion in a generic | refused, deliberately: a call is expanded where it stands, so a self-call asks to be expanded forever (§3) |
 | code sharing between identical instantiations | the *elaboration* is shared (§3); the emitted code is not, so each call site carries its own copy. The copies are structurally equal, so what is missing is a common-subexpression pass over the core, not anything about generics |
-| `with` reaching into a generic instance | it does not, silently. An instance is a `TSpecialize` and resolves its calls where it stands, so a caller's rebinding (§7) arrives after there is anything left to rewrite. The program still means what its text says; the rebinding is ignored. Tracked as Q-21 |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
 | sums, classes, `module`, `::`, `.` | not parsed |
@@ -1235,7 +1264,8 @@ is otherwise invisible.
 | C types beyond `i64` and `str` | refused at the `extern`, not at the call |
 | `fail` at a value type | `fail` is `( -- )`, so it cannot stand where a value is expected (§6); it wants the empty type, which wants generics |
 | a typed `catch` | `catch` takes no inputs; an error payload wants generics (§6) |
-| a `try` block reading the enclosing stack | the block runs on a fresh stack (§6). The core does not restrict this — the elaborator's stack model cannot compute how deep a block reached |
+| a `try` block reading the enclosing stack | named locals ARE in scope, copied in (§6); an anonymous value is not, since only a name can be identified. The core does not restrict this — the elaborator’s stack model says what a block left, not how deep it reached |
+| a local in a `catch` block | not in scope, and it says so: an abort cuts the stack back before `catch` runs, so it receives nothing (§6). Tracked as Q-22 |
 
 Seven entries left this table recently and are worth naming, because a reader of
 an older copy will look for them. `!Eff` in a signature used to be **parsed and

@@ -445,6 +445,70 @@ let elab_lit (n:int) : Tot (either string term) =
   then Inr (TPrimOp (PLit (LPrim PI64 n)))
   else Inl ("integer literal out of range for i64: " ^ string_of_int n)
 
+/// Roll each surviving named slot to the top and pop it. Runs after a body and
+/// after a `try` block, and is the counterpart to the pick-based read strategy
+/// above: a repeated read leaves its slot behind, and this is what clears it.
+///
+/// Fuel rather than a structural measure: `remove_at` provably shrinks the
+/// shape only when the index is in range, and encoding that would mean a
+/// dependent return type on `first_named`. Since every iteration removes one
+/// named slot, `length sh` is an exact bound.
+let rec drop_named (fuel:nat) (sh:shape) (acc:list term)
+  : Tot (either string (shape & list term)) (decreases fuel) =
+  if fuel = 0 then Inr (sh, rev acc)
+  else match first_named [] 0 sh with
+       | None -> Inr (sh, rev acc)
+       | Some (i, above, d) ->
+         if not (droppable d)
+         then Inl "a local of non-droppable type is left unconsumed at end of body"
+         else drop_named (fuel - 1) (remove_at i sh)
+                (TPrimOp (PStack (SPop d)) :: TPrimOp (PStack (SRoll above d)) :: acc)
+
+/// The named locals of `sh`, topmost first and without repeats, keeping only
+/// those `blk` actually reads. Used to decide what a `try` block closes over
+/// (D-87); a name that appears twice in the shape is a shadowed local, and the
+/// topmost is the one in scope, so the first occurrence is the right one.
+let rec mentioned_locals (sh:shape) (seen:list string) (blk:list sterm)
+  : Tot (list string) (decreases sh) =
+  match sh with
+  | []     -> []
+  | s :: r ->
+    (match s.sl_name with
+     | Some x ->
+       if mem x seen || count_var_list x blk = 0
+       then mentioned_locals r seen blk
+       else x :: mentioned_locals r (x :: seen) blk
+     | None   -> mentioned_locals r seen blk)
+
+/// Copy each of `xs` to the top of the stack, and report the shape the copies
+/// form (topmost first, still named) alongside the terms that build it.
+///
+/// ALWAYS A COPY, NEVER A MOVE, which is the same choice D-41 made for branch
+/// reads and for the same kind of reason. A `try` block may abort, and an abort
+/// cuts the stack back past whatever the block was given — so a moved local
+/// would be destroyed on a path the reader did not write. Copying costs the
+/// requirement that the type be `Copy`, and that requirement is honest.
+///
+/// `sh` grows as we go so that each `find_named` measures against the stack as
+/// it will actually be; the enclosing shape underneath is untouched, because
+/// every emitted term is a `pick`.
+let rec copy_locals (sh:shape) (blk:shape) (acc:list term) (xs:list string)
+  : Tot (either string (shape & list term)) (decreases xs) =
+  match xs with
+  | []     -> Inr (blk, acc)
+  | x :: r ->
+    (match find_named x [] 0 sh with
+     | None -> Inl ("unbound local $" ^ x)
+     | Some (i, above, d) ->
+       if not (copyable d)
+       then Inl ("$" ^ x ^ " has a non-copyable type and cannot be read inside a \
+                  try block; the block runs on its own stack, so its locals are \
+                  copied into it")
+       else
+         let s = { sl_name = Some x; sl_ty = d } in
+         copy_locals (s :: sh) (s :: blk)
+           (TPrimOp (PStack (SPick above d)) :: acc) r)
+
 /// Measures: every edge below decreases the size component strictly, including
 /// the two that cross between a term list and a branch list, because
 /// `E02.sterm_lists_size` charges one per branch. The ranks are therefore
@@ -695,19 +759,54 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
      /// The two blocks must agree on their exit shape, for the same reason two
      /// branches of a `case` must: one of them runs and the following code
      /// cannot know which. `M06.infer` re-derives the agreement independently.
+     /// NAMED LOCALS ARE COPIED IN (D-87). The block still runs on its own
+     /// stack — that part is forced, for the reason above — but "its own stack"
+     /// need not be empty. Each local the block READS is picked to the top
+     /// first, and the block is elaborated against exactly those copies, so
+     /// `pre` stays known by construction while `try { $n validate }` means what
+     /// it looks like it means.
+     ///
+     /// Copies, not moves, and always: an abort cuts the stack back past them,
+     /// so a moved local would be destroyed on a path the reader did not write.
+     /// `drop_named` clears any copy a repeated read left behind, exactly as it
+     /// does at the end of a body — without it the block's exit shape would
+     /// carry the leftover and stop agreeing with `catch`.
+     ///
+     /// THE CATCH BLOCK GETS NOTHING, and that is not an oversight of this case
+     /// but `M06`'s rule: `catch` is typed at `pre = []` because `R02` restores
+     /// the stack BELOW the body's inputs, so there is nowhere for a copy to
+     /// survive. Giving `catch` access is a core change and it is the same
+     /// change Q-17 wants — see N02 Q-22.
      | StTry btry bcatch ->
-       (match elab_terms env cs (base + 1) [] [] [] btry with
+       (match copy_locals sh [] [] (mentioned_locals sh [] btry) with
         | Inl e -> Inl e
-        | Inr (shb, bts, d1) ->
-          (match elab_terms env cs (base + 1 + sterms_size btry) [] [] [] bcatch with
+        | Inr (blk, hoist) ->
+          (match elab_terms env cs (base + 1) blk [] [] btry with
            | Inl e -> Inl e
-           | Inr (shc, cts, d2) ->
-             if slot_tys shc <> slot_tys shb
-             then Inl "try: the catch block must leave the same stack as the \
-                       try block"
-             else elab_terms env cs (base + sterm_size t) (shb @ sh)
-                    (TTry eff_fail [] (seq_of bts) (seq_of cts) :: acc)
-                    (d1 @ d2 @ dacc) rest)))
+           | Inr (shb0, bts0, d1) ->
+             (match drop_named (length shb0) shb0 [] with
+              | Inl e -> Inl e
+              | Inr (shb, bts1) ->
+                (match mentioned_locals sh [] bcatch with
+                 /// Reported here rather than left to surface as "unbound local"
+                 /// from the catch block's own elaboration, because the two are
+                 /// different mistakes: one is a typo, this one is a rule.
+                 | x :: _ ->
+                   Inl ("$" ^ x ^ " is not in scope in a catch block: an abort \
+                        cuts the stack back before catch runs, so it receives \
+                        nothing. Read the local in the try block instead")
+                 | [] ->
+                (match elab_terms env cs (base + 1 + sterms_size btry) [] [] [] bcatch with
+                 | Inl e -> Inl e
+                 | Inr (shc, cts, d2) ->
+                   if slot_tys shc <> slot_tys shb
+                   then Inl "try: the catch block must leave the same stack as \
+                             the try block"
+                   else elab_terms env cs (base + sterm_size t) (shb @ sh)
+                          (TTry eff_fail (slot_tys blk)
+                                (seq_of (bts0 @ bts1)) (seq_of cts)
+                           :: (hoist @ acc))
+                          (d1 @ d2 @ dacc) rest))))))
 
 /// Elaborate each branch against the SAME entry shape and require them to
 /// agree on the exit shape.
@@ -808,24 +907,6 @@ and elab_impls (env:nenv) (base:nat) (eid:eff_id) (st:seg) (acc:list (op_id & te
                                 state on top of the operation's results")
             else elab_impls env (base + sterms_size blk) eid st
                    ((n.n_id, seq_of ts) :: acc) (d1 @ dacc) r))
-
-/// Roll each surviving named slot to the top and pop it. Runs once, after the
-/// body, and is the counterpart to the pick-based read strategy above.
-///
-/// Fuel rather than a structural measure: `remove_at` provably shrinks the
-/// shape only when the index is in range, and encoding that would mean a
-/// dependent return type on `first_named`. Since every iteration removes one
-/// named slot, `length sh` is an exact bound.
-let rec drop_named (fuel:nat) (sh:shape) (acc:list term)
-  : Tot (either string (shape & list term)) (decreases fuel) =
-  if fuel = 0 then Inr (sh, rev acc)
-  else match first_named [] 0 sh with
-       | None -> Inr (sh, rev acc)
-       | Some (i, above, d) ->
-         if not (droppable d)
-         then Inl "a local of non-droppable type is left unconsumed at end of body"
-         else drop_named (fuel - 1) (remove_at i sh)
-                (TPrimOp (PStack (SPop d)) :: TPrimOp (PStack (SRoll above d)) :: acc)
 
 (* ------------------------------------------------------------------------ *)
 (* Signature inference                                                      *)

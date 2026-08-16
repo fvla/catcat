@@ -2495,3 +2495,91 @@ The same benchmark now runs in **0.58 s** — faster than before the fix, becaus
 the redundant per-level resolution was there all along and the flattening
 removed it. Measured, not reasoned: 10 / 65 / 583 ms at depths 8 / 10 / 12
 against 12 / 91 / 901 ms before.
+
+---
+
+## D-87. A `try` block closes over the named locals it reads, by copy
+
+`try { $n validate } catch { 0 }` used to be `error: unbound local $n`, which
+made the obvious wrapper unwritable and forced every example to produce its
+subject inside the block:
+
+    catcat> define or_zero ( $n:i64 -- i64 ) { try { $n validate } catch { 0 } }
+    defined or_zero ( i64 -- i64 )
+    catcat> locate or_zero
+    define or_zero ( i64 -- i64 ) {
+      pick.0 try { roll.0 validate } catch { 0 } roll.1 pop
+    }
+
+The residual is the whole mechanism: **pick the local in, consume the copy
+inside, drop the original after**.
+
+*Why the block could not simply be given the enclosing shape*, as an `if` branch
+is. `M05.TTry` records the body's `pre` so `R02` knows how far to cut the stack
+back on an abort, and the elaborator's model is one concrete stack — it says what
+a block LEFT, never how deep it reached. Handing the block the enclosing shape
+would make `pre` unknowable; handing it `[]` made `pre = []` true by construction
+and was the reason for the restriction.
+
+Copying each read local in keeps `pre` known by construction — it is exactly the
+segment of copies — while making the block's stack non-empty. Nothing about the
+core changed.
+
+*Copies, not moves, and this is forced rather than chosen.* An abort cuts the
+stack back past whatever the block was given, so a moved local would be
+destroyed on a path the reader did not write. It is D-41's argument for branches
+arriving at the same answer from a different direction, and it has the same
+price: the type must be `Copy`. `drop_named` runs at the end of the block, as it
+does at the end of a body, so a copy left behind by a repeated read is cleared
+rather than leaking into the exit shape and disagreeing with `catch`.
+
+*`E02.count_var` counts the try block and NOT the catch block*, and unlike
+`StCase` it does not inflate. A branch inflates because a sole read compiled to
+a move would consume a slot in one branch and not the other; a try block runs
+exactly once, and the slot it would consume is its own copy, so a move is safe.
+
+*What is still out of reach*, and both are one thing:
+
+  * an **anonymous** value on the enclosing stack — only named locals are
+    copied in, because only they can be identified;
+  * a local in the **catch block**, which now says so specifically rather than
+    reporting "unbound local" as if it were a typo. See N02 Q-22.
+
+## D-88. Memory management is an ambient effect, not a set of primitives
+
+Stated as a direction rather than reached by implementation, and recorded now
+because it changes what D-56 is for.
+
+`Box` and `Rc` are **impure**: `PBoxNew` allocates and `PRcDrop` may free. They
+sit in `prim_op` beside `PStack` and `PLit`, whose defining property (D-55) is
+that every primitive is pure — `prim_sig` returns no effect row and
+`apply_primop` is handed neither the dictionary nor the continuation. Six of the
+fourteen rows do not satisfy the invariant the table is built on.
+
+The resolution is not to make them pure but to make them **operations of an
+ambient effect**, handled by the compiler by default and overridable like any
+other:
+
+  * `!Mem`, or whatever it ends up being called, is to allocation what `!Dict`
+    is to name resolution (D-37): pervasive, never written, static by default,
+    and made explicit only when a program wants to talk about it;
+  * the default handler is supplied by the compiler and erased, which is what
+    "handled by the compiler" has to mean if the zero-cost claim (D04, M11 E3)
+    is to survive;
+  * **overriding it is the point.** A handler that counts every allocation and
+    free, or that fails the second one, or that pools, is then an ordinary
+    `handle` block over unmodified code — the same reinterpretation
+    `demos/03` performs on the Dictionary and `demos/05` on `C`.
+
+*What this settles about D-56.* Moving `Box`/`Rc` out of the core is no longer
+just a reduction in constructor count; it is the removal of the last impure
+rows from a table whose invariant is purity. And the library that receives them
+does not need to be trusted with memory safety in the way a primitive is,
+because the operations it declares are handled — the handler is where the
+discipline lives, and it is replaceable.
+
+*What is not settled:* the name; whether allocation and release are one effect
+or two; whether the default handler is expressible in the language or only by
+the compiler; and how it interacts with the capability system, since `CDrop` is
+today a static licence to discard rather than a call to anything. That last one
+is the hard part, and it is the same question Q-17 asks from the abort path.

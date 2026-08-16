@@ -366,10 +366,24 @@ catcat> define boxy ( Box[i64] -- Box[i64] Box[i64] ) { twice }
 error: twice, instantiated: dup: this value's type is not Copy
 ```
 
-Two limits to know: a generic **may not call itself**, directly or through
-another, because a call is expanded where it stands; and **`with` does not
-reach into an instance**, because the instance resolved its own calls when it
-was built.
+One limit to know: a generic **may not call itself**, directly or through
+another, because a call is expanded where it stands and a self-call asks to be
+expanded forever.
+
+What a generic body does *not* get is any special protection from §5. The code
+an instance splices in is ordinary code, so a `with` at the call site rebinds
+the words it calls, at any nesting depth:
+
+```
+catcat> define bump ( i64 -- i64 ) { 1 + }
+catcat> define big  ( i64 -- i64 ) { 1000 + }
+catcat> define step[#T] ( #T i64 -- #T i64 ) { bump }
+catcat> define reb ( -- str i64 ) { with { bump big } { "t" 0 step } }
+catcat> locate reb
+define reb ( -- str i64 ) {
+  "t" 0 1000 +
+}
+```
 
 **Full example: [`demos/04_generics_and_staging.cat`](../demos/04_generics_and_staging.cat).**
 
@@ -394,17 +408,37 @@ which:
 - **`fail 0`.** `fail` is `( -- !Fail )`, so it cannot stand where a value is
   expected, and the `0` is unreachable padding to make the branches agree. What
   is wanted is `fail` at the empty type.
-- **The value is produced inside the block.** A `try` block runs on a *fresh*
-  stack: it cannot see what was already there, and it cannot see a local
-  either, since a local is a stack slot. This is the main thing standing
-  between `try` and ordinary use.
+- **The value is produced inside the block.** A `try` block runs on its own
+  stack and cannot reach an anonymous value that was already there.
+
+**Named locals are the exception**, and they are what you actually want. Each
+local the block reads is copied in before it runs:
 
 ```
 catcat> define or_zero ( $n:i64 -- i64 ) { try { $n validate } catch { 0 } }
-error: unbound local $n
+defined or_zero ( i64 -- i64 )
+catcat> 7 or_zero
+ok  7
+catcat> -7 or_zero
+ok  7 0
+catcat> locate or_zero
+define or_zero ( i64 -- i64 ) {
+  pick.0 try { roll.0 validate } catch { 0 } roll.1 pop
+}
 ```
 
-`catch` receives nothing and must leave what the try block would have left.
+Copies rather than moves, so the type must be `Copy` — an abort cuts the stack
+back past whatever the block was given, and a moved local would be destroyed on
+a path you did not write.
+
+`catch` receives nothing and must leave what the try block would have left, so a
+local is *not* in scope there:
+
+```
+catcat> define incatch ( $n:i64 -- i64 ) { try { 1 } catch { $n } }
+error: $n is not in scope in a catch block: an abort cuts the stack back before
+catch runs, so it receives nothing. Read the local in the try block instead
+```
 
 **Full example: [`demos/06_failure.cat`](../demos/06_failure.cat).**
 

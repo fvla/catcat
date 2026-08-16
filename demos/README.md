@@ -46,15 +46,22 @@ what it will take to lift it are in
 
 ## Gaps these found
 
-Writing them turned up four things worth having in the record, all now tracked:
+Writing them turned up four things worth having in the record. **Two were bugs
+and have been fixed**; the demos that found them now demonstrate the fix.
 
-- **`with` does not reach into a generic instance** (N02 Q-21). An instance is a
-  `TSpecialize`, which resolves its calls where it stands, so a caller's
-  rebinding arrives too late. Demo 04 shows it.
-- **A `try` block runs on a fresh stack and cannot see a local**, which is what
-  stops `try` being usable in the obvious way. Demo 06 leads with it.
+- **`with` did not reach into a generic instance** — silently. Fixed (D-86):
+  inside a `with` block the ambient Dictionary is the extended one, so a direct
+  call, a nested `with` and an instance at any depth all consult the same table.
+  Demo 04 shows it working, and the same repair sped the elaborator up.
+- **A `try` block could not see a local**, which made the obvious wrapper
+  unwritable. Fixed (D-87): each local the block reads is copied in before it
+  runs, so `pre` stays known by construction. Demo 06 shows the residual.
 - **A handler implementing none of its operations still discharges the effect**
-  (N02 Q-16). Demo 02 ends with a word that typechecks as pure and escapes.
+  (N02 Q-16, open). Demo 02 ends with a word that typechecks as pure and escapes.
 - **`U01` §4 and §6 contradicted each other** on whether recursion exists, and
   `U01` §6's `!Rec` propagation example predated the bare-`!` rule (D-77). Both
   fixed.
+
+Still open and visible in the demos: `catch` receives nothing (Q-22), an abort
+discards without consulting capabilities (Q-17), and a handler may not re-enter
+itself (Q-12).

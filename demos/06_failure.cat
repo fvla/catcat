@@ -23,17 +23,36 @@ define validate ( $n:i64 -- i64 !Fail ) { $n 0 < if { } then { fail 0 } else { $
 try { 7 validate } catch { 0 } show print " " print
 try { -7 validate } catch { 0 } show print "\n" print
 
-\ --- A LIMIT, up front, because it shapes everything below. A `try` block
-\ runs on a FRESH stack: it cannot reach what was already there, and a local
-\ is a stack slot, so it cannot reach one of those either. The value to be
-\ validated has to be produced INSIDE the block, which is why both lines above
-\ carry their own literal.
+\ --- Named locals are in scope in the try block, so the ordinary wrapper is
+\ ordinary to write:
 
 define or_zero ( $n:i64 -- i64 ) { try { $n validate } catch { 0 } }
 
-\ The core does not require this. The elaborator's stack model cannot compute
-\ how deep a block reached, so it gives the block nothing rather than guessing.
-\ It is the single biggest thing standing between `try` and ordinary use.
+7 or_zero show print " " print
+-7 or_zero show print "\n" print
+
+\ A try block still runs on its OWN stack — it cannot reach anonymous values
+\ that were already there — so what makes this work is that each local the
+\ block reads is COPIED into it before the block runs. The residual shows the
+\ whole mechanism: pick the local in, consume the copy, drop the original.
+
+locate or_zero
+
+\ Copies, not moves, and that is forced rather than chosen: an abort cuts the
+\ stack back past whatever the block was given, so a moved local would be
+\ destroyed on a path nobody wrote. The price is that the type must be `Copy`.
+
+define linear ( $b:Box[i64] -- i64 ) { try { 1 $b pop } catch { 0 } }
+
+\ What is NOT in scope is a local in the `catch` block, and for the same reason
+\ the copies exist: by the time catch runs, the stack has been cut back.
+
+define incatch ( $n:i64 -- i64 ) { try { 1 } catch { $n } }
+
+\ And an anonymous value on the enclosing stack is still out of reach — only
+\ named locals are copied in, because only they can be identified.
+
+define reaches ( i64 -- i64 ) { try { 1 + } catch { 0 } }
 
 \ Look at `validate`'s body: `fail 0`. `fail` is `( -- !Fail )`, so it cannot
 \ stand where a value is expected, and the two branches of an `if` must agree
@@ -106,11 +125,11 @@ lenient show print "\n" print
 
 "not a number" parse show print "\n" print
 
-\ 2. The fresh-stack rule from the top of this file, restated as the error you
-\    actually hit:
-
-define reaches ( i64 -- i64 ) { try { 1 + } catch { 0 } }
-
+\ 2. `catch` receives nothing, so a recovery cannot see what was being tried.
+\    That is the same missing piece as (1): the fix both want is `catch` taking
+\    a typed payload, which needs the abort to carry a value. Tracked as Q-22
+\    in NOTES/N02_Open_Questions.md.
+\
 \ 3. An abort discards values without consulting their capabilities, so a
 \    linear value in flight when a `fail` fires is leaked rather than
 \    released. Tracked as Q-17 in NOTES/N02_Open_Questions.md. Nothing

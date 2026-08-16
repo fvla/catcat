@@ -595,9 +595,21 @@ let rec count_var (x:string) (t:sterm)
   /// `with` does not change the stack at all, so its body counts exactly as if
   /// it had been written in place — which, after elaboration, it was.
   | StWith _ b -> count_var_list x b
-  /// Neither block is counted: both run on a fresh stack, so an enclosing
-  /// definition's locals are not in scope in either (see `StHandle` above).
-  | StTry _ _  -> 0
+  /// THE TRY BLOCK IS COUNTED; THE CATCH BLOCK IS NOT (D-87).
+  ///
+  /// A try block runs on its own stack, so `E04` copies in each local the block
+  /// reads before entering it. Those copies are the block's own slots, and a
+  /// read of one is an ordinary read — no inflation, unlike `StCase`, because
+  /// the block runs exactly once and a sole read may safely be compiled to a
+  /// move of the copy. What the count decides here is only whether the read
+  /// consumes the copy or picks from it; either way the ORIGINAL slot is
+  /// untouched, since the hoist is a `pick`.
+  ///
+  /// The catch block is not counted because nothing is in scope there. On an
+  /// abort the machine cuts the stack back below the body's inputs and
+  /// `M06`'s rule types `catch` at `pre = []`, so it can receive nothing —
+  /// see N02 Q-22.
+  | StTry b _  -> count_var_list x b
   | _          -> 0
 
 and count_var_list (x:string) (ts:list sterm)

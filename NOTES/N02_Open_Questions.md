@@ -366,3 +366,33 @@ cheapest — pin the schema to its declaration environment — is the one that m
 silently does nothing. It is silent, not wrong: the program still means what its
 text says, it just ignores the rebinding. Documented in `U01` §9 and demo 04.
 *Closes when:* Q-20 closes.
+
+**Q-22. A `catch` block receives nothing, so a recovery cannot see what failed.**
+Left over from D-87, which put named locals in scope in the `try` block and
+could not do the same for `catch`.
+
+*Why not.* `M06.infer`'s `TTry` rule requires `sc == { pre = []; post = s.post }`
+exactly, and `R02` restores the stack to `drop (length pre) stk` — **below** the
+body's inputs — so there is nowhere for a copy to survive to. Every route to
+giving `catch` a local runs through a non-empty `pre` on the catch block, which
+the rule refuses.
+
+*The obvious change and why it was not taken.* Save the full stack in `KTry` and
+type `catch` at `{ pre = s.pre; post = s.post }`, so the error path receives the
+inputs. That is a small edit to `R02` and one line of `M06`, and it is what Q-17
+wants — a linear value in flight would come back to `catch` to be released
+rather than being silently dropped. What stopped it is ergonomics: under D-87 the
+`pre` of a try block is a segment of **copies the elaborator inserted**, so
+`try { $n validate } catch { 0 }` would start demanding `catch { pop 0 }` for an
+`i64` the author never wrote. The obligation would be real and the spelling
+would be a lie.
+
+*So the right version is the one that already has a name.* Give `fail` a payload
+and `catch` an input — D-71's two limits, both waiting on surface sums (N04
+§4.1) — and make the abort path carry the values it must release rather than
+have `catch` reconstruct them from the entry stack. Then `pre` on the catch block
+means something the author wrote.
+
+*Cost of leaving open:* a `catch` can report that something failed and not what.
+Combined with Q-17, an abort still discards without consulting capabilities.
+*Closes when:* surface sums land and `fail`/`catch` get a typed payload.
