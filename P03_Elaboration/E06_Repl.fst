@@ -173,7 +173,11 @@ let rec nenv_ops (ws:list nentry) : Tot (list (word_id & op_decl)) (decreases ws
                          od_sig   = { op_pre = n.n_sig.pre; op_post = n.n_sig.post } })
               :: nenv_ops r
 
-let prelude_nenv : nenv = { ne_words = prelude_words; ne_effs = prelude_effs; ne_gens = [] }
+/// No prelude types: every type a program can write today is a PRIMITIVE, and
+/// `elab_ty` reads those from `prim_of_name` rather than from a table, so that
+/// nothing a `data` declaration does can shadow `i64` (D-89).
+let prelude_nenv : nenv =
+  { ne_words = prelude_words; ne_effs = prelude_effs; ne_gens = []; ne_types = [] }
 
 let init_session : session = {
   se_nenv  = prelude_nenv;
@@ -813,7 +817,7 @@ let rec install_ops (s:session) (eid:eff_id) (ds:list (string & ssig))
     then Inl ("declare " ^ opname ^ ": an operation belongs to the effect that \
                declares it, so its effects are not written")
     else
-    (match elab_sig sg with
+    (match elab_sig s.se_nenv.ne_types sg with
      | Inl e -> Inl ("declare " ^ opname ^ ": " ^ e)
      | Inr row ->
        let id = s.se_next in
@@ -870,7 +874,7 @@ let install_extern (s:session) (name:string) (sg:ssig)
   match lookup_name s.se_nenv name with
   | Some _ -> (s, "error: " ^ name ^ " is already defined")
   | None ->
-    (match elab_sig sg with
+    (match elab_sig s.se_nenv.ne_types sg with
      | Inl e -> (s, "error: extern " ^ name ^ ": " ^ e)
      | Inr row ->
        /// `Some []` — a bare `!` — is refused too, and deliberately: an
@@ -979,7 +983,7 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
     (match resolve_effs_opt s.se_nenv sg.ss_eff with
      | Inl e -> DDone s ("error: " ^ e)
      | Inr es ->
-       (match elab_sig sg with
+       (match elab_sig s.se_nenv.ne_types sg with
         | Inl e -> DDone s ("error: " ^ e)
         | Inr row0 ->
           (match elab_define (self_nenv s body row0) (case_base s) sg body with

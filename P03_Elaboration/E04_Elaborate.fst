@@ -96,14 +96,36 @@ noeq type gdecl =
   /// generic is.
   | GInst : word_id -> string -> tsub -> gdecl
 
-/// Names live in two namespaces because effects are not words — `handle E`
-/// names an effect, and an effect has no signature and cannot be called.
+/// Declared types, by name (D-89).
+///
+/// THE VALUE IS THE `dtype` ITSELF, not a declaration to be resolved. That is
+/// enough only for NON-RECURSIVE types: a recursive one needs `M01.TName`
+/// pointing at a `nom_id`, which needs `wenv` to carry a table from `nom_id` to
+/// representation — the very thing N02 Q-13 says is required and calls a design
+/// call. So `data` refuses a self-reference, with a message rather than a loop.
+///
+/// It is passed to `elab_ty` and friends as a bare table rather than as the
+/// whole `nenv`, because type elaboration needs nothing else — not words, not
+/// effects, not generics — and keeping the dependency at its real size is what
+/// lets `elab_ty` stay callable from `explicit_sub`, which has no environment.
+type tenv = list (string & dtype)
+
+let rec lookup_ty_in (ts:tenv) (x:string) : Tot (option dtype) (decreases ts) =
+  match ts with
+  | []          -> None
+  | (n, d) :: r -> if n = x then Some d else lookup_ty_in r x
+
+/// Names live in four namespaces because none of them can be called the way a
+/// word can — `handle E` names an effect, `f[…]` names a template, and a type
+/// appears only in a signature.
 type nenv = {
   ne_words : list nentry;
   ne_effs  : list (string & eff_id);
   /// Generic templates (D-79). A third namespace, because a generic has no
   /// `word_id` and cannot be called until it is instantiated.
   ne_gens  : list gentry;
+  /// Declared types (D-89).
+  ne_types : tenv;
 }
 
 let rec lookup_word_in (ws:list nentry) (x:string)
@@ -138,13 +160,18 @@ let prim_of_name (s:string) : Tot (option prim) =
   else if s = "str" then Some PStr
   else None
 
-let rec elab_ty (t:sty) : Tot (either string dtype) (decreases (sty_size t)) =
+let rec elab_ty (te:tenv) (t:sty) : Tot (either string dtype) (decreases (sty_size t)) =
   match t with
+  /// A primitive first, so no `data` declaration can shadow `i64`. Names in
+  /// this table are the language's own and are not the program's to rebind —
+  /// unlike words, which shadow freely (D-32).
   | StyName n -> (match prim_of_name n with
                   | Some p -> Inr (TPrim p)
-                  | None   -> Inl ("unknown type: " ^ n))
-  | StyBox u  -> (match elab_ty u with Inl e -> Inl e | Inr d -> Inr (TBox d))
-  | StyRc u   -> (match elab_ty u with Inl e -> Inl e | Inr d -> Inr (TRc d))
+                  | None   -> (match lookup_ty_in te n with
+                               | Some d -> Inr d
+                               | None   -> Inl ("unknown type: " ^ n)))
+  | StyBox u  -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TBox d))
+  | StyRc u   -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TRc d))
   /// A variable that survived to here was never bound by an instantiation
   /// (D-79). Inside a generic's stored body that is impossible — `E06` rewrites
   /// every parameter before elaborating — so this reports the one case that can
@@ -153,12 +180,13 @@ let rec elab_ty (t:sty) : Tot (either string dtype) (decreases (sty_size t)) =
   /// Already elaborated: the type an instantiation substituted in.
   | StyFixed d -> Inr d
 
-let rec elab_tys (ts:list sty) : Tot (either string (list dtype)) (decreases ts) =
+let rec elab_tys (te:tenv) (ts:list sty)
+  : Tot (either string (list dtype)) (decreases ts) =
   match ts with
   | []     -> Inr []
-  | t :: r -> (match elab_ty t with
+  | t :: r -> (match elab_ty te t with
                | Inl e -> Inl e
-               | Inr d -> (match elab_tys r with
+               | Inr d -> (match elab_tys te r with
                            | Inl e  -> Inl e
                            | Inr ds -> Inr (d :: ds)))
 
@@ -183,7 +211,7 @@ let rec param_tys (ps:list sparam) : Tot (list sty) (decreases ps) =
 ///
 /// A variable already bound must match what it was bound to, which is what
 /// makes `( #T #T -- #T )` mean both inputs have the same type.
-let rec match_ty (su:tsub) (pat:sty) (d:dtype)
+let rec match_ty (te:tenv) (su:tsub) (pat:sty) (d:dtype)
   : Tot (option tsub) (decreases (sty_size pat)) =
   match pat with
   | StyVar n   -> (match assoc n su with
@@ -191,25 +219,32 @@ let rec match_ty (su:tsub) (pat:sty) (d:dtype)
                    | Some _             -> None
                    | None               -> Some ((n, StyFixed d) :: su))
   | StyFixed d' -> if d' = d then Some su else None
+  /// A declared type matches by the representation it names, which is right
+  /// while a type name is a pure abbreviation. It stops being right the moment
+  /// two `data` declarations can have the same representation and still be
+  /// different types — see the note on nominality at `elab_data` (D-89).
   | StyName n  -> (match prim_of_name n, d with
                    | Some p, TPrim q -> if p = q then Some su else None
-                   | _               -> None)
+                   | Some _, _       -> None
+                   | None, _         -> (match lookup_ty_in te n with
+                                         | Some d' -> if d' = d then Some su else None
+                                         | None    -> None))
   | StyBox u   -> (match d with
-                   | TBox d' -> match_ty su u d'
+                   | TBox d' -> match_ty te su u d'
                    | _       -> None)
   | StyRc u    -> (match d with
-                   | TRc d'  -> match_ty su u d'
+                   | TRc d'  -> match_ty te su u d'
                    | _       -> None)
 
 /// Left to right over the declared inputs, TOP FIRST — the caller reverses the
 /// surface list, since the stack model runs top-first and a signature does not.
-let rec match_tys (su:tsub) (pats:list sty) (ds:list dtype)
+let rec match_tys (te:tenv) (su:tsub) (pats:list sty) (ds:list dtype)
   : Tot (option tsub) (decreases pats) =
   match pats, ds with
   | [], _            -> Some su
-  | p :: pr, d :: dr -> (match match_ty su p d with
+  | p :: pr, d :: dr -> (match match_ty te su p d with
                          | None     -> None
-                         | Some su' -> match_tys su' pr dr)
+                         | Some su' -> match_tys te su' pr dr)
   | _, []            -> None
 
 /// Every parameter must be determined by the inputs. One that is not appears
@@ -238,12 +273,12 @@ let rec named_suffix_ok (seen_named:bool) (ps:list sparam)
                | Some _ -> named_suffix_ok true r)
 
 /// THE REVERSAL. Surface lists run bottom-to-top; core lists run top-first.
-let elab_sig (s:ssig) : Tot (either string srow) =
+let elab_sig (te:tenv) (s:ssig) : Tot (either string srow) =
   if not (named_suffix_ok false s.ss_in)
   then Inl "named parameters must be the topmost inputs; reorder the signature or name the ones beneath"
-  else match elab_tys (param_tys s.ss_in) with
+  else match elab_tys te (param_tys s.ss_in) with
        | Inl e    -> Inl e
-       | Inr ins  -> (match elab_tys s.ss_out with
+       | Inr ins  -> (match elab_tys te s.ss_out with
                       | Inl e     -> Inl e
                       | Inr outs  -> Inr ({ pre = rev ins; post = rev outs }))
 
@@ -404,14 +439,14 @@ let rec rebind_impls (ids:list (word_id & word_id))
 /// already bound to a `StyFixed` as a constraint to check rather than a binding
 /// to make, so passing this as `match_tys`' starting substitution turns the
 /// written types into an assertion about the stack for free.
-let rec explicit_sub (ps:list string) (tys:list sty)
+let rec explicit_sub (te:tenv) (ps:list string) (tys:list sty)
   : Tot (either string tsub) (decreases ps) =
   match ps, tys with
   | [], []           -> Inr []
   | p :: pr, t :: tr ->
-    (match elab_ty t with
+    (match elab_ty te t with
      | Inl e -> Inl e
-     | Inr d -> (match explicit_sub pr tr with
+     | Inr d -> (match explicit_sub te pr tr with
                  | Inl e  -> Inl e
                  | Inr su -> Inr ((p, StyFixed d) :: su)))
   | _, _             -> Inl "arity"
@@ -421,14 +456,14 @@ let rec explicit_sub (ps:list string) (tys:list sty)
 /// ONLY difference between the two forms — everything after it is shared, so an
 /// explicit instantiation is checked against the stack exactly as an implicit
 /// one is rather than believed.
-let gen_call (w:string) (g:gentry) (su0:tsub) (sh:shape)
+let gen_call (te:tenv) (w:string) (g:gentry) (su0:tsub) (sh:shape)
   : Tot (either string (tsub & srow)) =
   let pats = rev (param_tys g.g_sig.ss_in) in
   if length pats > length sh
   then Inl ("stack underflow calling " ^ w ^ ": it needs "
             ^ string_of_int (length pats) ^ " inputs")
   else
-    (match match_tys su0 pats (slot_tys sh) with
+    (match match_tys te su0 pats (slot_tys sh) with
      | None -> Inl (w ^ ": the stack does not match its declared inputs")
      | Some su ->
        (match all_bound su g.g_params with
@@ -436,7 +471,7 @@ let gen_call (w:string) (g:gentry) (su0:tsub) (sh:shape)
           Inl (w ^ ": #" ^ p ^ " is not determined by the inputs; write the \
                 types at the call site, as in " ^ w ^ "[i64]")
         | None ->
-          (match elab_sig (subst_ssig su g.g_sig) with
+          (match elab_sig te (subst_ssig su g.g_sig) with
            | Inl e   -> Inl (w ^ ": " ^ e)
            | Inr row -> Inr (su, row))))
 
@@ -589,10 +624,10 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
                     ^ " type parameters but was given "
                     ^ string_of_int (length tys))
           else
-            (match explicit_sub g.g_params tys with
+            (match explicit_sub env.ne_types g.g_params tys with
              | Inl e   -> Inl (w ^ ": " ^ e)
              | Inr su0 ->
-               (match gen_call w g su0 sh with
+               (match gen_call env.ne_types w g su0 sh with
                 | Inl e -> Inl e
                 | Inr (su, row) ->
                   (match drop_n (length row.pre) sh with
@@ -607,7 +642,7 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
         /// The implicit form. Identical to `StWordAt` from `gen_call` onward;
         /// the types are recovered from the modelled stack instead of written.
         | Some g ->
-          (match gen_call w g [] sh with
+          (match gen_call env.ne_types w g [] sh with
            | Inl e -> Inl e
            | Inr (su, row) ->
              (match drop_n (length row.pre) sh with
@@ -853,7 +888,7 @@ and elab_handle_parts (env:nenv) (base:nat) (ename:string) (sttys:list sty)
   match lookup_eff env ename with
   | None -> Inl ("unknown effect: " ^ ename)
   | Some eid ->
-    (match elab_tys sttys with
+    (match elab_tys env.ne_types sttys with
      | Inl e -> Inl e
      /// THE REVERSAL again: `over ( a b )` reads bottom-to-top, the core wants
      /// head = top.
@@ -1107,10 +1142,10 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
                     ^ " type parameters but was given "
                     ^ string_of_int (length tys))
           else
-            (match explicit_sub g.g_params tys with
+            (match explicit_sub env.ne_types g.g_params tys with
              | Inl e   -> Inl (w ^ ": " ^ e)
              | Inr su ->
-               (match elab_sig (subst_ssig su g.g_sig) with
+               (match elab_sig env.ne_types (subst_ssig su g.g_sig) with
                 | Inl e   -> Inl (w ^ ": " ^ e)
                 | Inr row ->
                   (match iapply_pre w st row.pre with
@@ -1270,7 +1305,7 @@ let infer_sig (env:nenv) (body:list sterm) : Tot (either string srow) =
 /// Elaborate a definition body against its declared signature.
 let elab_define (env:nenv) (base:nat) (sg:ssig) (body:list sterm)
   : Tot (either string (srow & term & list gdecl)) =
-  match elab_sig sg with
+  match elab_sig env.ne_types sg with
   | Inl e -> Inl e
   | Inr row ->
     let sh0 = entry_shape (rev sg.ss_in) row.pre in
