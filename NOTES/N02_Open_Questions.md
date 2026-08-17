@@ -396,3 +396,46 @@ means something the author wrote.
 *Cost of leaving open:* a `catch` can report that something failed and not what.
 Combined with Q-17, an abort still discards without consulting capabilities.
 *Closes when:* surface sums land and `fail`/`catch` get a typed payload.
+
+**Q-23. A constructor for a parameterised `data` has no home in `gentry`.**
+Found starting D-90's step B3, and it is the obstacle D-89 predicted from the
+other direction.
+
+`data Color { alt Red ( ) }` is easy: `Red` is an ordinary word with signature
+`( -- Color )` and body `TPrimOp (PInj variants 0)`. But
+
+```
+data Option[#T] { alt None ( ) alt Some ( #T ) }
+```
+
+wants `Some` to be `Some[#T] ( #T -- Option[#T] )` — a GENERIC word, since
+`Some` at `i64` and `Some` at `str` are different core terms. Generic words are
+stored as `E04.gentry`, whose `g_body` is `list sterm`, **surface** syntax that
+`install_instance` re-elaborates per instantiation. A constructor's body is
+`PInj variants tag`: a core term, with no surface spelling to store.
+
+*Three ways out, and the choice is a real one.*
+
+  * **Give `gentry` an alternative already-elaborated body.** Smallest change to
+    make constructors work, and it is the same facility D-89 §3 says an F\*
+    library will need — a generic whose body is a `term` rather than text. Two
+    kinds of generic body is the cost.
+  * **Give the surface a spelling for `PInj`.** Then a constructor is an
+    ordinary generic with an ordinary body, and nothing new is stored. But it
+    puts a raw tag-injection into the surface language, which is the sort of
+    thing D-55 keeps OUT of the core's vocabulary and there is no reason to
+    admit to the surface's.
+  * **Make constructors a fourth namespace**, resolved at the call site like a
+    generic but elaborated directly to `PInj` — no `gentry`, no surface body,
+    and the arity and tag come from the declaration. Avoids both costs above
+    and adds a namespace.
+
+*Why it cannot be dodged by shipping non-parameterised sums first:* it can, and
+that was the option not taken — D-90 chose type parameters from the start, so
+this arrives immediately rather than later.
+
+*Cost of leaving open:* `data` cannot be finished. Steps B1 and B2 stand on
+their own and are committed; B3 waits on this.
+*Closes when:* one of the three is chosen. The first is the recommendation,
+because the facility is needed anyway for D-56's library and building it once
+serves both.
