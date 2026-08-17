@@ -443,6 +443,12 @@ let rec show_sterm (t:sterm) : Tot string (decreases %[(sterm_size t <: nat); 0]
     ^ " endif"
   /// Anything else has no surface spelling. `case` is deliberately not a word.
   | StCase bs  -> "case" ^ show_sbranches bs
+  | StCaseOf brs me ->
+    "case {" ^ show_simpls brs
+    ^ (match me with
+       | None    -> ""
+       | Some ts -> " else " ^ braces (show_sterms ts))
+    ^ " }"
   | StHandle e tys i im b ->
     "handle " ^ e ^ " over ( " ^ show_stys tys ^ " ) init "
     ^ braces (show_sterms i) ^ " {" ^ show_simpls im ^ " } "

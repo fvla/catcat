@@ -2736,6 +2736,12 @@ The core needs one implementation per variant, so the elaborator **copies the
 rendering artefact. Exhaustive-by-default was the alternative and would have
 been cheaper; `else` was chosen for wide types, with the copying accepted.
 
+> **Superseded by D-92.** There is no copy. `TDispatch`'s operation list may
+> name one operation at several tags, so the `else` is elaborated once and
+> shared, in exchange for requiring the variants it covers to agree on their
+> payload. Copying could not have been implemented anyway: it makes a `case`'s
+> id count depend on a declaration's arity, which no syntactic measure bounds.
+
 *The consequence to watch:* adding a variant to a `data` silently falls into an
 existing `else` rather than being reported. An exhaustiveness *warning* on
 `case`es that use `else` would recover most of what is lost, and costs nothing
@@ -2809,3 +2815,88 @@ is invented, and there is still no unifier.
 `elab_data` accordingly returns `list seg` rather than `dtype`, so the
 constructor path can take the variants it needs for `PInj` without matching on a
 `TSum` it built itself and carrying an arm that cannot fire.
+
+---
+
+## D-92. One `else` implementation, shared, not one copy per uncovered variant
+
+Revises D-90, which said the elaborator "copies the `else` block into every
+uncovered slot" and called the cost "real and visible: `locate` shows one copy
+per uncovered variant". It does not, and should not.
+
+`M05.TDispatch` carries a `list op_id` in tag order, and **nothing requires
+those ids to be distinct**. Every uncovered tag names the SAME operation, so one
+implementation is elaborated, one id is spent, and `locate` shows one block.
+
+### What forced the revision, which was not aesthetics
+
+The id budget. Ids come from a POSITIONAL budget (D-68): a term at `base` passes
+`base + sterm_size t` to its successor, so `E02.sterm_size` has to bound the ids
+the term will consume. Under copying, a `case`'s id count is the VARIANT COUNT
+of a type the parser cannot see — no syntactic measure bounds it, and
+`sterm_size (StCaseOf brs me)` could not be written. Sharing makes the count
+`one per branch written, plus one for the else`, which is exactly
+`1 + simpls_size brs + selse_size me`.
+
+So the choice was: share, or abandon the positional budget for a threaded
+counter through `elab_terms`, `elab_branches`, `elab_alts`, `elab_handle_parts`
+and `elab_impls`. Sharing is smaller and better.
+
+### What it costs, and why the cost is not new
+
+`M06.dispatch_ok` checks each operation's declared signature AT ITS OWN TAG:
+`osig.op_pre = variants[i] @ j.pre`. One operation serving two tags therefore
+requires those tags to carry the same payload, and the elaborator rejects an
+`else` whose uncovered variants disagree:
+
+    data Shape { alt Circle ( i64 ) alt Rect ( i64 i64 ) alt Point ( ) }
+    define bad ( Shape -- i64 ) { case { Point { 0 } else { pop 1 } } }
+    \ error: the variants this 'else' covers carry different values, so one
+    \ block cannot run for all of them; write a branch for each
+
+That restriction is not invented to make the sharing work — it is what "one
+block covers them all" already meant. The block runs with the payload pushed, so
+a different payload is a different entry stack, and the copied version would
+have had to typecheck one source text against several. Requiring agreement says
+so up front instead of failing inside a copy.
+
+The common cases are unaffected: an enumeration's variants all carry nothing, so
+an `else` over any subset is legal.
+
+### Two more checks that fell out
+
+An `else` covering nothing is an error, not a no-op — every variant already
+having a branch means the block can never run, which is a typo more often than
+an intention. And a `case` with no `else` that leaves variants uncovered names
+them: *"nothing selects Green Blue"*. D-90's note that a later-added variant
+would silently fall into an existing `else` still stands; the warning it asks
+for is still not built.
+
+---
+
+## D-93. `match_ty` substitutes before it elaborates
+
+A one-line change with a disproportionate effect, and it retires half of the
+limitation D-90 and step B2 stated.
+
+Matching a call site's stack against a declared type — `Option[#T]` against a
+`TSum` — elaborates the pattern and compares. Elaborating a pattern that still
+mentions `#T` fails, because a variable is not an `M01.dtype`. So `match_ty` now
+applies the substitution built SO FAR before elaborating.
+
+Since patterns are matched TOP FIRST, a parameter determined by a shallower
+input is already bound by the time a declaration mentioning it is reached:
+
+    define orelse[#T] ( Option[#T] #T -- #T ) { swap case { … } }
+    42 Some 0 orelse        \ works: #T binds from the i64, then Option[#T] is ground
+    "a" Some "z" orelse     \ and again at str
+
+Before this, both needed `orelse[i64]` — and even THAT failed, because the
+explicit path checks its written types by feeding them to the same matcher.
+
+What is still not possible is binding a variable THROUGH a declaration:
+`( Option[#T] -- )` on its own determines nothing, because recovering `#T` from
+a `TSum` means running `elab_data` backwards. That is unification over
+declarations and remains what D-31 says this language does not have. The rule is
+now the sharp one: **a declaration in a pattern must be ground by the time it is
+reached**, rather than ground as written.

@@ -522,6 +522,23 @@ let rec parse_terms (mt:list mprod) (closing:bool) (acc:list sterm) (ts:list tok
   | TkWord "with" :: _ ->
     PErr "expected '{ old new … }' after 'with'"
 
+  /// `case { C { … } D { … } else { … } }` (D-90). A parser built-in for the
+  /// reason D-38 gives for `handle`, and one more: a macro's production is
+  /// fixed when the macro is declared, and a `case`'s branch keys are
+  /// constructor names that differ per type — there is no one production to
+  /// declare.
+  ///
+  /// LL(1) with nothing to look ahead at. Inside the body, the token in hand is
+  /// `}`, or a word; if it is the word `else` this is the fallback and if it is
+  /// any other word it is a constructor. No branch shares a first token.
+  | TkWord "case" :: TkLBrace :: r1 ->
+    (match parse_case_arms mt [] None r1 with
+     | PErr e -> PErr e
+     | POk (brs, me) r2 ->
+       parse_terms mt closing (StCaseOf brs me :: acc) r2)
+  | TkWord "case" :: _ ->
+    PErr "expected '{ C { … } … }' after 'case'"
+
   /// `f[i64]` — an explicit instantiation (D-82). BEFORE the macro branch, and
   /// deliberately: a macro takes its slots from what follows its name, so a
   /// macro called `f` and a generic called `f` would both want this token. The
@@ -636,6 +653,39 @@ and parse_impls (mt:list mprod) (acc:list (string & list sterm)) (ts:list token)
   | [] -> PErr "expected '}' closing the implementations, found end of input"
   | t :: _ ->
     PErr ("expected an operation name or '}' here, found " ^ render_token t)
+
+/// A `case`'s branches, up to the closing `}`. Each is `C { … }`, and at most
+/// one is `else { … }`.
+///
+/// `else` is recognised HERE and nowhere else, so it stays an ordinary word
+/// outside a `case` — the same rule that lets `then` and `endif` be word names
+/// (D-32). Its position among the branches is free: the elaborator works out
+/// which variants it covers from the ones that are named, not from order.
+and parse_case_arms (mt:list mprod) (acc:list (string & list sterm))
+                    (me:option (list sterm)) (ts:list token)
+  : Tot (r:presult (list (string & list sterm) & option (list sterm))
+         { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases %[length ts; 4]) =
+  match ts with
+  | TkRBrace :: rest -> POk (rev acc, me) rest
+  | TkWord "else" :: TkLBrace :: r1 ->
+    if Some? me
+    then PErr "a case has at most one 'else'"
+    else (match parse_terms mt true [] r1 with
+          | PErr e -> PErr e
+          | POk blk r2 -> parse_case_arms mt acc (Some blk) r2)
+  | TkWord "else" :: _ ->
+    PErr "expected '{' opening the 'else' of a case"
+  | TkWord c :: TkLBrace :: r1 ->
+    (match parse_terms mt true [] r1 with
+     | PErr e -> PErr e
+     | POk blk r2 -> parse_case_arms mt ((c, blk) :: acc) me r2)
+  | TkWord c :: _ ->
+    PErr ("expected '{' opening the branch for " ^ c)
+  | [] -> PErr "expected '}' closing the case, found end of input"
+  | t :: _ ->
+    PErr ("expected a constructor name, 'else' or '}' here, found "
+          ^ render_token t)
 
 /// The rebindings of a `with`, up to the closing `}`: pairs of plain word
 /// names, `replaced` then `replacement`.

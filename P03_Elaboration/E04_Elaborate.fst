@@ -345,20 +345,25 @@ let rec match_ty (te:tenv) (su:tsub) (pat:sty) (d:dtype)
                      (match elab_ty (length te) te pat with
                       | Inr d' -> if d' = d then Some su else None
                       | Inl _  -> None))
-  /// `Box` and `Rc` match STRUCTURALLY, so `Box[#T]` binds `#T` from the stack.
-  /// A declared type does not: it is elaborated and compared, which means it
-  /// matches only when it is GROUND. `define f[#T] ( Option[#T] -- )` therefore
-  /// cannot be called implicitly — write the types, `f[i64]`. Binding a variable
-  /// through a declaration would mean running `elab_data` backwards, which is
-  /// unification over declarations and is exactly what D-31 says this language
-  /// does not have.
+  /// A parameterised declaration, `Option[#T]`. SUBSTITUTE FIRST: whatever the
+  /// bindings so far have fixed is written in before elaborating, so a pattern
+  /// that still mentions a variable becomes ground as soon as something else
+  /// determines it. `( Option[#T] #T -- #T )` matches implicitly because the
+  /// pats run TOP FIRST — the bare `#T` binds from the stack, and `Option[#T]`
+  /// is ground by the time it is reached. What still does not work is a
+  /// declaration standing alone, `( Option[#T] -- )`: binding through it means
+  /// running `elab_data` backwards, which is the unification D-31 rules out.
+  ///
+  /// `Box` and `Rc` are the exception, and match STRUCTURALLY: they are the
+  /// core's own applied types, not declarations, so `Box[#T]` does bind `#T`
+  /// from the stack.
   | StyApp n us -> (match n, us, d with
                     | "Box", [u], TBox d' -> match_ty te su u d'
                     | "Rc",  [u], TRc d'  -> match_ty te su u d'
                     | "Box", _, _         -> None
                     | "Rc",  _, _         -> None
                     | _, _, _             ->
-                      (match elab_ty (length te) te pat with
+                      (match elab_ty (length te) te (subst_ty su pat) with
                        | Inr d' -> if d' = d then Some su else None
                        | Inl _  -> None))
 
@@ -673,6 +678,134 @@ let ctor_at (te:tenv) (c:string) (d:tdecl) (tys:list sty)
         | Inl e   -> Inl (c ^ ": " ^ e)
         | Inr su0 -> Inr su0)
 
+(* ------------------------------------------------------------------------ *)
+(* Named case branches                                                      *)
+(* ------------------------------------------------------------------------ *)
+
+/// Which variant a branch key selects (D-90).
+///
+/// The scrutinee's `list seg` is the authority on the SHAPE, and the
+/// declaration only supplies the name-to-tag map. That is what lets a branch
+/// over `Option[i64]` find its payload without recovering `[i64]` from the
+/// type — the payload is already there, elaborated, in `vs`.
+let ctor_tag (te:tenv) (vs:list seg) (c:string)
+  : Tot (either string (t:nat{t < length vs})) =
+  match lookup_ctor te c with
+  | None -> Inl (c ^ " is not a constructor, so it cannot name a case branch")
+  | Some (d, tag, _) ->
+    if length d.td_variants <> length vs
+    then Inl (c ^ " constructs " ^ d.td_name ^ ", which has "
+              ^ plural (length d.td_variants) "variant" "variants"
+              ^ ", but the value being matched has "
+              ^ string_of_int (length vs))
+    else if tag < length vs
+    then Inr tag
+    /// Unreachable — the arity test above makes this the same statement — and
+    /// written out rather than refined away through `lookup_ctor`, whose other
+    /// four callers would then carry the refinement for this one. The message
+    /// says what it would mean if it ever did fire.
+    else Inl (c ^ " is not a variant of the value being matched")
+
+/// Every branch key resolved, and no two selecting the same variant.
+let rec branch_tags (te:tenv) (vs:list seg) (brs:list (string & list sterm))
+  : Tot (either string (list nat)) (decreases brs) =
+  match brs with
+  | []          -> Inr []
+  | (c, _) :: r ->
+    (match ctor_tag te vs c with
+     | Inl e   -> Inl e
+     | Inr tag ->
+       (match branch_tags te vs r with
+        | Inl e    -> Inl e
+        | Inr rest -> if mem tag rest
+                      then Inl ("two branches of this case select the same \
+                                 variant as " ^ c)
+                      else Inr (tag :: rest)))
+
+/// The payloads of the variants no branch selects — what the `else` must run
+/// against.
+let rec uncovered_pays (cov:list nat) (t:nat) (vs:list seg)
+  : Tot (list seg) (decreases vs) =
+  match vs with
+  | []     -> []
+  | v :: r -> if mem t cov then uncovered_pays cov (t + 1) r
+              else v :: uncovered_pays cov (t + 1) r
+
+/// …and their names, so the exhaustiveness error can list them.
+let rec uncovered_names (cov:list nat) (t:nat) (vs:list (string & list sty))
+  : Tot (list string) (decreases vs) =
+  match vs with
+  | []          -> []
+  | (c, _) :: r -> if mem t cov then uncovered_names cov (t + 1) r
+                   else c :: uncovered_names cov (t + 1) r
+
+let rec join_names (ns:list string) : Tot string (decreases ns) =
+  match ns with
+  | []      -> ""
+  | n :: [] -> n
+  | n :: r  -> n ^ " " ^ join_names r
+
+/// Name the variants a `case` leaves out, using the declaration the first
+/// branch belongs to. With no branches at all there is nothing to name and
+/// nothing to say, which is the `case { else { … } }` shape the caller rejects
+/// on its own grounds.
+let uncovered_report (te:tenv) (cov:list nat) (brs:list (string & list sterm))
+  : Tot string =
+  match brs with
+  | []          -> ""
+  | (c, _) :: _ -> (match lookup_ctor te c with
+                    | Some (d, _, _) -> join_names (uncovered_names cov 0 d.td_variants)
+                    | None           -> "")
+
+let rec segs_all_eq (v:seg) (vs:list seg) : Tot bool (decreases vs) =
+  match vs with
+  | []     -> true
+  | u :: r -> u = v && segs_all_eq v r
+
+/// One elaborated branch: which variant it serves, the operation it becomes,
+/// that variant's payload — its extra inputs — and its body.
+noeq type carm = {
+  ca_tag  : nat;
+  ca_op   : op_id;
+  ca_pay  : seg;
+  ca_body : term;
+}
+
+let rec arm_op (arms:list carm) (t:nat) : Tot (option op_id) (decreases arms) =
+  match arms with
+  | []     -> None
+  | a :: r -> if a.ca_tag = t then Some a.ca_op else arm_op r t
+
+/// The dispatch table: one operation per variant, in tag order. EVERY
+/// UNCOVERED TAG NAMES THE SAME OPERATION (D-92), which is what makes one
+/// `else` implementation serve all of them — `M06.dispatch_ok` reads each
+/// operation's declared signature per tag and is content for two tags to name
+/// one operation, provided they agree on the payload. The caller checks that.
+let rec case_ops (arms:list carm) (eo:op_id) (t:nat) (vs:list seg)
+  : Tot (list op_id) (decreases vs) =
+  match vs with
+  | []     -> []
+  | _ :: r -> (match arm_op arms t with
+               | Some o -> o
+               | None   -> eo) :: case_ops arms eo (t + 1) r
+
+let rec arm_impls (arms:list carm) : Tot (list (op_id & term)) (decreases arms) =
+  match arms with
+  | []     -> []
+  | a :: r -> (a.ca_op, a.ca_body) :: arm_impls r
+
+/// One declaration per operation, at ITS OWN variant's payload over the shared
+/// stack beneath — `M06.dispatch_ok` demands exactly `variants[i] @ j.pre`.
+let case_odecl (pay:seg) (below:list dtype) (post:list dtype) : Tot op_decl =
+  { od_eff = eff_case; od_stage = SStatic;
+    od_sig = { op_pre = pay @ below; op_post = post } }
+
+let rec arm_decls (arms:list carm) (below:list dtype) (post:list dtype)
+  : Tot (list gdecl) (decreases arms) =
+  match arms with
+  | []     -> []
+  | a :: r -> GOp a.ca_op (case_odecl a.ca_pay below post) :: arm_decls r below post
+
 let elab_lit (n:int) : Tot (either string term) =
   if -(pow2 63) <= n && n < pow2 63
   then Inr (TPrimOp (PLit (LPrim PI64 n)))
@@ -956,6 +1089,82 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
                        (GOp o0 odecl :: GOp o1 odecl :: (dacc' @ dacc)) rest
                    | _ -> Inl "if: expected exactly two branches")))
 
+     /// `case { C { … } D { … } else { … } }` — the same construct as `if`, over
+     /// a declared sum instead of a `bool` (D-90). No `PBoolSum` here: the
+     /// scrutinee is already a `TSum`, which is what `PInj` put there.
+     ///
+     /// ONE `else` IMPLEMENTATION, NOT ONE PER UNCOVERED VARIANT (D-92). The
+     /// uncovered tags all name the same operation in the dispatch table, which
+     /// requires them to agree on their payload — and that requirement is not a
+     /// restriction invented to make the sharing work, it is what "one block
+     /// covers them all" already means: the block runs with the payload pushed,
+     /// so a different payload is a different entry stack.
+     ///
+     /// IDS, again positionally. `base` is the node; `base+1 … base+w` are the
+     /// written branches' operations; `base+w+1` is the `else`'s if there is
+     /// one; the `else` body follows; then the branch bodies. That totals
+     /// `1 + simpls_size brs + selse_size me`, which is exactly what
+     /// `E02.sterm_size` charges.
+     | StCaseOf brs me ->
+       (match sh with
+        | [] -> Inl "case: the stack is empty; there is nothing to match on"
+        | s :: sr ->
+          (match s.sl_ty with
+           | TSum vs ->
+             let w = length brs in
+             let eo : op_id = base + w + 1 in
+             let below = slot_tys sr in
+             (match branch_tags env.ne_types vs brs with
+              | Inl e -> Inl e
+              | Inr cov ->
+                let ups = uncovered_pays cov 0 vs in
+                (match me, ups with
+                 | None, [] ->
+                   (match elab_alts env cs (base + 1)
+                            (base + w + selse_size me + 1) sr vs 0 None [] [] brs with
+                    | Inl e -> Inl e
+                    | Inr (sh', arms, d1) ->
+                      let post = slot_tys sh' in
+                      elab_terms env cs (base + sterm_size t) sh'
+                        (THandle eff_case [] TNil (arm_impls arms)
+                           (TDispatch (case_ops arms eo 0 vs) vs) :: acc)
+                        (arm_decls arms below post @ d1 @ dacc) rest)
+
+                 | None, _ ->
+                   Inl ("this case is not exhaustive; nothing selects "
+                        ^ uncovered_report env.ne_types cov brs
+                        ^ ". Add a branch for each, or an 'else'")
+
+                 | Some _, [] ->
+                   Inl "every variant of this type already has a branch, so the \
+                        'else' can never run"
+
+                 | Some eb, v0 :: ur ->
+                   if not (segs_all_eq v0 ur)
+                   then Inl "the variants this 'else' covers carry different \
+                             values, so one block cannot run for all of them; \
+                             write a branch for each"
+                   else
+                     (match elab_terms env cs (base + w + 2)
+                              (anon_slots v0 @ sr) [] [] eb with
+                      | Inl e -> Inl e
+                      | Inr (she, ets, de) ->
+                        (match elab_alts env cs (base + 1)
+                                 (base + w + selse_size me + 1) sr vs 0
+                                 (Some she) [] [] brs with
+                         | Inl e -> Inl e
+                         | Inr (sh', arms, d1) ->
+                           let post = slot_tys sh' in
+                           elab_terms env cs (base + sterm_size t) sh'
+                             (THandle eff_case [] TNil
+                                ((eo, seq_of ets) :: arm_impls arms)
+                                (TDispatch (case_ops arms eo 0 vs) vs) :: acc)
+                             (GOp eo (case_odecl v0 below post)
+                              :: (arm_decls arms below post @ de @ d1 @ dacc))
+                             rest))))
+           | _ -> Inl "case: the value on top of the stack has no variants to \
+                       select; only a type declared with 'data' can be matched"))
+
      /// The handler's own parts are elaborated against stacks that are fully
      /// known before the body is looked at — the state comes from `over ( … )`
      /// and each operation's arguments from its declaration — so they need no
@@ -1101,6 +1310,44 @@ and elab_branches (env:nenv) (cs:counts) (base:nat) (sh0:shape)
        then Inl "the branches of an if leave the stack in different states"
        else elab_branches env cs (base + sterms_size b) sh0 (Some sh1)
               (seq_of ts :: acc) (d1 @ dacc) r)
+
+/// The same fold for a NAMED case (D-90). Two differences from
+/// `elab_branches`, both consequences of the branches belonging to a
+/// declaration rather than to a position:
+///
+///   * each branch enters with ITS OWN variant's payload pushed, so the entry
+///     shape is per-branch rather than shared;
+///   * the tag is resolved here, from the key, rather than being the index.
+///
+/// `obase` is the case node's own base, from which operation ids are taken;
+/// `base` is the running body budget. They are separate because the operations
+/// are allocated together at the front, before any body.
+and elab_alts (env:nenv) (cs:counts) (obase:nat) (base:nat) (sr:shape)
+              (vs:list seg) (i:nat) (expect:option shape)
+              (acc:list carm) (dacc:list gdecl)
+              (brs:list (string & list sterm))
+  : Tot (either string (shape & list carm & list gdecl))
+        (decreases %[simpls_size brs; 1]) =
+  match brs with
+  | [] -> (match expect with
+           | None    -> Inl "case: no branches"
+           | Some sh -> Inr (sh, rev acc, dacc))
+  | (c, b) :: r ->
+    (match ctor_tag env.ne_types vs c with
+     | Inl e -> Inl e
+     | Inr tag ->
+       let v = index vs tag in
+       (match elab_terms env cs base (anon_slots v @ sr) [] [] b with
+        | Inl e -> Inl e
+        | Inr (sh1, ts, d1) ->
+          let ok = (match expect with None -> true | Some ex -> ex = sh1) in
+          if not ok
+          then Inl "the branches of this case leave the stack in different states"
+          else elab_alts env cs obase (base + sterms_size b) sr vs (i + 1)
+                 (Some sh1)
+                 ({ ca_tag = tag; ca_op = obase + i; ca_pay = v;
+                    ca_body = seq_of ts } :: acc)
+                 (d1 @ dacc) r))
 
 /// Resolve a `handle`'s effect, state, initialiser and implementations.
 ///
@@ -1267,6 +1514,13 @@ let rec ipush_post (post:list dtype) (st:ist) : Tot ist (decreases post) =
   match post with
   | []     -> st
   | d :: r -> ipush (MT d) (ipush_post r st)
+
+/// A variant's payload as modelled slots. Already top-first, like every core
+/// segment, so nothing is reversed.
+let rec imslots (v:seg) : Tot (list mslot) (decreases v) =
+  match v with
+  | []     -> []
+  | d :: r -> { m_name = None; m_ty = MT d } :: imslots r
 
 let rec ifind (x:string) (i:nat) (sh:list mslot)
   : Tot (option (nat & mty)) (decreases sh) =
@@ -1450,6 +1704,56 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
                 | Inl e   -> Inl e
                 | Inr st3 -> infer_terms env cs st3 rest))
 
+     /// Mirrors `elab_terms`' named case, minus term emission and minus the id
+     /// arithmetic — no operation is declared here, so there is nothing to
+     /// allocate.
+     ///
+     /// THE SCRUTINEE MUST ALREADY BE KNOWN. Unlike `if`, running the case
+     /// cannot constrain it: which branches exist is decided by a declaration,
+     /// and a metavariable names no declaration. That is the same wall the
+     /// implicit generic call hits, and gets the same answer — write the
+     /// signature.
+     | StCaseOf brs me ->
+       let (s, st1) = ipop st in
+       (match s.m_ty with
+        | MT (TSum vs) ->
+          (match branch_tags env.ne_types vs brs with
+           | Inl e -> Inl e
+           | Inr cov ->
+             let ups = uncovered_pays cov 0 vs in
+             (match me, ups with
+              | None, [] ->
+                (match infer_alts env cs st1.i_above (length st1.i_below)
+                         st1 vs None brs with
+                 | Inl e   -> Inl e
+                 | Inr st2 -> infer_terms env cs st2 rest)
+              | None, _ ->
+                Inl ("this case is not exhaustive; nothing selects "
+                     ^ uncovered_report env.ne_types cov brs
+                     ^ ". Add a branch for each, or an 'else'")
+              | Some _, [] ->
+                Inl "every variant of this type already has a branch, so the \
+                     'else' can never run"
+              | Some eb, v0 :: ur ->
+                if not (segs_all_eq v0 ur)
+                then Inl "the variants this 'else' covers carry different \
+                          values, so one block cannot run for all of them; \
+                          write a branch for each"
+                else
+                  let entry = { st1 with
+                                i_above = imslots v0 @ st1.i_above } in
+                  (match infer_terms env cs entry eb with
+                   | Inl e   -> Inl e
+                   | Inr ste ->
+                     (match infer_alts env cs st1.i_above (length st1.i_below)
+                              ste vs (Some ste.i_above) brs with
+                      | Inl e   -> Inl e
+                      | Inr st2 -> infer_terms env cs st2 rest))))
+        | _ ->
+          Inl "case: the value being matched has no declared type here; in a \
+               definition with no written signature there is no declaration to \
+               take the branch names from, so write the signature")
+
      /// Nothing here needs a metavariable. The state comes from `over ( … )`
      /// and every implementation runs on a stack built from it and the
      /// operation's declaration, so `elab_handle_parts` — the concrete pass —
@@ -1525,6 +1829,33 @@ and infer_branches_i (env:nenv) (cs:counts) (above0:list mslot) (mark:nat)
            | Inl e    -> Inl e
            | Inr st'' ->
              infer_branches_i env cs above0 mark st'' (Some ex) r)))
+
+/// `infer_branches_i` for a named case: same fold, each branch entered with its
+/// own variant's payload on top.
+and infer_alts (env:nenv) (cs:counts) (above0:list mslot) (mark:nat)
+               (st:ist) (vs:list seg) (expect:option (list mslot))
+               (brs:list (string & list sterm))
+  : Tot (either string ist) (decreases %[simpls_size brs; 1]) =
+  match brs with
+  | [] -> (match expect with
+           | None    -> Inl "case: no branches"
+           | Some ex -> Inr ({ st with i_above = ex }))
+  | (c, b) :: r ->
+    (match ctor_tag env.ne_types vs c with
+     | Inl e -> Inl e
+     | Inr tag ->
+       let entry = { st with
+                     i_above = imslots (index vs tag)
+                               @ (above0 @ islots_from mark st.i_below) } in
+       (match infer_terms env cs entry b with
+        | Inl e   -> Inl e
+        | Inr st' ->
+          (match expect with
+           | None    -> infer_alts env cs above0 mark st' vs (Some st'.i_above) r
+           | Some ex ->
+             (match imatch st' ex st'.i_above with
+              | Inl e    -> Inl e
+              | Inr st'' -> infer_alts env cs above0 mark st'' vs (Some ex) r))))
 
 let rec iresolve (su:list (nat & dtype)) (ms:list mty)
   : Tot (either string (list dtype)) (decreases ms) =

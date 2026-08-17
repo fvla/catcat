@@ -147,6 +147,19 @@ type sterm =
   /// order, so for a `bool` the FALSE branch comes first. Stated here as well
   /// as in `M05.PBoolSum` because a silent reversal would typecheck.
   | StCase  : list (list sterm) -> sterm
+  /// `case { C { … } D { … } else { … } }` — case analysis over a declared sum,
+  /// with branches named by CONSTRUCTOR rather than positioned (D-90).
+  ///
+  /// Separate from `StCase` because the two resolve differently and neither is
+  /// the other's sugar: `StCase` is positional and its branch count is fixed by
+  /// the term, while this one's slots are decided by a `data` declaration the
+  /// parser cannot see. The elaborator maps each name to its tag, so branch
+  /// order here is the order written and means nothing.
+  ///
+  /// The `else` block is separate rather than a reserved key, so a constructor
+  /// may be called `else` without ambiguity — `else` is recognised by POSITION
+  /// inside a `case` body, like every other keyword in this language (D-32).
+  | StCaseOf : list (string & list sterm) -> option (list sterm) -> sterm
   /// `handle E over ( … ) init { … } { op { … } … } { body }`.
   ///
   /// The state segment is in SURFACE order (bottom-to-top); `E04` reverses it,
@@ -187,6 +200,12 @@ let rec sterm_size (t:sterm) : Tot pos =
   | StVar _    -> 1
   | StBlock ts -> 1 + sterms_size ts
   | StCase bs  -> 1 + sterm_lists_size bs
+  /// One id for the node, one operation per branch WRITTEN, and one for the
+  /// `else` if there is one — which is exactly `simpls_size` plus `selse_size`,
+  /// and exactly what D-92 makes sufficient. Under D-90's original plan, where
+  /// `else` was copied into every uncovered slot, no syntactic measure could
+  /// have bounded this: the count would depend on a declaration's arity.
+  | StCaseOf brs me -> 1 + simpls_size brs + selse_size me
   | StHandle _ _ i im b -> 1 + sterms_size i + simpls_size im + sterms_size b
   | StWith _ b -> 1 + sterms_size b
   | StTry b c  -> 1 + sterms_size b + sterms_size c
@@ -204,6 +223,13 @@ and simpls_size (im:list (string & list sterm)) : Tot nat =
   match im with
   | []           -> 0
   | (_, ts) :: r -> 1 + sterms_size ts + simpls_size r
+
+/// One charged for a present `else`, for the same reason: `else { }` is a
+/// legitimate block and an uncharged empty one would not shrink the measure.
+and selse_size (me:option (list sterm)) : Tot nat =
+  match me with
+  | None    -> 0
+  | Some ts -> 1 + sterms_size ts
 
 /// Note the `1 +` per branch. Without it an EMPTY branch — `else { }`, which
 /// is exactly the shape the else-less `if` expands to — makes this measure
@@ -306,6 +332,12 @@ let rec stray_var (ok:list string) (t:sterm)
   | StVar x    -> if mem x ok then None else Some x
   | StBlock ts -> stray_var_list ok ts
   | StCase bs  -> stray_var_lists ok bs
+  | StCaseOf brs me ->
+    (match stray_var_impls ok brs with
+     | Some x -> Some x
+     | None   -> (match me with
+                  | None    -> None
+                  | Some ts -> stray_var_list ok ts))
   | StHandle _ _ i im b ->
     (match stray_var_list ok i with
      | Some x -> Some x
@@ -386,6 +418,8 @@ let rec subst_term (caps:list mcap) (t:sterm)
                 | _                      -> [StVar x])
   | StBlock ts            -> [StBlock (subst_terms caps ts)]
   | StCase bs             -> [StCase (subst_lists caps bs)]
+  | StCaseOf brs me       -> [StCaseOf (subst_impls caps brs)
+                                       (subst_else caps me)]
   | StHandle e tys i im b -> [StHandle e tys (subst_terms caps i)
                                        (subst_impls caps im) (subst_terms caps b)]
   | StWith su b           -> [StWith su (subst_terms caps b)]
@@ -409,6 +443,12 @@ and subst_impls (caps:list mcap) (im:list (string & list sterm))
   match im with
   | []           -> []
   | (o, ts) :: r -> (o, subst_terms caps ts) :: subst_impls caps r
+
+and subst_else (caps:list mcap) (me:option (list sterm))
+  : Tot (option (list sterm)) (decreases %[selse_size me; 2]) =
+  match me with
+  | None    -> None
+  | Some ts -> Some (subst_terms caps ts)
 
 (* ------------------------------------------------------------------------ *)
 (* Type substitution: instantiating a generic                               *)
@@ -541,6 +581,8 @@ let rec subst_tys (su:tsub) (t:sterm)
   match t with
   | StBlock ts -> StBlock (subst_tys_list su ts)
   | StCase bs  -> StCase (subst_tys_lists su bs)
+  | StCaseOf brs me -> StCaseOf (subst_tys_impls su brs)
+                                (subst_tys_else su me)
   /// The second place a body mentions a type, and the one that makes a generic
   /// able to call a generic AT ITS OWN PARAMETERS (D-83): `outer[#T]`'s body
   /// writing `inner[#T]` has that `#T` rewritten here, before the instance is
@@ -570,6 +612,12 @@ and subst_tys_impls (su:tsub) (im:list (string & list sterm))
   match im with
   | []           -> []
   | (o, ts) :: r -> (o, subst_tys_list su ts) :: subst_tys_impls su r
+
+and subst_tys_else (su:tsub) (me:option (list sterm))
+  : Tot (option (list sterm)) (decreases %[selse_size me; 1]) =
+  match me with
+  | None    -> None
+  | Some ts -> Some (subst_tys_list su ts)
 
 (* ------------------------------------------------------------------------ *)
 (* Declarations                                                             *)
@@ -659,6 +707,10 @@ let rec count_var (x:string) (t:sterm)
   /// statically known to be moved exactly once.
   | StCase bs  -> let n = count_var_lists x bs in
                   if n = 0 then 0 else n + 1
+  /// The same inflation, for the same reason: a named branch is still a branch,
+  /// and only one of them runs.
+  | StCaseOf brs me -> let n = count_var_impls x brs + count_var_else x me in
+                       if n = 0 then 0 else n + 1
   /// Only the BODY is counted. A handler's initialiser and implementations run
   /// on their own stacks — the state segment, plus the operation's arguments —
   /// so an enclosing definition's locals are not in scope there and `E04`
@@ -704,6 +756,18 @@ and count_var_lists (x:string) (bs:list (list sterm))
   | []     -> 0
   | b :: r -> count_var_list x b + count_var_lists x r
 
+and count_var_impls (x:string) (im:list (string & list sterm))
+  : Tot nat (decreases %[simpls_size im; 2]) =
+  match im with
+  | []           -> 0
+  | (_, ts) :: r -> count_var_list x ts + count_var_impls x r
+
+and count_var_else (x:string) (me:option (list sterm))
+  : Tot nat (decreases %[selse_size me; 2]) =
+  match me with
+  | None    -> 0
+  | Some ts -> count_var_list x ts
+
 /// Whether `recurse` appears anywhere in a surface body (D-67).
 ///
 /// Asked only to produce a better message: `define f { recurse }` has no
@@ -717,6 +781,7 @@ let rec mentions_recurse (t:sterm)
   | StWord w    -> w = "recurse"
   | StBlock ts  -> mentions_recurse_list ts
   | StCase bs   -> mentions_recurse_lists bs
+  | StCaseOf brs me -> mentions_recurse_impls brs || mentions_recurse_else me
   | StHandle _ _ i im b ->
     mentions_recurse_list i || mentions_recurse_impls im || mentions_recurse_list b
   | StWith _ b  -> mentions_recurse_list b
@@ -740,3 +805,9 @@ and mentions_recurse_impls (im:list (string & list sterm))
   match im with
   | []           -> false
   | (_, b) :: r  -> mentions_recurse_list b || mentions_recurse_impls r
+
+and mentions_recurse_else (me:option (list sterm))
+  : Tot bool (decreases %[selse_size me; 1]) =
+  match me with
+  | None    -> false
+  | Some ts -> mentions_recurse_list ts
