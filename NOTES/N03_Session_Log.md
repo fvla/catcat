@@ -44,9 +44,38 @@ on the R02 machine, one declaration at a time (D-54). It runs non-interactively
 (`catcat.exe 'line' 'line' …`) and from a file (`-f FILE`), which is what the
 demo harness drives.
 
-**Still absent, each specified in D05:** `let`, sums and classes a user can
-write, modules and `::`, quotation, arrays or any aggregate, surface `Box`/`Rc`
-construction, source positions in errors. `DOCS/U01` §9 is the maintained list.
+**Still absent, each specified in D05:** `let`, classes, modules and `::`,
+quotation, arrays or any aggregate, surface `Box`/`Rc` construction, source
+positions in errors. `DOCS/U01` §10 is the maintained list.
+
+---
+
+## Session: 2026-08-16/17 — declared types, and the plan that changed
+
+**Shipped.** `data` with type parameters, constructors as a fourth namespace
+(D-91), named exhaustive-or-`else` `case` (D-90, D-92, D-93), and then `seal`
+(D-95): a nominal type over a representation, with declared capabilities. So
+both of the core's aggregates are now reachable from the surface, and a program
+can declare a **linear** type — `seal Fd ( i64 ) { pack fd unpack fd_raw }`, and
+`dup` on it has no signature. Demos 08 and 09; `DOCS/U01` §9 and §9a.
+
+**One core fix, found by building.** `M06.prim_sig` let `PPack` WIDEN a
+capability set, so `TSeal n [CCopy] [TBox d]` was well typed and `PUnpack` handed
+the box back — the whole of D-08 resting on a claim nothing checked. Gated on
+`M01.caps_within`, in the core rather than only in the elaborator, as D-94.
+
+**The plan changed, and the change is the interesting part.** Step D was "the
+record form becomes a macro". It cannot be, over the vocabulary D-35 fixed: a
+record's field count is not fixed and macro slots are (D-96). The answer turned
+out to be in `INITIAL_DRAFT_1.md:86` and forgotten — `( … )` is a
+**deferred-parse group**, so a macro parses its own contents and the variable
+arity lives in the macro's loop rather than in the production. That makes macros
+elaboration-time programs, which is what D05 §5 always said they should be.
+
+**A new thread picking this up reads [`N05_Macro_Plan.md`](N05_Macro_Plan.md).**
+Six phases; two design questions gate it (what unit `emit` takes, and what
+hygiene means once a macro can emit a binder); its §8 lists the cheap unrelated
+work to do instead if it stalls.
 
 ---
 

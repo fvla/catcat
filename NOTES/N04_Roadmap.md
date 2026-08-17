@@ -187,6 +187,19 @@ being done under the cover of a step. What a record needs from the language is
 already here — `seal Point ( i64 i64 )` is the product, capabilities and all —
 so what is missing is the naming and the accessors, not the type.
 
+**And then step D turned out to be a different piece of work entirely** (D-97).
+`( … )` is a deferred-parse group — `INITIAL_DRAFT_1.md:86`, forgotten for some
+time — so a macro parses its own group and the variable arity lives in the
+macro's loop rather than in the production. Slots stay fixed. That makes
+`record` a macro after all, and it makes the macro system what D05 §5 always
+said it should be: a program that runs at elaboration time, reading syntax
+through an effect and emitting it by quotation.
+
+**The plan for it is [`N05_Macro_Plan.md`](N05_Macro_Plan.md)** — six phases,
+two open design questions (what unit `emit` takes; what hygiene means once a
+macro can emit a binder), and a list in its §8 of the cheap unrelated work to
+interleave if it stalls.
+
 **Step B is done, and three things about it did not go as written below.** The
 plan for it is kept unedited underneath, because the differences are the useful
 part.

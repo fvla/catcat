@@ -458,7 +458,21 @@ because the facility is needed anyway for D-56's library and building it once
 serves both.
 
 **Q-24. Does the macro vocabulary get repetition, or does `record` become a
-parser built-in?** Raised by D-96, which is the result of running D-89's own
+parser built-in?** — **CLOSED by D-97, and by rejecting both.** `( … )` is a
+deferred-parse group, so a macro parses its own contents and the variable arity
+lives in the macro's loop: slots stay fixed, no repetition node is needed, and
+`record` is a macro after all. The plan is `NOTES/N05_Macro_Plan.md`.
+
+Two questions it leaves behind, both live and both recorded in N05 rather than
+here because they are steps of one piece of work: **what unit `emit` takes**
+(N05 §2 — whole phrases are blocked on Q-13, kinded fragments with concatenation
+are the lean) and **what hygiene means once a macro can emit a binder** (N05 §6
+— D-73's argument does not survive, and re-deriving it gates the work).
+
+*The question as it stood, kept because the reasoning is what the answer had to
+beat:*
+
+Raised by D-96, which is the result of running D-89's own
 test: the record form cannot be a macro over the vocabulary D-35 fixed, because
 a record's field count is not fixed and slots are.
 
@@ -489,4 +503,4 @@ still hypothetical.
 *Cost of leaving open:* records have no field names and no generated accessors.
 The type itself is not blocked — `seal Point ( i64 i64 )` is a record with
 capabilities and an identity today (D-96) — so this is sugar, not a hole.
-*Closes when:* one of the two is chosen.
+*Closed by:* neither. The third answer was in `INITIAL_DRAFT_1.md` all along.

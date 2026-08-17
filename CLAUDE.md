@@ -17,13 +17,14 @@ how to work on this project without re-deriving context.
    already decided.
 3. `NOTES/N02_Open_Questions.md` — what is deliberately unsettled.
 4. `NOTES/N04_Roadmap.md` — what is planned next and the argument for the order.
-5. `P00_Design/D02`–`D06` — the design proper.
-6. `DOCS/U03_Tutorial.md` then `U01_Grammar.md`, `U02_Word_Reference.md` — the
+5. `NOTES/N05_Macro_Plan.md` — the plan for the next large feature, in detail.
+6. `P00_Design/D02`–`D06` — the design proper.
+7. `DOCS/U03_Tutorial.md` then `U01_Grammar.md`, `U02_Word_Reference.md` — the
    language **as it runs**, which is a strict subset of the above. Fastest way
    to see the real gap.
-7. `demos/` — seven runnable programs, one design claim each. `make demos`.
+8. `demos/` — nine runnable programs, one design claim each. `make demos`.
    Faster than any of the above if you want to know what the language *does*.
-8. `P01_Specification/M00_Reading_Guide.md` — a map of the mechanized core:
+9. `P01_Specification/M00_Reading_Guide.md` — a map of the mechanized core:
    which 400 of its 4,200 lines carry the design, and what is actually proved.
 
 The two ideas everything else follows from, so you have them immediately:
@@ -47,7 +48,7 @@ within them likewise. Proofs read top to bottom; so does this project.
 | `P02_Reference/` | `R01`–`R06`, reference interpreter | runs; extracts to OCaml |
 | `P03_Elaboration/` | `E01`–`E06`, lexer → parser → elaborator → REPL | **REPL works**; subset of D05 |
 | `DOCS/` | `U01`–`U03`, user-facing docs for the language as it runs | current |
-| `demos/` | seven runnable programs + golden transcripts | `make demos` |
+| `demos/` | nine runnable programs + golden transcripts | `make demos` |
 | `NOTES/` | decision log, open questions, roadmap, session handoff | current |
 | `.claude/skills/` | project skills | `delegate` |
 | `generated/` | extraction output | generated — do not hand-edit |

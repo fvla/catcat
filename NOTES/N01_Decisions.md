@@ -3083,3 +3083,58 @@ cheaper, would ship accessors immediately, and gives up the test D-89 wanted the
 macro vocabulary to face.
 
 Recorded as **N02 Q-24**.
+
+---
+
+## D-97. Macros become elaboration-time programs; `( … )` defers the parse
+
+Answers Q-24, and answers it by rejecting both of the options that question
+recorded. Repetition slots are not needed and `record` is not a parser built-in.
+
+**`( … )` is a deferred-parse group.** `INITIAL_DRAFT_1.md:86` settled this
+before anything was built — "() corresponds to any block which doesn't use the
+default lexer/parser, so lexing/parsing can be deferred" — and it had been
+forgotten. A macro captures the group and parses the contents itself, so a
+record's variable-length field list lives inside the macro's own loop and **the
+production grammar never becomes variadic**. Macro slots stay fixed, which is
+what D-35 wanted and D-96 thought it could not have.
+
+The lexing half of that sentence stays deferred in the other sense: groups are
+lexed by the ordinary lexer for now, and only parsing is macro-controlled.
+
+Four things settled with it:
+
+1. **A macro may not read past its group.** Its input is the group and nothing
+   else. This preserves the property an LSP needs — a group is self-delimiting,
+   so its extent is known WITHOUT running anything — and it keeps D-35's "a
+   macro may not consume the enclosing `}`" true by construction rather than by
+   rule.
+2. **A macro's row carries `!Rec` if it may not terminate.** Today `ll1_extend`
+   makes non-termination impossible; a macro that computes gives that up. The
+   answer is the one the language already has for the same question, which makes
+   the signature load-bearing rather than ornamental — a macro that might loop
+   at compile time says so where every other such word says so.
+3. **Emission is TYPED QUOTATION, not tokens.** `'` is the operator and `emit`
+   is the word it abbreviates: `'word` emits `word`, `'{0 >}` emits `0 >`.
+   Emitting tokens would be text with extra steps — weird parse errors at the
+   expansion site and nothing for hygiene to attach to. D05 §6 reserved `'` for
+   this and the anticipation was correct.
+4. **Hygiene has to be re-derived rigorously.** D-73 reduces hygiene to a
+   well-formedness check on the premise that no `sterm` binds a local. A macro
+   that emits declarations can emit a signature, so it can bind, and every
+   clause of that argument fails. This is an obligation gating the work, not a
+   caveat on it.
+
+*Why this is not scope creep to unblock records.* D05 §5 has said since it was
+written that a macro should be **an ordinary word with an effect that lets it
+consume and transform code**, and that the template form is deliberately not
+being extended because that is the target. Records are the first client of it,
+not the reason for it.
+
+*The one thing it costs that is worth pricing:* `'` joins `{ } ( ) [ ] : "` as
+self-delimiting, so a word name containing an apostrophe stops being one word.
+That is a lexical break of the same kind as D-28, and sanctioned in advance by
+D05 §6 reserving the character.
+
+The detail — phases, the `Code` representation question, the effect that hands a
+macro its tokens, and what hygiene has to answer — is `NOTES/N05_Macro_Plan.md`.
