@@ -1,9 +1,9 @@
 # demos — the language, doing something
 
-Seven programs. Each is one claim the design makes, run rather than argued.
+Eight programs. Each is one claim the design makes, run rather than argued.
 
 ```
-make demos          # run all seven and diff against the golden transcripts
+make demos          # run all eight and diff against the golden transcripts
 make demos-accept   # regenerate the goldens (read the diff first)
 
 ./_build/default/bin/catcat.exe -f demos/03_dictionary_top_down.cat
@@ -23,6 +23,7 @@ alters what a demo prints fails `make demos`. Every claim in
 | 05 | `05_mocking_c.cat` | `extern` + `handle C`: a deterministic test of code that calls libc |
 | 06 | `06_failure.cat` | `try`/`catch` as a handler for `Fail`, composing with the rest |
 | 07 | `07_three_modes.cat` | **capstone** — one deploy script, run as production, dry run and audit |
+| 08 | `08_data_and_case.cat` | `data` and `case` need no new core: a constructor is `PInj`, a `case` is a handler |
 
 Start at 07 if you want the point in one file, at 01 if you want the language.
 
@@ -38,11 +39,17 @@ runs the failing cases too, and the goldens record the messages.
 
 ## What they deliberately do not show
 
-There are no arrays, no lists, no records and no string indexing, so every demo
-is control- and effect-shaped rather than data-shaped. Demo 07 ends with three
+There are no arrays, no lists, no records and no string indexing, so demos 01–07
+are control- and effect-shaped rather than data-shaped. Demo 07 ends with three
 service names written out as literals for exactly this reason. That ceiling and
 what it will take to lift it are in
 [`NOTES/N04_Roadmap.md`](../NOTES/N04_Roadmap.md) §4.1.
+
+Demo 08 is the first lift: `data` declares sums with type parameters, so
+`Option[#T]` and `Shape` are writable. **A recursive one is not** — `data List
+{ alt Cons ( i64 List ) … }` is refused, because a type that mentions itself
+needs a pointer and a nominal declaration (N02 Q-13). So there are still no
+lists, and arrays are still downstream.
 
 ## Gaps these found
 

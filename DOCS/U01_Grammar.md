@@ -20,12 +20,15 @@ that is called out rather than glossed. For the designed language see
 ```ebnf
 program    = decl* ;
 
-decl       = define | effect | extern | macro | locate | expression ;
+decl       = define | data | effect | extern | macro | locate | expression ;
 
 define     = "define" word [ tparams ] "(" signature ")" "{" term* "}"
            | "define" word                        "{" term* "}" ;  (* inferred *)
 tparams    = "[" ( "#" name )+ "]" ;                           (* see §3 *)
 targs      = "[" type+ "]" ;                                   (* see §3 *)
+
+data       = "data" word [ tparams ] "{" alt+ "}" ;            (* see §9 *)
+alt        = "alt" word "(" type* ")" ;
 
 effect     = "effect" word "{" declare* "}" ;                  (* see §6 *)
 declare    = "declare" word "(" signature ")" ;
@@ -44,8 +47,7 @@ signature  = input* "--" output* ;
 input      = "$" name ":" type | type ;
 output     = type | "!" name | "!" ;          (* bare ! : no effects, §3 *)
 
-type       = "Box" "[" type "]"
-           | "Rc"  "[" type "]"
+type       = name "[" type+ "]"           (* Box, Rc, or a declared type, §9 *)
            | "#" name
            | name ;
 
@@ -55,12 +57,14 @@ term       = integer
            | word targs                                        (* see §3 *)
            | "$" name
            | conditional
+           | case
            | try
            | handle
            | with
            | "{" term* "}" ;
 
 conditional = "if" block "then" block [ "else" block ] "endif" ;
+case        = "case" "{" ( word block )* [ "else" block ] "}" ;  (* see §9 *)
 try         = "try" block "catch" block ;
 
 handle      = "handle" word "over" "(" type* ")"                (* see §6 *)
@@ -77,11 +81,13 @@ The `conditional` production is written out here for readability, but it is not
 built into the parser: it is one entry in a **macro table** (§5), and the parser
 that reads it is generic over the table. The table grows: `macro` adds to it.
 
-**`define`, `effect`, `extern`, `macro` and `locate` are not reserved words.**
-All five are recognised by *position* — first token of a declaration — so
-`define locate { 42 }` is legal and `locate` inside a body is an ordinary word. The same rule
-leaves `then`, `else`, `endif`, `over`, `init`, `declare`, `alt` and `end` free
-everywhere outside the construct that introduces them. What position-recognition
+**`define`, `data`, `effect`, `extern`, `macro` and `locate` are not reserved
+words.** All six are recognised by *position* — first token of a declaration —
+so `define locate { 42 }` is legal and `locate` inside a body is an ordinary
+word. The same rule leaves `then`, `else`, `endif`, `over`, `init`, `declare`,
+`alt` and `end` free everywhere outside the construct that introduces them.
+`alt` is now used by two constructs — inside a `macro` declaration and inside a
+`data` — and is reserved in neither. What position-recognition
 does cost is the first slot of a declaration:
 
 ```
@@ -94,16 +100,16 @@ error: expected a name after 'macro'
 The word exists and is callable inside a body; it is only unreachable as the
 first token of a declaration.
 
-**Five words are effectively taken**, not by the grammar but by being dispatched
+**Six words are effectively taken**, not by the grammar but by being dispatched
 on wherever a term may start: `if`, `unsafe` and `try` (all three macro-table
-entries), `handle` and `with`. Each is still *definable* — `define if { 9 }` is accepted —
-but every later use is read as the construct, so the definition can never be
-called.
+entries), `handle`, `with` and `case`. Each is still *definable* — `define if
+{ 9 }` is accepted — but every later use is read as the construct, so the
+definition can never be called.
 
 Nothing warns about any of this. **Every macro declared adds a word to that
 list**, which is the real cost of the macro system and is not diagnosed.
 
-`recurse` is a sixth taken name, by a different route: inside a `define` with a
+`recurse` is a seventh taken name, by a different route: inside a `define` with a
 written signature it is bound to the word being defined (§6), shadowing any
 other binding of that name for the length of the body.
 
@@ -431,7 +437,7 @@ error: loopy is already being instantiated; a generic may not be recursive,
 directly or through another
 ```
 
-See §9.
+See §10.
 
 ### What inference can and cannot do
 
@@ -497,9 +503,14 @@ branch is empty.
 type must be `Copy`. A move would consume the slot in one branch and not the
 other, leaving the two with different stacks.
 
-Conditionals plus `recurse` (§6) are the whole of control flow. There is no
-`while`, and there are no anonymous loops — a loop is a tail call inside a
-`define`.
+Conditionals, `case` (§9) and `recurse` (§6) are the whole of control flow.
+There is no `while`, and there are no anonymous loops — a loop is a tail call
+inside a `define`.
+
+`if` and `case` are the same construct underneath. An `if` is a positional case
+over a `bool`, which the elaborator coerces to a two-variant sum; a `case` is
+the same thing over a declared one, with branches keyed by name instead of by
+position. Both become a handler and a dispatch — see §9.
 
 ---
 
@@ -600,10 +611,12 @@ leaves the session untouched, because what came before it has already run. Only
 a *lexing* error is free.
 
 **Every shipped macro is an ordinary template**, `if` included — `locate if`
-prints its expansion like any other. What a user still could not do is DECLARE
-it, because it expands to a `case` and `case` has no surface spelling. That is a
-gap in the surface grammar, not in the macro system, and it closes with surface
-sums (§9).
+prints its expansion like any other. What a user still cannot do is DECLARE it.
+`if` expands to a positional two-branch case, which has no surface spelling; the
+`case` of §9 is a different construct, keyed by constructor name, and a macro
+cannot express it either, because a macro's production is fixed when the macro
+is declared while a `case`'s keys differ per type. This is a permanent limit of
+the template form rather than a gap waiting on a feature.
 
 ### `locate`
 
@@ -1236,10 +1249,192 @@ self-delimiting, so `f[i64]` is already four tokens and the choice between an
 ordinary call and an instantiation is made on the `[` that is in hand after the
 name — one token, not two. The same rule already governs the `[`/`(`/`{` choice
 after the name in a `define`.
+---
+
+## 9. Declared types: `data` and `case`
+
+```
+data Color { alt Red ( ) alt Green ( ) alt Blue ( ) }
+data Shape { alt Circle ( i64 ) alt Rect ( i64 i64 ) alt Point ( ) }
+data Option[#T] { alt None ( ) alt Some ( #T ) }
+```
+
+A `data` declares a **sum**: a value is exactly one of its variants, tagged by
+which. Variants are in declaration order and that order is the tag order. A
+payload — the `( … )` after the name — is a stack *segment*, written
+bottom-to-top like a signature's inputs, and it is **not** a signature: no `--`,
+no named parameters, no `!Eff`.
+
+The declaration installs a template and no words. What it prints back is itself:
+
+```
+catcat> data Option[#T] { alt None ( ) alt Some ( #T ) }
+data Option[#T] {
+  alt None ( )
+  alt Some ( #T )
+}
+```
+
+### Constructors
+
+A variant name is a **constructor**, and constructors are their own namespace —
+not words, not generics. They are applied like a word and declared where no word
+is, so `locate` reports what one constructs rather than decompiling a body:
+
+```
+catcat> locate Green
+Green constructs Color at tag 1, carrying ( )
+```
+
+For a parameterised type, the constructor binds the parameters **by matching
+what it carries** against the stack. A parameter the payload does not mention
+cannot be recovered, and the error says what to write:
+
+```
+catcat> 42 Some
+ok  #1(42)
+catcat> None
+error: None: #T is not determined by what it carries; write the types at the
+       call site, as in None[i64]
+catcat> None[i64]
+ok  #0()
+```
+
+`Some[i64]` is accepted too, and is checked against the stack rather than
+believed — the same relationship `f[i64]` has to `f` (§3).
+
+**Resolution order at a call site** is builtins, generics, constructors, then
+ordinary words. A constructor therefore beats a `define` of the same name
+whichever was written first, and nothing warns:
+
+```
+catcat> data Color { alt Red ( ) alt Green ( ) }
+catcat> define Red { 99 }
+defined Red ( -- i64 )
+catcat> Red
+ok  #0()
+```
+
+### `case`
+
+```
+define area ( Shape -- i64 ) {
+  case { Circle { dup * 3 * } Rect { * } Point { 0 } } }
+```
+
+Branches are keyed by **constructor name**, so their order is free and
+reordering the `data` cannot silently change what a `case` means. A branch runs
+with its variant's payload already pushed — that is why `Circle`'s branch finds
+one `i64` and `Rect`'s finds two.
+
+Every branch must leave the stack in the same state, exactly as `if` requires
+(§4).
+
+**A `case` must be exhaustive**, and says what it left out:
+
+```
+catcat> define partial ( Color -- i64 ) { case { Red { 1 } } }
+error: this case is not exhaustive; nothing selects Green Blue. Add a branch
+       for each, or an 'else'
+```
+
+`else` covers the rest. **One implementation is shared by every variant it
+covers**, not one copy each — which is why the variants it covers must agree on
+what they carry:
+
+```
+catcat> define is_red ( Color -- i64 ) { case { Red { 1 } else { 0 } } }
+defined is_red ( sum[ ( ) ( ) ( ) ] -- i64 )
+
+catcat> define guess ( Shape -- i64 ) { case { Point { 0 } else { pop 1 } } }
+error: the variants this 'else' covers carry different values, so one block
+       cannot run for all of them; write a branch for each
+```
+
+That is not an implementation restriction dressed up: the block runs with the
+payload pushed, so a different payload is a different entry stack, and one block
+cannot have two. An enumeration's variants all carry nothing, so an `else` over
+any subset of one is fine.
+
+An `else` that covers nothing is an error rather than a no-op.
+
+**`case` is a parser built-in, not a macro**, and this is forced. A macro's
+production is fixed when the macro is declared (§5), and a `case`'s branch keys
+are constructor names that differ per type — there is no one production to
+declare. `else` is recognised only inside a `case` body, so it remains an
+ordinary word elsewhere, as it is inside an `if`.
+
+### It is a handler
+
+A `case` elaborates to a `handle` whose implementations are the branches and
+whose body is a single `dispatch`. Nothing is added to the core:
+
+```
+catcat> locate area
+define area ( sum[ ( i64 ) ( i64 i64 ) ( ) ] -- i64 ) {
+  handle !5 over (  ) init { } { #147 { dup * 3 * } #148 { * } #149 { 0 } } { dispatch #147 #148 #149 }
+}
+```
+
+(One line, wrapped here only by the page. The operation ids depend on how much
+the session has already elaborated, so yours will differ.)
+
+### Type parameters
+
+A `data` may take parameters, written like a generic's and matched the same way.
+A generic word over a parameterised type works implicitly when the parameter is
+determined by something the matcher reaches **first** — patterns are matched top
+of stack downward:
+
+```
+catcat> define orelse[#T] ( Option[#T] #T -- #T ) {
+          swap case { Some { swap pop } None { } } }
+catcat> 42 Some 0 orelse
+ok  42
+catcat> "hello" Some "?" orelse
+ok  42 "hello"
+```
+
+`#T` is fixed by the bare `#T` input, which sits on top; by the time matching
+reaches `Option[#T]` it is ground. **A declaration standing alone determines
+nothing** — `( Option[#T] -- )` cannot bind `#T`, because recovering it from the
+value's type means running the declaration backwards, which is the unification
+this language does not have (§3). Write `f[i64]` there.
+
+### Three limits worth knowing
+
+**Declared types are structural, not nominal.** A type *is* its representation,
+so two declarations with matching variant shapes are one type and a `case`
+written for one typechecks over the other:
+
+```
+catcat> data Traffic { alt Stop ( ) alt Slow ( ) alt Go ( ) }
+catcat> Stop channel
+ok  1
+```
+
+This is why a signature prints a sum's shape — `sum[ ( ) ( ) ( ) ]` — instead of
+a name: there is no name to recover, since several declarations answer to it.
+
+**A `data` may not mention itself.** A recursive type needs a pointer and a
+nominal declaration, so there are still no lists:
+
+```
+catcat> data List { alt Nil ( ) alt Cons ( i64 List ) }
+error: the type List refers to itself; a recursive type needs a pointer and a
+       nominal declaration, which do not exist yet
+```
+
+**A `data` is always a sum.** There is no product form and no way to give a
+declaration capabilities, so nothing can be declared linear or non-`Copy`. The
+core has `TSeal`, which does both; no surface syntax reaches it.
+
+Both remaining limits are the same open question — see
+[N02](../NOTES/N02_Open_Questions.md) Q-13.
 
 ---
 
-## 9. Not yet implemented
+## 10. Not yet implemented
 
 Each is specified in [D05](../P00_Design/D05_Surface_Syntax_and_Macros.md) and
 absent from the implementation. Listed because the gap between the two documents
@@ -1253,9 +1448,12 @@ is otherwise invisible.
 | code sharing between identical instantiations | the *elaboration* is shared (§3); the emitted code is not, so each call site carries its own copy. The copies are structurally equal, so what is missing is a common-subexpression pass over the core, not anything about generics |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
-| sums, classes, `module`, `::`, `.` | not parsed |
+| classes, `module`, `::`, `.` | not parsed. Sums are now declarable — see §9 — but nothing else on this line is |
+| a **recursive** `data` | refused with a message: a type that mentions itself needs a pointer and a nominal declaration, which is N02 Q-13. So there are still no lists (§9) |
+| **nominal** types | declared types are their representation, so two `data` declarations with matching variant shapes are one type and interchangeable (§9). Same Q-13 |
+| records, and capabilities on a declaration | a `data` is always a sum; there is no product form and no way to declare a type linear or non-`Copy`. `TSeal` in the core does both, and nothing reaches it |
 | quotation `'…'`, backtick | not lexed. Strings ARE lexed (§2) |
-| a `case` a user can write | `if` is an ordinary macro, but its expansion has no surface spelling, so a user cannot declare the same production (§5). Closes with surface sums |
+| a user-declared `case`-like macro | `case` is a parser built-in (§9) and `if` is a macro, but a macro's production is fixed when it is declared, so no macro can have branch keys that differ per type. This is not closing |
 | macro hygiene beyond the declaration check | §5's check is complete while no term binds a local. `let` will change that premise and need real renaming |
 | macros as words | a macro is a template, not a program; the eventual design is an ordinary word with an effect that consumes code, which needs the elaboration-time interpreter |
 | `Box`/`Rc` construction | types exist; no surface word builds one |

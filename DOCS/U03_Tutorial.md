@@ -481,7 +481,131 @@ and `fixed` is **not** `!C`, because handling the effect discharged it.
 
 ---
 
-## 9. Putting it together
+## 9. Declaring a type
+
+`data` declares a **sum**: a value is exactly one of the listed variants.
+
+```
+catcat> data Color { alt Red ( ) alt Green ( ) alt Blue ( ) }
+data Color {
+  alt Red ( )
+  alt Green ( )
+  alt Blue ( )
+}
+```
+
+Each variant name becomes a **constructor** — `Red` puts a `Color` on the stack
+— and `case` takes one apart, with branches keyed by the constructor name:
+
+```
+catcat> define channel ( Color -- i64 ) { case { Blue { 3 } Red { 1 } Green { 2 } } }
+defined channel ( sum[ ( ) ( ) ( ) ] -- i64 )
+catcat> Green channel
+ok  2
+```
+
+Branch order is free, because the names carry the meaning. Reordering the
+`data` cannot silently change what a `case` over it does — which is the whole
+reason branches are named rather than positional.
+
+A `case` must cover every variant, and says what you missed:
+
+```
+catcat> define partial ( Color -- i64 ) { case { Red { 1 } } }
+error: this case is not exhaustive; nothing selects Green Blue. Add a branch
+       for each, or an 'else'
+```
+
+`else` covers the rest.
+
+### Variants that carry values
+
+```
+catcat> data Shape { alt Circle ( i64 ) alt Rect ( i64 i64 ) alt Point ( ) }
+catcat> define area ( Shape -- i64 ) { case { Circle { dup * 3 * } Rect { * } Point { 0 } } }
+catcat> 3 4 Rect area
+ok  12
+```
+
+A branch runs with its variant's payload **already on the stack**, which is why
+`Rect`'s branch is just `*`.
+
+This is also why an `else` cannot cover variants that carry different things —
+one block cannot have two entry stacks:
+
+```
+catcat> define guess ( Shape -- i64 ) { case { Point { 0 } else { pop 1 } } }
+error: the variants this 'else' covers carry different values, so one block
+       cannot run for all of them; write a branch for each
+```
+
+### Type parameters
+
+```
+catcat> data Option[#T] { alt None ( ) alt Some ( #T ) }
+catcat> 42 Some
+ok  #1(42)
+```
+
+`Some` worked out `#T` from what you gave it. `None` carries nothing, so it
+cannot, and tells you to write it:
+
+```
+catcat> None
+error: None: #T is not determined by what it carries; write the types at the
+       call site, as in None[i64]
+```
+
+Generic words work over these the same way, and the two fit together with no
+extra machinery:
+
+```
+catcat> define orelse[#T] ( Option[#T] #T -- #T ) { swap case { Some { swap pop } None { } } }
+generic orelse[#T]
+catcat> 42 Some 0 orelse
+ok  42
+catcat> "hello" Some "?" orelse
+ok  42 "hello"
+```
+
+### Nothing was added to the core
+
+`locate` shows what a `case` actually is — a handler whose implementations are
+the branches, dispatching on the tag:
+
+```
+catcat> locate area
+define area ( sum[ ( i64 ) ( i64 i64 ) ( ) ] -- i64 ) {
+  handle !5 over (  ) init { } { #147 { dup * 3 * } #148 { * } #149 { 0 } } { dispatch #147 #148 #149 }
+}
+```
+
+That is the same `handle` from §4. A constructor is likewise the core's tag
+injection, which was already there for `if`. **`data` and `case` are surface
+syntax over machinery the language already had** — no new core term, no new
+typing rule.
+
+### One thing to know before you rely on it
+
+A declared type **is** its representation. Two declarations with the same
+variant shapes are the same type, and a `case` written for one will happily
+accept the other:
+
+```
+catcat> data Traffic { alt Stop ( ) alt Slow ( ) alt Go ( ) }
+catcat> Stop channel
+ok  1
+```
+
+That is why signatures print `sum[ ( ) ( ) ( ) ]` instead of `Color`: there is
+no name to print, because more than one declaration answers to that shape.
+Nominal types are not built yet.
+
+**Full example: [`demos/08_data_and_case.cat`](../demos/08_data_and_case.cat).**
+
+---
+
+## 10. Putting it together
 
 [`demos/07_three_modes.cat`](../demos/07_three_modes.cat) is the one to read
 when you want the point in a single file: one deployment script, no `--dry-run`
@@ -508,24 +632,26 @@ to one, and was compiled before any of the three existed.
 
 ---
 
-## 10. What is not here yet
+## 11. What is not here yet
 
-The honest ceiling: **there are no arrays, no lists, no records and no string
-indexing.** Everything above is control- and effect-shaped, and demo 07 ends
-with three service names written out as literals for exactly that reason.
+The honest ceiling: **there are no arrays, no lists and no string indexing**,
+and no records. Demo 07 ends with three service names written out as literals
+for exactly that reason.
 
-The reason is narrower than it looks. **You cannot declare a type**: `E04`
-resolves a type name against the built-in primitives and nothing else, so the
-core's `TSum` and `TSeal` — which is where every aggregate would come from —
-are unreachable from the surface. `Box[T]` and `Rc[T]` are two hardcoded cases
-in the parser, not a general form, which is why they can appear in a signature
-and no word can build one.
+Section 9 above is the first part of that ceiling lifted — you can declare a
+sum type — and it makes the rest of the shape clear:
 
-[U01 §9](U01_Grammar.md#9-not-yet-implemented) is the full list of what is
+- **A `data` may not mention itself**, so there are no lists. A recursive type
+  needs a pointer *and* a nominal declaration, and the second is the harder
+  half: a type is currently its representation, nothing more.
+- **A `data` is always a sum.** There is no product form, so no records; the
+  core's `TSeal` would give both records and capabilities, and no surface
+  syntax reaches it.
+- **Nothing can be declared linear or non-`Copy`**, for the same reason.
+
+[U01 §10](U01_Grammar.md#10-not-yet-implemented) is the full list of what is
 specified and absent. [`NOTES/N04_Roadmap.md`](../NOTES/N04_Roadmap.md) §4 is
-what is planned and why in that order — the short version being that arrays,
-`option`, a user-writable `case`, and a `fail` that can stand where a value is
-expected are all downstream of that one missing declaration form.
+what is planned and why in that order.
 
 ## Where to go next
 

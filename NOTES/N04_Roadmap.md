@@ -162,9 +162,33 @@ done; B, C and D are specified below so they can be picked up cold.
 | | Step | State |
 |---|---|---|
 | A | `tenv` in `nenv`, `elab_ty`/`match_ty`/`elab_sig` consult it | **done** (`a2a6e52`) |
-| B | parse `data N { alt C ( … ) }`; constructors; a user-writable `case` | next |
-| C | capabilities on a declaration, so `TSeal` is reachable and a linear wrapper over a `Copy` representation is expressible | after B |
+| B1 | `sty` gains a general `StyApp`; `StyBox`/`StyRc` deleted | **done** (`80e9a82`) |
+| B2 | the type table holds a TEMPLATE, instantiated on use, fuel-bounded | **done** (`1fb13d9`) |
+| B3 | parse `data N[#T] { alt C ( … ) }`; constructors as a namespace (D-91) | **done** (`06771c6`) |
+| B4 | `case`, named branches, `else` (D-90, D-92, D-93) | **done** (`4dc0c31`) |
+| C | capabilities on a declaration, so `TSeal` is reachable and a linear wrapper over a `Copy` representation is expressible | next |
 | D | macros in declaration position; the record form becomes a macro (D-89) | after C |
+
+**Step B is done, and three things about it did not go as written below.** The
+plan for it is kept unedited underneath, because the differences are the useful
+part.
+
+  1. **Constructors are not ordinary words** (D-91, closing Q-23). A constructor
+     of a parameterised `data` would have to be a generic, and a `gentry` stores
+     surface syntax to re-elaborate — a constructor's body is `PInj`, a core
+     term with no surface spelling. They became their own namespace instead.
+  2. **The `else` block is not copied into each uncovered slot** (D-92).
+     `TDispatch`'s operation list may name one operation at several tags, so it
+     is elaborated once. This was forced, not preferred: copying makes a case's
+     id count depend on a declaration's arity, and the positional id budget
+     needs a syntactic bound.
+  3. **Type parameters arrived in step B, not step 2 below.** The user chose
+     them up front, which is why B split into four and why Q-23 surfaced
+     immediately rather than at the library.
+
+The paragraph below headed *"One thing to settle when step 3 arrives"* is
+therefore still open and still worth pricing — but it is now **only** about the
+F\* library, not about constructors.
 
 **Step B, concretely.** The parser template is exact: `parse_data` is
 `parse_effect` and `parse_alts` is `parse_declares` with `alt` for `declare`

@@ -1,0 +1,97 @@
+\ ======================================================================
+\ 08 — declaring a type, and taking it apart.
+\
+\ THE CLAIM (D-89..D-93): a sum type needs no new machinery. A constructor is
+\ `PInj` at a tag, which the core already had; a `case` is a HANDLER whose
+\ implementations are the branches and whose body is a single `dispatch`,
+\ which the core already had too (D-68). So `data` and `case` are surface
+\ syntax over `M05` as it stood — no new core term, no new typing rule.
+\
+\ The honest gap is at the bottom: declared types are STRUCTURAL, not nominal.
+\ ======================================================================
+
+\ --- 1. An enumeration. Every variant carries nothing.
+
+data Color { alt Red ( ) alt Green ( ) alt Blue ( ) }
+
+\ The constructors are not words and live in their own namespace (D-91) —
+\ `locate` reports what a name constructs and at which tag.
+
+locate Green
+
+\ --- 2. `case` selects on the constructor NAME, so branch order is free and
+\ reordering the declaration cannot silently change what this means.
+
+define channel ( Color -- i64 ) { case { Blue { 3 } Red { 1 } Green { 2 } } }
+
+Red channel show print " " print
+Green channel show print " " print
+Blue channel show print "\n" print
+
+\ --- 3. A missing branch is an error, and it names what is missing.
+
+define partial ( Color -- i64 ) { case { Red { 1 } } }
+
+\ --- 4. `else` covers the rest. ONE implementation is shared by every variant
+\ it covers (D-92), not one copy each.
+
+define is_red ( Color -- i64 ) { case { Red { 1 } else { 0 } } }
+
+Red is_red show print " " print
+Blue is_red show print "\n" print
+
+\ --- 5. Variants may carry values. A branch enters with its payload already
+\ on the stack.
+
+data Shape { alt Circle ( i64 ) alt Rect ( i64 i64 ) alt Point ( ) }
+
+define area ( Shape -- i64 ) { case { Circle { dup * 3 * } Rect { * } Point { 0 } } }
+
+5 Circle area show print " " print
+3 4 Rect area show print " " print
+Point area show print "\n" print
+
+\ --- 6. Which is why an `else` cannot cover variants that carry DIFFERENT
+\ things: the block runs with the payload pushed, so a different payload is a
+\ different entry stack. One block cannot have two.
+
+define guess ( Shape -- i64 ) { case { Point { 0 } else { pop 1 } } }
+
+\ --- 7. The residual. A `case` IS a handler (D-68) — three implementations
+\ and a dispatch — and this is the whole of it, not a rendering.
+
+locate area
+
+\ --- 8. Type parameters, from the start. `Some` binds `#T` by matching what it
+\ carries against the stack; `None` carries nothing, so it cannot, and says so.
+
+data Option[#T] { alt None ( ) alt Some ( #T ) }
+
+42 Some
+
+None
+
+pop
+
+\ --- 9. A generic word over a parameterised type, called implicitly at two
+\ different types. `#T` is fixed by the bare `#T` input, which is reached
+\ first; `Option[#T]` is ground by the time matching gets to it (D-93).
+
+define orelse[#T] ( Option[#T] #T -- #T ) { swap case { Some { swap pop } None { } } }
+
+42 Some 0 orelse show print " " print
+None[i64] 7 orelse show print "\n" print
+
+"hello" Some "?" orelse print "\n" print
+
+\ --- 10. THE GAP. A declared type is its representation and nothing more, so
+\ two declarations with the same variant shapes are the same type — and a
+\ `case` written for one typechecks over the other. Signatures print the shape
+\ rather than a name for exactly this reason: there is no name to recover.
+
+data Traffic { alt Stop ( ) alt Slow ( ) alt Go ( ) }
+
+Stop channel show print "\n" print
+
+\ Fixing it needs a nominal declaration — `M01.TName` and a `nom_id` table —
+\ which is N02 Q-13, and is not built.
