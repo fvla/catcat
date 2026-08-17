@@ -2648,3 +2648,95 @@ allocates a `nom_id` and extends a table. So:
 
 Building the record form as a macro *first* is not available: there would be
 nothing for it to expand into.
+
+---
+
+## D-90. `data` takes type parameters; `case` is named, exhaustive-or-`else`
+
+Three calls settling the shape of D-89's step B, taken together because they
+interact.
+
+### Type parameters from the start
+
+```
+data Option[#T] {
+    alt None ( )
+    alt Some ( #T )
+}
+```
+
+*What this costs, and why it is still worth taking before shipping plain sums.*
+The type table stops holding a `dtype` and starts holding a **template** — the
+parameter names plus each variant's payload as surface `sty` — because
+`Option` is not a type until it is applied. `elab_ty` then does for types what
+`E06.install_instance` does for words: substitute the arguments and elaborate.
+Instantiation is a substitution over `sty`, which `E02.subst_ty` already is
+(D-79), so the mechanism is not new.
+
+*What is bought:* `option[T]`, so `parse` and `getenv` can stop returning `0`
+and `""` as sentinels; a typed `catch` payload (D-71); and the shape an array
+declaration will need. Building plain sums first would mean rewriting the table
+and `elab_ty` when parameters arrived.
+
+*Termination is by FUEL bounded by the number of declared types.* A `data` may
+only mention types declared before it — the same ordering the Dictionary
+already has (D-70) — so `length te` is an exact bound and exhausting it means a
+cycle, which by that ordering cannot arise. This is `drop_named`'s and
+`resolve_defs`' technique, not a new one.
+
+*`sty` gains a general application form `StyApp : string -> list sty -> sty`,
+and `StyBox`/`StyRc` are deleted.* `Box[i64]` becomes `StyApp "Box" [i64]` and
+`elab_ty` maps the NAME `Box` to the core's `TBox`, exactly as `prim_of_name`
+maps `i64` to `TPrim PI64`.
+
+**This is a syntactic unification and not a re-declaration of `Box`.** A
+`data`-declared `Box` would be a `TSum`, and `M01.has_cap` derives a `TSum`'s
+capabilities from its members — so `Box[i64]` would come out `Copy`, which is
+the opposite of what a unique owning pointer means. `Box` and `Rc` become real
+library declarations only when they can be `TSeal` with a declared capability
+list and their operations are handled (D-56, D-88), which is later.
+
+### `case` branches are named
+
+```
+define area ( Shape -- i64 ) {
+  case { Circle { dup * 3 * }
+         Rect   { * } }
+}
+```
+
+The elaborator knows the scrutinee's type from its stack model, so it maps each
+name to its tag itself: nothing is annotated and branch order is free.
+Positional branches were rejected because reordering a `data` declaration would
+then silently change what every `case` over it means, and nothing would catch it.
+
+*`case` is a parser built-in, not a macro*, and this is forced rather than
+chosen. A macro's production is fixed when the macro is declared (D-35), and
+`case`'s branch keys are constructor names that differ per type.
+
+*A LIMITATION to state plainly: declared types are STRUCTURAL, not nominal.*
+The table holds a `dtype`, and `TSum [[]; [i64]]` is `TSum [[]; [i64]]` however
+it was declared — so two `data` declarations with the same variant shapes are
+interchangeable, and a `case` written for one typechecks over the other. It is
+not unsound, since the tags line up by construction, but it is not what a reader
+expects from a nominal declaration. Fixing it needs `M01.TName` and a `nom_id`
+table in `wenv`, which is N02 Q-13 — so nominality arrives when Q-13 is answered
+and not before.
+
+### `case` allows an `else`
+
+```
+case { Circle { dup * 3 * }
+       else   { pop pop 0 } }
+```
+
+The core needs one implementation per variant, so the elaborator **copies the
+`else` block into every uncovered slot**. That cost is real and visible:
+`locate` shows one copy per uncovered variant, and it is the residual, not a
+rendering artefact. Exhaustive-by-default was the alternative and would have
+been cheaper; `else` was chosen for wide types, with the copying accepted.
+
+*The consequence to watch:* adding a variant to a `data` silently falls into an
+existing `else` rather than being reported. An exhaustiveness *warning* on
+`case`es that use `else` would recover most of what is lost, and costs nothing
+at run time; it is not built.
