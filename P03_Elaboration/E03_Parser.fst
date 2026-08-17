@@ -17,6 +17,7 @@ module E03_Parser
 ///   spans, which is worth doing when the language server work starts (P06) and
 ///   is not worth doing now.
 
+open M01_Kinds
 open FStar.List.Tot
 open E01_Lexer
 open E02_Ast
@@ -932,6 +933,79 @@ let parse_data (ts:list token)
     PErr ("expected '[' or '{' after 'data " ^ name ^ "'")
   | _ -> PErr "expected a name after 'data'"
 
+/// The capability names, which are the language's and not the program's. Two,
+/// because `M01.cap` has two; a third would be a change to the core first.
+let cap_of_name (s:string) : Tot (option cap) =
+  if s = "copy" then Some CCopy else if s = "drop" then Some CDrop else None
+
+/// `cap c`, `pack w`, `unpack w` … up to the closing `}` (D-95).
+///
+/// Three keyed clauses in any order, accumulated into the record the caller
+/// finishes. Keyed by position exactly as `alt` and `declare` are, so `cap`,
+/// `pack` and `unpack` stay ordinary word names everywhere else (D-32) — and
+/// LL(1) with no ε-branch, since `}` is the only other thing that may appear.
+///
+/// A repeated `pack` or `unpack` is refused HERE rather than by taking the last
+/// one: the clause names the word that will exist, and two names for one
+/// operation is a question the declaration has not answered.
+let rec parse_seal_body (acc:sseal) (ts:list token)
+  : Tot (r:presult sseal { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | TkRBrace :: rest -> POk ({ acc with sl_caps = rev acc.sl_caps }) rest
+  | TkWord "cap" :: TkWord c :: r1 ->
+    (match cap_of_name c with
+     | None    -> PErr ("unknown capability: " ^ c ^ "; the two are 'copy' and 'drop'")
+     | Some cp -> parse_seal_body ({ acc with sl_caps = cp :: acc.sl_caps }) r1)
+  | TkWord "cap" :: _ -> PErr "expected 'copy' or 'drop' after 'cap'"
+  | TkWord "pack" :: TkWord w :: r1 ->
+    if Some? acc.sl_pack
+    then PErr ("this seal already names a pack word; " ^ w ^ " would be a second")
+    else parse_seal_body ({ acc with sl_pack = Some w }) r1
+  | TkWord "pack" :: _ -> PErr "expected a word name after 'pack'"
+  | TkWord "unpack" :: TkWord w :: r1 ->
+    if Some? acc.sl_unpack
+    then PErr ("this seal already names an unpack word; " ^ w ^ " would be a second")
+    else parse_seal_body ({ acc with sl_unpack = Some w }) r1
+  | TkWord "unpack" :: _ -> PErr "expected a word name after 'unpack'"
+  | [] -> PErr "expected 'cap', 'pack', 'unpack' or '}' closing the seal, found \
+                end of input"
+  | t :: _ ->
+    PErr ("expected 'cap', 'pack', 'unpack' or '}' here, found " ^ render_token t)
+
+/// `seal N ( repr ) { … }`, or `seal N[#T] ( repr ) { … }`. `seal` is consumed.
+///
+/// The representation is `parse_payload`, the same reader a variant uses, and
+/// for the same reason: it is a stack SEGMENT — no `--`, no named parameters,
+/// no effects. A record's fields and a variant's payload are the same thing
+/// laid out the same way, which is D-06 showing through the syntax.
+let parse_seal (ts:list token)
+  : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
+  let finish (name:string) (ps:list string) (ts:list token)
+    : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
+    match ts with
+    | TkLParen :: r1 ->
+      (match parse_payload [] r1 with
+       | PErr e -> PErr e
+       | POk repr r2 ->
+         (match r2 with
+          | TkLBrace :: r3 ->
+            (match parse_seal_body ({ sl_name = name; sl_params = ps;
+                                      sl_repr = repr; sl_caps = [];
+                                      sl_pack = None; sl_unpack = None }) r3 with
+             | PErr e    -> PErr e
+             | POk sl r4 -> POk (SdSeal sl) r4)
+          | _ -> PErr ("expected '{' after the representation of " ^ name)))
+    | _ -> PErr ("expected '(' after 'seal " ^ name ^ "'; a sealed type needs a \
+                  representation, as in 'seal " ^ name ^ " ( i64 ) { }'") in
+  match ts with
+  | TkWord name :: TkLBrack :: rest ->
+    (match parse_tparams [] rest with
+     | PErr e      -> PErr e
+     | POk ps after -> finish name ps after)
+  | TkWord name :: rest -> finish name [] rest
+  | _ -> PErr "expected a name after 'seal'"
+
 (* ------------------------------------------------------------------------ *)
 (* Macro declarations                                                       *)
 (* ------------------------------------------------------------------------ *)
@@ -1063,6 +1137,7 @@ let parse_decl (mt:list mprod) (ts:list token)
   | TkWord "define" :: rest -> parse_define mt rest
   | TkWord "effect" :: rest -> parse_effect rest
   | TkWord "data"   :: rest -> parse_data rest
+  | TkWord "seal"   :: rest -> parse_seal rest
   | TkWord "extern" :: rest -> parse_extern rest
   | TkWord "macro"  :: rest -> parse_macro_decl mt rest
   | TkWord "locate" :: TkWord name :: rest -> POk (SdLocate name) rest

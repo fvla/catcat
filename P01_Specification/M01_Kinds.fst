@@ -221,6 +221,20 @@ and seg_has_cap (c:cap) (s:seg)
 let copyable (t:dtype) : bool = has_cap CCopy t
 let droppable (t:dtype) : bool = has_cap CDrop t
 
+/// Every declared capability is one the representation actually has. SEALING
+/// NARROWS AND NEVER WIDENS (D-94), and this is the condition that says so.
+///
+/// `has_cap (TSeal n caps repr)` reads `caps` and never looks at `repr`, which
+/// is what makes a linear `Counter` over a copyable `int` expressible -- and,
+/// unguarded, would equally make a copyable wrapper over a `Box` expressible.
+/// That direction is not abstraction but a lie: `PUnpack` hands the `Box` back,
+/// so a `dup` of the wrapper aliases a unique pointer. M06 gates `PPack` on
+/// this, so no well-typed term ever builds such a value.
+let rec caps_within (caps:list cap) (repr:seg) : Tot bool (decreases caps) =
+  match caps with
+  | []     -> true
+  | c :: r -> seg_has_cap c repr && caps_within r repr
+
 /// A segment is linear when some component may be neither duplicated nor
 /// discarded. Used by M06 to reject `dup`/`pop` and by D03's object model.
 let linear_seg (s:seg) : bool = not (seg_has_cap CCopy s) || not (seg_has_cap CDrop s)
@@ -293,3 +307,18 @@ let rec lemma_seg_has_cap_append (c:cap) (s1 s2:seg)
 /// representation.
 let lemma_seal_caps (n:nom_id) (caps:list cap) (repr:seg) (c:cap)
   : Lemma (has_cap c (TSeal n caps repr) == mem c caps) = ()
+
+/// …and under `caps_within`, that independence is one-directional: a sealed
+/// type may drop a capability its representation has, and may not claim one it
+/// does not. This is the half of "sealing narrows" that has to be a lemma
+/// rather than a definition, since `has_cap` cannot see `repr` to check it.
+///
+/// M06 makes it apply to every well-typed program by refusing to give `PPack`
+/// a signature when `caps_within` fails; this lemma is what that refusal buys.
+let rec lemma_caps_within_mem (caps:list cap) (repr:seg) (c:cap)
+  : Lemma (requires caps_within caps repr /\ mem c caps)
+          (ensures seg_has_cap c repr)
+          (decreases caps) =
+  match caps with
+  | []      -> ()
+  | c' :: r -> if c' = c then () else lemma_caps_within_mem r repr c

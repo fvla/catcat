@@ -99,6 +99,13 @@ and rvars_size (vs:list seg) : Tot nat =
 /// searching the table would find a declaration, not the one that was written.
 /// The payload spelling mirrors `alt`, so what prints is what would be declared.
 /// When N02 Q-13 lands and a `TName` carries a `nom_id`, this becomes the name.
+///
+/// A SEAL PRINTS ITS `nom_id`, for the opposite reason: that id IS the type's
+/// identity (D-95), so `<5>` names it exactly and a lookup would only recover
+/// the same thing spelled differently. It matches `R05.render_value`, which
+/// prints a sealed VALUE as `<5:42>` — core identity in both, and the reader can
+/// see the two are the same 5. Recovering the source name needs an environment
+/// this function deliberately does not take; `show_ctor` prints both together.
 let rec render_ty (d:dtype) : Tot string (decreases %[(rsize d <: nat); 2]) =
   match d with
   | TPrim p      -> render_prim p
@@ -579,21 +586,49 @@ let rec show_alts (vs:list (string & list sty)) : Tot string (decreases vs) =
     "\n  alt " ^ c ^ " ( " ^ (let a = show_stys p in if a = "" then "" else a ^ " ")
     ^ ")" ^ show_alts r
 
-/// A `data` prints as its TEMPLATE, for the same reason a generic does (D-90):
-/// `Option` is not a type until it is applied, and no instance has a name.
-let show_data (t:tdecl) : Tot string =
-  "data " ^ t.td_name
-  ^ (if Nil? t.td_params then "" else "[" ^ show_gparams t.td_params ^ "]")
-  ^ " {" ^ show_alts t.td_variants ^ "\n}"
+let rec show_caps (cs:list cap) : Tot string (decreases cs) =
+  match cs with
+  | []     -> ""
+  | c :: r -> "\n  cap " ^ cap_name c ^ show_caps r
 
-/// One constructor, shown as the declaration it belongs to plus which variant
-/// it is. It has no body to decompile — `PInj` is emitted at the call site and
-/// no word is installed (D-91) — so the declaration IS the answer.
-let show_ctor (c:string) (t:tdecl) (tag:nat) (pay:list sty) : Tot string =
-  c ^ " constructs " ^ t.td_name
-  ^ (if Nil? t.td_params then "" else "[" ^ show_gparams t.td_params ^ "]")
-  ^ " at tag " ^ string_of_int tag
-  ^ ", carrying ( " ^ (let a = show_stys pay in if a = "" then "" else a ^ " ") ^ ")"
+let show_opt_clause (kw:string) (w:option string) : Tot string =
+  match w with
+  | None   -> ""
+  | Some n -> "\n  " ^ kw ^ " " ^ n
+
+/// A declaration prints as its TEMPLATE, for the same reason a generic does
+/// (D-90): `Option` is not a type until it is applied, and no instance has a
+/// name. The two bodies print as the two declarations that write them, so the
+/// output re-parses.
+let show_data (t:tdecl) : Tot string =
+  let hdr = t.td_name
+            ^ (if Nil? t.td_params then ""
+               else "[" ^ show_gparams t.td_params ^ "]") in
+  match t.td_body with
+  | TbSum vs -> "data " ^ hdr ^ " {" ^ show_alts vs ^ "\n}"
+  | TbSeal _ caps repr pk up ->
+    "seal " ^ hdr
+    ^ " ( " ^ (let a = show_stys repr in if a = "" then "" else a ^ " ") ^ ") {"
+    ^ show_caps caps ^ show_opt_clause "pack" pk ^ show_opt_clause "unpack" up
+    ^ "\n}"
+
+/// One constructor, shown as the declaration it belongs to plus what it does to
+/// it. It has no body to decompile — the `prim_op` is emitted at the call site
+/// and no word is installed (D-91) — so the declaration IS the answer.
+let show_ctor (c:string) (t:tdecl) (k:ckind) (pay:list sty) : Tot string =
+  let applied = t.td_name
+                ^ (if Nil? t.td_params then ""
+                   else "[" ^ show_gparams t.td_params ^ "]") in
+  let seg = "( " ^ (let a = show_stys pay in if a = "" then "" else a ^ " ") ^ ")" in
+  (match k with
+   | CkInj tag  -> c ^ " constructs " ^ applied ^ " at tag " ^ string_of_int tag
+                   ^ ", carrying " ^ seg
+   /// The `nom_id` is printed because it is the whole of the type's identity:
+   /// two seals with the same representation differ HERE and nowhere else.
+   | CkPack n _ -> c ^ " seals " ^ seg ^ " into " ^ applied
+                   ^ ", nominal id " ^ string_of_int n
+   | CkUnpack n _ -> c ^ " opens " ^ applied ^ ", nominal id " ^ string_of_int n
+                     ^ ", back into " ^ seg)
   ^ "\n\n" ^ show_data t
 
 /// Search order mirrors elaboration's (D-91), so what `locate` reports is what
@@ -609,7 +644,7 @@ let locate (mt:list mprod) (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
     | Some g -> show_gen g
     | None ->
     match lookup_ctor e.ne_types x with
-    | Some (t, tag, pay) -> show_ctor x t tag pay
+    | Some (t, k, pay) -> show_ctor x t k pay
     | None ->
     match lookup_name e x with
     | None -> "error: no word named '" ^ x ^ "'"

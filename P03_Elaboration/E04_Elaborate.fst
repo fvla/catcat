@@ -114,14 +114,38 @@ noeq type gdecl =
 /// surface substitution followed by an ordinary elaboration, so nothing new is
 /// needed — `E02.subst_stys` is the same function generics use.
 ///
-/// `td_variants` is in TAG ORDER, which is declaration order, and each payload
-/// is in surface order (bottom-to-top); `elab_ty` reverses it, as `elab_sig`
-/// does for a signature.
+/// A `TbSum`'s variants are in TAG ORDER, which is declaration order, and each
+/// payload is in surface order (bottom-to-top); `elab_ty` reverses it, as
+/// `elab_sig` does for a signature. A `TbSeal`'s representation likewise.
+/// A `seal` stores the same way and instantiates the same way (D-95); what
+/// differs is what it becomes. `TbSeal n caps repr pack unpack` carries the
+/// `nom_id` ALLOCATED AT DECLARATION TIME, which is what makes a sealed type
+/// nominal where a `data` sum is structural: two `data` declarations with the
+/// same variant shapes are one type and interchangeable (D-90's stated limit),
+/// while two `seal` declarations with the same representation are two types,
+/// because their `nom_id`s differ and `M01.dtype` equality sees that.
+///
+/// So the nominality Q-13 asks for exists already, for exactly the half of the
+/// language whose core constructor carries an identity.
+type tbody =
+  | TbSum  : list (string & list sty) -> tbody
+  | TbSeal : nom_id -> list cap -> list sty -> option string -> option string
+           -> tbody
+
 type tdecl = {
   td_name     : string;
   td_params   : list string;
-  td_variants : list (string & list sty);
+  td_body     : tbody;
 }
+
+/// The variants a declaration has, which for a seal is none. Callers that reach
+/// this on a seal are asking a question about sums — "which tag is this name",
+/// "which variants did the branches miss" — and the empty list is the truthful
+/// answer to both, not a placeholder.
+let variants_of (d:tdecl) : Tot (list (string & list sty)) =
+  match d.td_body with
+  | TbSum vs        -> vs
+  | TbSeal _ _ _ _ _ -> []
 
 type tenv = list tdecl
 
@@ -130,21 +154,45 @@ let rec lookup_ty_in (ts:tenv) (x:string) : Tot (option tdecl) (decreases ts) =
   | []     -> None
   | d :: r -> if d.td_name = x then Some d else lookup_ty_in r x
 
-/// Which declaration a constructor belongs to, and at which tag. Constructors
+/// What a name in the constructor namespace does (D-91, D-95). Three things,
+/// because there are two ways to aggregate and sealing is invertible:
+/// `CkInj tag` builds variant `tag` of a sum, `CkPack` bundles a segment into a
+/// sealed type and `CkUnpack` takes one apart.
+///
+/// The `nom_id` and capabilities ride along rather than being read back out of
+/// the declaration, so the three `M05.prim_op`s these become — `PInj`, `PPack`,
+/// `PUnpack` — are each determined by the kind plus the payload and nothing
+/// else has to be consulted.
+type ckind =
+  | CkInj    : nat -> ckind
+  | CkPack   : nom_id -> list cap -> ckind
+  | CkUnpack : nom_id -> list cap -> ckind
+
+/// Which declaration a constructor belongs to, and what it does. Constructors
 /// live in their own namespace for lookup and become ORDINARY WORDS once
 /// installed, so this table answers only "what does this name construct".
-let rec find_ctor_in (vs:list (string & list sty)) (i:nat) (c:string)
-  : Tot (option (nat & list sty)) (decreases vs) =
+let rec find_variant_in (vs:list (string & list sty)) (i:nat) (c:string)
+  : Tot (option (ckind & list sty)) (decreases vs) =
   match vs with
   | []            -> None
-  | (n, p) :: r   -> if n = c then Some (i, p) else find_ctor_in r (i + 1) c
+  | (n, p) :: r   -> if n = c then Some (CkInj i, p) else find_variant_in r (i + 1) c
+
+/// A seal contributes at most two names, and the payload of both is the
+/// representation — the segment `PPack` consumes and `PUnpack` returns.
+let find_ctor_in (d:tdecl) (c:string) : Tot (option (ckind & list sty)) =
+  match d.td_body with
+  | TbSum vs -> find_variant_in vs 0 c
+  | TbSeal n caps repr pk up ->
+    if pk = Some c then Some (CkPack n caps, repr)
+    else if up = Some c then Some (CkUnpack n caps, repr)
+    else None
 
 let rec lookup_ctor (ts:tenv) (c:string)
-  : Tot (option (tdecl & nat & list sty)) (decreases ts) =
+  : Tot (option (tdecl & ckind & list sty)) (decreases ts) =
   match ts with
   | []     -> None
-  | d :: r -> (match find_ctor_in d.td_variants 0 c with
-               | Some (i, p) -> Some (d, i, p)
+  | d :: r -> (match find_ctor_in d c with
+               | Some (k, p) -> Some (d, k, p)
                | None        -> lookup_ctor r c)
 
 /// Bind a declaration's parameters to the arguments a use site supplied.
@@ -206,6 +254,37 @@ let prim_of_name (s:string) : Tot (option prim) =
   else if s = "str" then Some PStr
   else None
 
+/// Fuel exhausted means a declaration reached itself, since the bound is the
+/// number of declarations in scope. Both instantiators say so in one voice.
+let self_ref_msg (name:string) : Tot string =
+  "the type " ^ name ^ " refers to itself; a recursive type needs a pointer \
+   and a nominal declaration, which do not exist yet"
+
+let cap_name (c:cap) : Tot string =
+  match c with CCopy -> "copy" | CDrop -> "drop"
+
+/// The first declared capability the representation does not have (D-94).
+///
+/// SEALING NARROWS AND NEVER WIDENS. `M01.has_cap` reads a seal's capabilities
+/// straight off the type without looking at what it wraps, which is what makes
+/// a linear wrapper over a copyable representation expressible — and, unchecked,
+/// would equally make a copyable wrapper over a `Box`. `M06.prim_sig` refuses
+/// `PPack` in that case; this reports it in the declaration's own words first,
+/// because "PPack has no signature" is not a sentence about a program.
+let rec unmet_cap (cs:list cap) (repr:seg) : Tot (option cap) (decreases cs) =
+  match cs with
+  | []     -> None
+  | c :: r -> if seg_has_cap c repr then unmet_cap r repr else Some c
+
+/// The type a `seal` denotes at an elaborated representation, checked.
+let seal_ty (name:string) (n:nom_id) (caps:list cap) (repr:seg)
+  : Tot (either string dtype) =
+  match unmet_cap caps repr with
+  | Some c -> Inl (name ^ " declares 'cap " ^ cap_name c ^ "', but its \
+                   representation does not have that capability; a seal may \
+                   drop a capability and never add one")
+  | None   -> Inr (TSeal n caps repr)
+
 /// Surface type to core type, instantiating declarations as it goes (D-90).
 ///
 /// FUEL, and why a structural measure cannot work. Elaborating `Option[i64]`
@@ -230,9 +309,7 @@ let rec elab_ty (fuel:nat) (te:tenv) (t:sty)
      | Some p -> Inr (TPrim p)
      | None   -> (match lookup_ty_in te n with
                   | Some d -> if Nil? d.td_params
-                              then (match elab_data fuel te d [] with
-                                    | Inl e  -> Inl e
-                                    | Inr vs -> Inr (TSum vs))
+                              then elab_decl fuel te d []
                               else Inl (n ^ " takes "
                                         ^ plural (length d.td_params) "type argument" "type arguments"
                                         ^ ", as in " ^ n ^ "[i64]")
@@ -253,9 +330,7 @@ let rec elab_ty (fuel:nat) (te:tenv) (t:sty)
           then Inl (n ^ " takes "
                     ^ plural (length d.td_params) "type argument" "type arguments"
                     ^ " but was given " ^ string_of_int (length us))
-          else (match elab_data fuel te d us with
-                | Inl e  -> Inl e
-                | Inr vs -> Inr (TSum vs))))
+          else elab_decl fuel te d us))
   /// A variable that survived to here was never bound by an instantiation
   /// (D-79/D-90). Inside a stored template that is impossible — every parameter
   /// is rewritten before elaborating — so this reports the one case that can
@@ -264,24 +339,50 @@ let rec elab_ty (fuel:nat) (te:tenv) (t:sty)
   /// Already elaborated: the type an instantiation substituted in.
   | StyFixed d -> Inr d
 
-/// Instantiate a declaration at `args` and give its VARIANTS. Fuel drops here,
-/// which is the one place it does.
+/// Instantiate a declaration at `args`, whichever shape it has. One dispatch,
+/// so `elab_ty` never asks what kind of declaration it is holding.
+and elab_decl (fuel:nat) (te:tenv) (d:tdecl) (args:list sty)
+  : Tot (either string dtype) (decreases %[fuel; (0 <: nat); 4]) =
+  match d.td_body with
+  | TbSum vs ->
+    (match elab_data fuel te d vs args with
+     | Inl e   -> Inl e
+     | Inr segs -> Inr (TSum segs))
+  | TbSeal n caps repr _ _ ->
+    (match elab_repr fuel te d repr args with
+     | Inl e  -> Inl e
+     | Inr rs -> seal_ty d.td_name n caps rs)
+
+/// Instantiate a SUM at `args` and give its VARIANTS. Fuel drops here and in
+/// `elab_repr`, which are the two places it does.
 ///
-/// It returns the segments rather than the `TSum` its callers in `elab_ty`
-/// immediately want, because a constructor call site needs the same list for its
-/// `PInj` (D-91). Wrapping at the two call sites that want a type is cheaper
-/// than having the constructor path match a `TSum` this function built itself
-/// and carry an arm for the shape it cannot return.
-and elab_data (fuel:nat) (te:tenv) (d:tdecl) (args:list sty)
+/// It returns the segments rather than the `TSum` its caller immediately wants,
+/// because a constructor call site needs the same list for its `PInj` (D-91).
+/// The variants are passed alongside the declaration rather than read back out
+/// of it, so that neither this function nor its caller has an arm for the shape
+/// it is not looking at.
+and elab_data (fuel:nat) (te:tenv) (d:tdecl) (vs:list (string & list sty))
+              (args:list sty)
   : Tot (either string (list seg)) (decreases %[fuel; (0 <: nat); 3]) =
   if fuel = 0
-  then Inl ("the type " ^ d.td_name ^ " refers to itself; a recursive type needs \
-             a pointer and a nominal declaration, which do not exist yet")
+  then Inl (self_ref_msg d.td_name)
   else
     (match ty_sub d.td_params args with
      | None    -> Inl (d.td_name ^ ": wrong number of type arguments")
-     | Some su ->
-       elab_variants (fuel - 1) te (subst_variants su d.td_variants))
+     | Some su -> elab_variants (fuel - 1) te (subst_variants su vs))
+
+/// The same for a SEAL's representation, which is one segment rather than one
+/// per variant. THE REVERSAL: written bottom-to-top, held head-is-top.
+and elab_repr (fuel:nat) (te:tenv) (d:tdecl) (repr:list sty) (args:list sty)
+  : Tot (either string seg) (decreases %[fuel; (0 <: nat); 3]) =
+  if fuel = 0
+  then Inl (self_ref_msg d.td_name)
+  else
+    (match ty_sub d.td_params args with
+     | None    -> Inl (d.td_name ^ ": wrong number of type arguments")
+     | Some su -> (match elab_tys (fuel - 1) te (subst_stys su repr) with
+                   | Inl e  -> Inl e
+                   | Inr ds -> Inr (rev ds)))
 
 /// One payload segment per variant, in tag order. THE REVERSAL again: a payload
 /// is written bottom-to-top and a core segment is head-is-top.
@@ -610,6 +711,17 @@ let gen_call (te:tenv) (w:string) (g:gentry) (su0:tsub) (sh:shape)
 (* Constructor call sites                                                   *)
 (* ------------------------------------------------------------------------ *)
 
+/// A declaration written as a pattern over its own parameters: `Cell[#T]`, or
+/// just `Fd` when there are none.
+let rec var_tys (ps:list string) : Tot (list sty) (decreases ps) =
+  match ps with
+  | []     -> []
+  | p :: r -> StyVar p :: var_tys r
+
+let decl_pat (d:tdecl) : Tot sty =
+  if Nil? d.td_params then StyName d.td_name
+  else StyApp d.td_name (var_tys d.td_params)
+
 /// The declaration's arguments, read back out of a substitution (D-91).
 ///
 /// A parameter with no binding is one the payload never mentioned — `None` in
@@ -630,10 +742,17 @@ let rec ctor_args (c:string) (su:tsub) (ps:list string)
                   | Inr rest -> Inr (a :: rest)))
 
 /// One constructor at a COMPLETE substitution: the term it emits and the row it
-/// has. `PInj`'s own rule in `M06.prim_sig` is `pre = index variants tag`,
-/// `post = [TSum variants]`, and this reproduces it from the surface side —
-/// `rev` because a payload is written bottom-to-top and a segment is head-is-top.
-let ctor_row (te:tenv) (c:string) (d:tdecl) (tag:nat) (pay:list sty) (su:tsub)
+/// has. Each of the three reproduces its own rule in `M06.prim_sig` from the
+/// surface side — `PInj` is `pre = index variants tag`, `post = [TSum variants]`;
+/// `PPack` is `pre = repr`, `post = [TSeal …]`; `PUnpack` is those two swapped.
+/// `rev` throughout, because a payload is written bottom-to-top and a segment is
+/// head-is-top.
+///
+/// The three share everything up to the `ckind`: the same parameters are read
+/// out of the same substitution and the same payload is elaborated, which is
+/// what makes a constructor and a `pack` word one namespace rather than two
+/// (D-91, D-95).
+let ctor_row (te:tenv) (c:string) (d:tdecl) (k:ckind) (pay:list sty) (su:tsub)
   : Tot (either string (term & srow)) =
   match ctor_args c su d.td_params with
   | Inl e     -> Inl e
@@ -641,11 +760,20 @@ let ctor_row (te:tenv) (c:string) (d:tdecl) (tag:nat) (pay:list sty) (su:tsub)
     (match elab_tys (length te) te (subst_stys su pay) with
      | Inl e  -> Inl (c ^ ": " ^ e)
      | Inr ds ->
-       (match elab_data (length te) te d args with
-        | Inl e  -> Inl (c ^ ": " ^ e)
-        | Inr vs ->
-          Inr (TPrimOp (PInj vs tag),
-               { pre = rev ds; post = [TSum vs] })))
+       let s = rev ds in
+       (match k with
+        | CkInj tag ->
+          (match elab_data (length te) te d (variants_of d) args with
+           | Inl e  -> Inl (c ^ ": " ^ e)
+           | Inr vs -> Inr (TPrimOp (PInj vs tag), { pre = s; post = [TSum vs] }))
+        | CkPack n caps ->
+          (match seal_ty d.td_name n caps s with
+           | Inl e   -> Inl (c ^ ": " ^ e)
+           | Inr t -> Inr (TPrimOp (PPack n caps s), { pre = s; post = [t] }))
+        | CkUnpack n caps ->
+          (match seal_ty d.td_name n caps s with
+           | Inl e   -> Inl (c ^ ": " ^ e)
+           | Inr t -> Inr (TPrimOp (PUnpack n caps s), { pre = [t]; post = s }))))
 
 /// Resolve one constructor call site against the modelled stack. `su0` is `[]`
 /// for `Some` and pre-filled for `Some[i64]`, exactly as in `gen_call`, so the
@@ -655,23 +783,40 @@ let ctor_row (te:tenv) (c:string) (d:tdecl) (tag:nat) (pay:list sty) (su:tsub)
 /// parameter is bound by matching a declared payload type against a concrete
 /// stack type, which is `match_ty`'s one-directional discipline (D-79) and no
 /// more. `Some` infers `#T`; `None` cannot and says so.
-let ctor_call (te:tenv) (c:string) (d:tdecl) (tag:nat) (pay:list sty)
+let ctor_call (te:tenv) (c:string) (d:tdecl) (k:ckind) (pay:list sty)
               (su0:tsub) (sh:shape)
   : Tot (either string (term & srow)) =
-  let pats = rev pay in
-  if length pats > length sh
-  then Inl ("stack underflow calling " ^ c ^ ": it carries "
-            ^ plural (length pats) "value" "values")
+  /// An `unpack` runs the other way: its input is the sealed type itself, so
+  /// the pattern is the declaration applied to its own parameters. Nothing
+  /// binds them — which is why an `unpack` of a PARAMETERISED seal has to be
+  /// written out, `open[i64]`, for the same reason `( Option[#T] -- )` does
+  /// (D-93). At no parameters the pattern is ground and matches nominally,
+  /// which is the ordinary case.
+  let pats = (match k with
+              | CkUnpack _ _ -> [decl_pat d]
+              | _            -> rev pay) in
+  if CkUnpack? k && Cons? d.td_params && Nil? su0
+  then Inl (c ^ " opens " ^ d.td_name ^ ", which takes type parameters, and \
+             nothing it consumes can bind them — an unpack runs the other way. \
+             Write them: " ^ c ^ "[i64]")
+  else if length pats > length sh
+  then Inl ("stack underflow calling " ^ c ^ ": it "
+            ^ (match k with
+               | CkUnpack _ _ -> "needs a " ^ d.td_name ^ " on the stack"
+               | _            -> "carries " ^ plural (length pats) "value" "values"))
   else
     (match match_tys te su0 pats (slot_tys sh) with
-     | None    -> Inl (c ^ ": the stack does not match what it carries")
-     | Some su -> ctor_row te c d tag pay su)
+     | None    -> Inl (c ^ ": the stack does not match "
+                       ^ (match k with
+                          | CkUnpack _ _ -> "what it opens"
+                          | _            -> "what it carries"))
+     | Some su -> ctor_row te c d k pay su)
 
 /// The arity check `Some[i64 str]` needs, shared by both passes.
 let ctor_at (te:tenv) (c:string) (d:tdecl) (tys:list sty)
   : Tot (either string tsub) =
   if length d.td_params <> length tys
-  then Inl (c ^ " constructs " ^ d.td_name ^ ", which has "
+  then Inl (c ^ " belongs to " ^ d.td_name ^ ", which has "
             ^ plural (length d.td_params) "type parameter" "type parameters"
             ^ ", but was given " ^ string_of_int (length tys))
   else (match explicit_sub te d.td_params tys with
@@ -692,10 +837,16 @@ let ctor_tag (te:tenv) (vs:list seg) (c:string)
   : Tot (either string (t:nat{t < length vs})) =
   match lookup_ctor te c with
   | None -> Inl (c ^ " is not a constructor, so it cannot name a case branch")
-  | Some (d, tag, _) ->
-    if length d.td_variants <> length vs
+  /// A seal's `pack` or `unpack` is in the same namespace and is not a variant
+  /// of anything. There is nothing for a branch to mean here: a sealed type has
+  /// one shape, so it is opened rather than matched on.
+  | Some (d, CkPack _ _, _) | Some (d, CkUnpack _ _, _) ->
+    Inl (c ^ " opens or builds the sealed type " ^ d.td_name
+         ^ ", which has no variants to branch on")
+  | Some (d, CkInj tag, _) ->
+    if length (variants_of d) <> length vs
     then Inl (c ^ " constructs " ^ d.td_name ^ ", which has "
-              ^ plural (length d.td_variants) "variant" "variants"
+              ^ plural (length (variants_of d)) "variant" "variants"
               ^ ", but the value being matched has "
               ^ string_of_int (length vs))
     else if tag < length vs
@@ -754,7 +905,7 @@ let uncovered_report (te:tenv) (cov:list nat) (brs:list (string & list sterm))
   match brs with
   | []          -> ""
   | (c, _) :: _ -> (match lookup_ctor te c with
-                    | Some (d, _, _) -> join_names (uncovered_names cov 0 d.td_variants)
+                    | Some (d, _, _) -> join_names (uncovered_names cov 0 (variants_of d))
                     | None           -> "")
 
 let rec segs_all_eq (v:seg) (vs:list seg) : Tot bool (decreases vs) =
@@ -954,11 +1105,11 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
           (match lookup_ctor env.ne_types w with
            | None -> Inl (w ^ " is neither generic nor a constructor, so it \
                           takes no type arguments")
-           | Some (d, tag, pay) ->
+           | Some (d, k, pay) ->
              (match ctor_at env.ne_types w d tys with
               | Inl e   -> Inl e
               | Inr su0 ->
-                (match ctor_call env.ne_types w d tag pay su0 sh with
+                (match ctor_call env.ne_types w d k pay su0 sh with
                  | Inl e -> Inl e
                  | Inr (ct, row) ->
                    (match drop_n (length row.pre) sh with
@@ -1007,8 +1158,8 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
 
         | None ->
           (match lookup_ctor env.ne_types w with
-           | Some (d, tag, pay) ->
-             (match ctor_call env.ne_types w d tag pay [] sh with
+           | Some (d, k, pay) ->
+             (match ctor_call env.ne_types w d k pay [] sh with
               | Inl e -> Inl e
               | Inr (ct, row) ->
                 (match drop_n (length row.pre) sh with
@@ -1625,11 +1776,11 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
           (match lookup_ctor env.ne_types w with
            | None -> Inl (w ^ " is neither generic nor a constructor, so it \
                           takes no type arguments")
-           | Some (d, tag, pay) ->
+           | Some (d, k, pay) ->
              (match ctor_at env.ne_types w d tys with
               | Inl e   -> Inl e
               | Inr su0 ->
-                (match ctor_row env.ne_types w d tag pay su0 with
+                (match ctor_row env.ne_types w d k pay su0 with
                  | Inl e        -> Inl e
                  | Inr (_, row) ->
                    (match iapply_pre w st row.pre with
@@ -1665,12 +1816,12 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
         /// A constructor of an UNPARAMETERISED declaration needs nothing from
         /// the stack model, so unlike a generic it resolves here. A
         /// parameterised one has the generic's problem and gets its answer.
-        | Some (d, tag, pay) ->
+        | Some (d, k, pay) ->
           if Cons? d.td_params
-          then Inl (w ^ " constructs " ^ d.td_name ^ ", which takes type \
+          then Inl (w ^ " belongs to " ^ d.td_name ^ ", which takes type \
                     parameters; in a definition with no written signature, \
                     instantiate it explicitly, as in " ^ w ^ "[i64]")
-          else (match ctor_row env.ne_types w d tag pay [] with
+          else (match ctor_row env.ne_types w d k pay [] with
                 | Inl e        -> Inl e
                 | Inr (_, row) ->
                   (match iapply_pre w st row.pre with

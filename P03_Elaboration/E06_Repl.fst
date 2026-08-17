@@ -60,6 +60,18 @@ noeq type session = {
   /// counter is the whole of that unification at runtime.
   se_next  : word_id;
   se_next_eff : eff_id;
+  /// The next nominal id a `seal` will take (D-95). A SEPARATE COUNTER, unlike
+  /// operations and words, because a `nom_id` names a TYPE and nothing ever
+  /// looks one up in the Dictionary — `M01.TSeal` carries it and `M06` compares
+  /// it, and that is all it is for.
+  ///
+  /// It only ever goes up, so redeclaring `seal Fd` gives a DIFFERENT type
+  /// rather than the same one again: values of the old `Fd` are still values of
+  /// their own type and no longer accepted where the new one is wanted. That is
+  /// the honest reading of shadowing for a nominal type, and it is what
+  /// distinguishes a seal from a `data`, where redeclaring an identical shape
+  /// silently produces the same type (D-90).
+  se_next_nom : nom_id;
   /// The macro grammar this session parses against. Starts as the built-in
   /// table and grows with every accepted `macro` declaration; `ll1_extend`
   /// refuses one that would cost the grammar its LL(1) property, so the
@@ -187,6 +199,9 @@ let init_session : session = {
   se_next  = w_user_base;
   /// 0 `Dict`, 1 `IO`, 2 `Unsafe`, 3 `C`; user effects from 4 (D-66).
   se_next_eff = eff_user_base;
+  /// From zero: no nominal id is reserved, because the prelude declares no
+  /// sealed type and nothing but a `seal` allocates one.
+  se_next_nom = 0;
   se_macros = builtin_macros;
   se_stack = [];
   se_shape = [];
@@ -1081,16 +1096,61 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
       (match variants_stray ps vs with
        | Some n -> DDone s ("error: " ^ name ^ " declares no type parameter #" ^ n)
        | None ->
-        let td = { td_name = name; td_params = ps; td_variants = vs } in
+        let td = { td_name = name; td_params = ps; td_body = TbSum vs } in
         let te' = td :: s.se_nenv.ne_types in
         (match (if Nil? ps
-                then (match elab_data (length te') te' td [] with
+                then (match elab_decl (length te') te' td [] with
                       | Inl e -> Inl e
                       | Inr _ -> Inr ())
                 else Inr ()) with
          | Inl e -> DDone s ("error: " ^ e)
          | Inr () ->
            DDone ({ s with se_nenv = { s.se_nenv with ne_types = te' } })
+                 (show_data td)))))
+
+  /// A `seal` installs a template too, and one more thing: A FRESH NOMINAL ID
+  /// (D-95). That id is the type's identity, so allocating it here — once, at
+  /// the declaration — is what makes two seals over the same representation two
+  /// types, and makes a second `seal Fd` a new type rather than the old one.
+  ///
+  /// The capability check cannot happen here for a PARAMETERISED seal, for the
+  /// same reason the payload check cannot: `cap copy` over `( #T )` is a claim
+  /// about `#T`, which is not a type yet. `elab_repr` re-checks at every
+  /// instantiation, so `Cell[i64]` is accepted and `Cell[Box[i64]]` is not —
+  /// which is the correct answer and not a deferral of the same one.
+  | SdSeal sl ->
+    if Some? (prim_of_name sl.sl_name) || sl.sl_name = "Box" || sl.sl_name = "Rc"
+    then DDone s ("error: " ^ sl.sl_name ^ " is a built-in type name and cannot \
+                  be redeclared")
+    else if sl.sl_pack = sl.sl_unpack && Some? sl.sl_pack
+    then DDone s ("error: " ^ sl.sl_name ^ " names one word for both pack and \
+                  unpack; a word cannot be both")
+    else
+      (match dup_param [] sl.sl_params with
+       | Some p -> DDone s ("error: " ^ sl.sl_name ^ " declares #" ^ p ^ " twice")
+       | None ->
+      (match dup_cap [] sl.sl_caps with
+       | Some c -> DDone s ("error: " ^ sl.sl_name ^ " declares 'cap "
+                            ^ cap_name c ^ "' twice")
+       | None ->
+      (match stys_stray sl.sl_params sl.sl_repr with
+       | Some n -> DDone s ("error: " ^ sl.sl_name ^ " declares no type \
+                            parameter #" ^ n)
+       | None ->
+        let nom = s.se_next_nom in
+        let td = { td_name = sl.sl_name; td_params = sl.sl_params;
+                   td_body = TbSeal nom sl.sl_caps sl.sl_repr
+                                    sl.sl_pack sl.sl_unpack } in
+        let te' = td :: s.se_nenv.ne_types in
+        (match (if Nil? sl.sl_params
+                then (match elab_decl (length te') te' td [] with
+                      | Inl e -> Inl e
+                      | Inr _ -> Inr ())
+                else Inr ()) with
+         | Inl e -> DDone s ("error: " ^ e)
+         | Inr () ->
+           DDone ({ s with se_nenv = { s.se_nenv with ne_types = te' };
+                           se_next_nom = nom + 1 })
                  (show_data td)))))
 
   | SdExtern name sg ->

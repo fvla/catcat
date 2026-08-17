@@ -569,6 +569,14 @@ let rec dup_param (seen:list string) (ps:list string)
   | []     -> None
   | p :: r -> if mem p seen then Some p else dup_param (p :: seen) r
 
+/// The first capability declared twice. Harmless to `M01.has_cap`, which asks
+/// only about membership, and reported anyway: a repeated `cap copy` is a typo
+/// for something, and the something is not another `cap copy`.
+let rec dup_cap (seen:list cap) (cs:list cap) : Tot (option cap) (decreases cs) =
+  match cs with
+  | []     -> None
+  | c :: r -> if mem c seen then Some c else dup_cap (c :: seen) r
+
 let subst_ssig (su:tsub) (s:ssig) : Tot ssig =
   { ss_in  = subst_params su s.ss_in;
     ss_out = subst_stys su s.ss_out;
@@ -623,6 +631,28 @@ and subst_tys_else (su:tsub) (me:option (list sterm))
 (* Declarations                                                             *)
 (* ------------------------------------------------------------------------ *)
 
+/// A sealed type declaration, as written (D-95).
+///
+/// `sl_repr` is the representation segment in SURFACE ORDER, bottom-to-top like
+/// a variant's payload; `E04` reverses it. `sl_caps` is what the type exposes,
+/// and the elaborator checks it is a subset of what the representation has —
+/// sealing narrows and never widens (D-94).
+///
+/// `sl_pack` and `sl_unpack` are OPTIONAL AND THAT IS THE ABSTRACTION. A seal
+/// with no `unpack` clause has no word that opens it, so its representation is
+/// unreachable; a seal with no `pack` has no word that builds one. Since there
+/// are no modules yet, naming the two operations or declining to is the only
+/// control over who may cross the boundary, which makes it a declaration-level
+/// decision rather than a visibility one.
+type sseal = {
+  sl_name   : string;
+  sl_params : list string;
+  sl_repr   : list sty;
+  sl_caps   : list cap;
+  sl_pack   : option string;
+  sl_unpack : option string;
+}
+
 type sdecl =
   /// `define name ( sig ) { body }`
   | SdDefine      : string -> ssig -> list sterm -> sdecl
@@ -652,6 +682,14 @@ type sdecl =
   /// in surface order — bottom-to-top, top on the right, like a signature's
   /// inputs. `E04.elab_variants` does the reversal.
   | SdData        : string -> list string -> list (string & list sty) -> sdecl
+  /// `seal N ( repr ) { cap … pack … unpack … }` — a sealed type (D-95).
+  ///
+  /// The other half of what the core can aggregate: `data` reaches `M01.TSum`,
+  /// this reaches `M01.TSeal`. They are separate declarations rather than one
+  /// with two bodies because they differ in what a capability MEANS — a sum's
+  /// are derived from its members and a seal's are declared, which is the whole
+  /// reason `TSeal` exists (D-08) and the only way to write a linear type.
+  | SdSeal        : sseal -> sdecl
   /// `locate name` — print what `name` is: a macro production, a primitive, or
   /// a definition decompiled back to surface syntax (E05_Locate).
   ///

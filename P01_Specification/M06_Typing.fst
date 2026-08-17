@@ -155,10 +155,26 @@ let prim_sig (p:prim_op) : Tot (option srow) =
 
   /// Sealing is where a stack segment becomes one denotable value, and where
   /// a type may narrow its capabilities (D03).
+  ///
+  /// NARROW, NOT WIDEN (D-94). `caps_within` is the side condition, and it is
+  /// the only capability check in this table that constrains a type rather than
+  /// a use of one: `SDup` asks whether THIS value may be copied, `PPack` asks
+  /// whether the type being built is a truthful claim about its contents.
+  /// Without it `TSeal n [CCopy] [TBox d]` is well typed, `PUnpack` returns the
+  /// `TBox`, and `dup` on the wrapper has aliased a unique pointer — so the
+  /// check belongs here and not only in the elaborator, which could forget it.
   | PPack n caps repr ->
-    Some ({ pre = repr; post = [TSeal n caps repr] })
+    if caps_within caps repr
+    then Some ({ pre = repr; post = [TSeal n caps repr] })
+    else None
+  /// The same condition, so that the two rules describe the same set of sealed
+  /// types. Ungated, `PUnpack` would have a signature at a type no well-typed
+  /// term can ever produce a value of — harmless in itself, but it would let a
+  /// word be DECLARED at such a type and only fail where it was called.
   | PUnpack n caps repr ->
-    Some ({ pre = [TSeal n caps repr]; post = repr })
+    if caps_within caps repr
+    then Some ({ pre = [TSeal n caps repr]; post = repr })
+    else None
 
   | PInj variants tag ->
     if tag < length variants

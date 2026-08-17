@@ -2900,3 +2900,119 @@ a `TSum` means running `elab_data` backwards. That is unification over
 declarations and remains what D-31 says this language does not have. The rule is
 now the sharp one: **a declaration in a pattern must be ground by the time it is
 reached**, rather than ground as written.
+
+---
+
+## D-94. Sealing narrows and never widens, and `M06` enforces it
+
+`M01.has_cap (TSeal n caps repr)` reads `caps` and never looks at `repr`. That
+independence is the point of `TSeal` (D-08): it is what lets a `Counter` be
+linear over a copyable `int`, and what a file handle, a lock or a replacement
+for `Box` needs. It is also, unguarded, a hole. `TSeal n [CCopy] [TBox d]` was
+well typed; `PUnpack` hands the `TBox` back; so `dup` on the wrapper aliases a
+unique pointer, and the whole of D-08 rests on a claim nothing checked.
+
+So `M06.prim_sig` now gates BOTH `PPack` and `PUnpack` on `M01.caps_within`:
+every declared capability must be one the representation actually has. This is
+the only capability check in that table that constrains a TYPE rather than a use
+of one — `SDup` asks whether this value may be copied, `PPack` asks whether the
+type being built is a truthful claim about its contents.
+
+`M01.lemma_caps_within_mem` is what the gate buys: under `caps_within`, a
+capability the seal exposes is one the representation has. `lemma_seal_caps`
+still says the two are independent as *types*; this says that in a well-typed
+*term* the independence only ever runs one way.
+
+*Why in the core and not only in the elaborator.* The elaborator checks it too,
+and reports it in the declaration's own words, because "PPack has no signature"
+is not a sentence about a program. But an elaborator can forget, a second
+front end would have to remember, and `specialize` rebuilds terms. A rule the
+core does not state is a rule that holds until someone writes a new pass.
+
+The cost is one side condition and nothing else: `caps = []` — the linear case,
+which is every seal that matters — satisfies it trivially, and P02's `Counter`
+example is unaffected.
+
+---
+
+## D-95. `seal N ( repr ) { cap … pack … unpack … }`
+
+The second half of D-89, and the declaration D-89's step 2 called for. `data`
+reaches `M01.TSum`; this reaches `M01.TSeal`, which is the core's other
+aggregate and the only way to write a type that is not `Copy`.
+
+```
+seal Fd     ( i64 )     { pack fd      unpack fd_raw }   \ linear: no caps
+seal Meters ( i64 )     { cap copy cap drop pack meters unpack raw }
+seal Cell[#T] ( #T )    { cap copy cap drop pack cell   unpack uncell }
+```
+
+*Why a separate declaration and not a `data` with one variant.* Because they
+differ in what a capability MEANS. A sum's capabilities are DERIVED from its
+members — `M01.has_cap` conjoins over the variants — so a one-variant sum can
+never be less copyable than what it wraps, which is precisely the thing wanted.
+A seal's are DECLARED. Two spellings, because two rules.
+
+*Why the body is keyed clauses.* `cap`, `pack` and `unpack` in any order, `}`
+ends the list, every alternative keyed on a word that is consumed: the same
+shape as `effect`'s `declare` and `data`'s `alt`, LL(1) with no ε-branch, and
+nothing reserved globally (D-30, D-32). The representation is read by
+`parse_payload` — the same reader a variant's payload uses, because a record's
+fields and a variant's payload are the same thing laid out the same way (D-06).
+
+### `pack` and `unpack` are optional, and that is the abstraction
+
+A seal with no `unpack` clause has no word that opens it, so its representation
+is unreachable from any program; one with no `pack` cannot be built. There are
+no modules, so naming the two operations or declining to is the ONLY control
+over who may cross the boundary. That makes it a declaration-level decision
+rather than a visibility one — which is not obviously wrong, since the seal is
+where the boundary is, but it does mean a linear `Fd` whose `unpack` is named
+can have its linearity undone by anyone who can write that name. State it, do
+not hide it: the guarantee is against accident, not against a determined caller,
+until modules exist.
+
+Both live in the constructor namespace (D-91), so `lookup_ctor` answers for a
+variant, a `pack` and an `unpack` alike, and each elaborates straight to its
+`prim_op` — `PInj`, `PPack`, `PUnpack` — with no word installed.
+
+### Seals are NOMINAL, and sums are not
+
+`TSeal` carries a `nom_id`, allocated by the session at declaration time. So two
+seals over the same representation are two types and a program cannot pass one
+for the other — which is exactly what D-90 had to admit `data` cannot do, since
+`TSum [[];[i64]]` is `TSum [[];[i64]]` however it was declared.
+
+Note what this did NOT cost: no `M01.TName`, no `w_types` table, no unfolding
+rule — none of the machinery N02 Q-13 turns on. `TSeal` carries its
+representation inline, so its identity is part of the type rather than a
+reference into an environment. Nominality and recursion are separate problems,
+and only the second needs Q-13 answered. What `data` is missing is the first,
+and it is missing it because `TSum` has nowhere to put an id.
+
+The counter only goes up, so a second `seal Fd` is a NEW type: values of the old
+one are still values of their own type and are no longer accepted where the new
+`Fd` is wanted. That is the honest reading of shadowing for a nominal type, and
+it differs from `data`, where redeclaring an identical shape silently gives back
+the same type.
+
+### What an `unpack` cannot infer
+
+`unpack` runs the other way: its input is the sealed type, so its pattern is the
+declaration applied to its own parameters and nothing on the stack binds them.
+`uncell` at `Cell[#T]` must be written `uncell[i64]`, for exactly the reason
+`( Option[#T] -- )` determines nothing (D-93). At no parameters — the ordinary
+case — the pattern is ground and matches nominally.
+
+A parameterised seal's capability claim is checked at every INSTANTIATION, not
+at the declaration: `cap copy` over `( #T )` is a claim about `#T`, so `Cell[i64]`
+is accepted and `Cell[Box[i64]]` is refused where it is written. That is the
+correct answer rather than a deferral of it.
+
+### Rendering
+
+A sealed type prints `<5>` and a sealed value `<5:42>`, both naming the
+`nom_id`. This is not the gap that `sum[ ( ) ( i64 ) ]` is: there, no name
+exists to recover; here the id IS the identity, and the two renderings showing
+the same 5 is the point. `locate` on a `pack` or `unpack` word prints the name,
+the id and the declaration together.

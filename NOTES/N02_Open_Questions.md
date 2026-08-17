@@ -130,6 +130,14 @@ interpret, and a soundness hole reachable from surface syntax as soon as anythin
 elaborates to `PUnroll`. Nothing does today.
 *Closes when:* recursive types get a surface form.
 
+*Narrowed by D-95, in a way worth being precise about.* `seal` gives the surface
+a NOMINAL type — `TSeal` carries a `nom_id` — and needs none of the machinery
+above, because it carries its representation inline rather than referring to an
+environment. So nominality and recursion, which D-90 treated as one obstacle,
+are two: a `data` that wants a name still wants a `nom_id` `TSum` has nowhere to
+hold, and a type that wants to mention itself still wants this question
+answered. The first is now the cheaper of the two and does not wait on it.
+
 **Q-14. `!Dict` has to become a real row entry.** — **CLOSED by D-63.**
 Reserved as `M04.eff_dict = 0`; `M06.w_eff` derives the entry rather than
 trusting a stored one; `M06.row_visible` elides it from rendered rows so nothing
