@@ -156,6 +156,47 @@ name one. And `Box[T]` is not evidence to the contrary: `E02.sty` has
 `StyBox`/`StyRc` as *hardcoded constructors*, not a general application form, so
 it is two special cases rather than the beginnings of type application.
 
+**Syntax settled as D-89**, and the work is broken into four steps. Step A is
+done; B, C and D are specified below so they can be picked up cold.
+
+| | Step | State |
+|---|---|---|
+| A | `tenv` in `nenv`, `elab_ty`/`match_ty`/`elab_sig` consult it | **done** (`a2a6e52`) |
+| B | parse `data N { alt C ( … ) }`; constructors; a user-writable `case` | next |
+| C | capabilities on a declaration, so `TSeal` is reachable and a linear wrapper over a `Copy` representation is expressible | after B |
+| D | macros in declaration position; the record form becomes a macro (D-89) | after C |
+
+**Step B, concretely.** The parser template is exact: `parse_data` is
+`parse_effect` and `parse_alts` is `parse_declares` with `alt` for `declare`
+and a paren-delimited *type list* instead of a full signature (`over ( … )`
+already parses one). Then:
+
+- `E02.sdecl` gains `SdData : string -> list (string & list sty) -> sdecl`.
+- `E06.eval_decl` elaborates the variant segments, builds
+  `TSum [seg₀; seg₁; …]`, adds `(name, that)` to `ne_types`, and installs one
+  **constructor word per variant** — `C ( payload -- N )` whose body is
+  `TPrimOp (PInj variants tag)`. Constructors are ordinary words, so they
+  shadow, rebind under `with`, and `locate` like anything else.
+- **`case` is the piece with a real choice in it.** `if` already builds
+  `THandle eff_case [] TNil [(o₀,b₀);(o₁,b₁)] (TDispatch [o₀;o₁] bool_variants)`
+  (`E04`, the `StCase` arm), so the machinery exists and only the surface form
+  is new. Branches should be **named** rather than positional — `case { Some { … }
+  None { … } }` — because the elaborator's shape model already knows the
+  scrutinee's type, so it can map each name to its tag and check exhaustiveness.
+  Nothing needs annotating.
+- Refuse a self-reference with a message. The table holds a `dtype`, not a
+  declaration, so a recursive type would loop; it needs `TName` and a `nom_id`
+  table in `wenv`, which is N02 Q-13.
+
+**What step B unlocks immediately**, and the reason it is worth doing before C:
+`bool` becomes a declared two-variant sum (removing `PBoolSum` and
+`prim.PBool`), `option` exists so `parse` and `getenv` can stop returning
+sentinels, and `TDispatch [] []` — the eliminator for the uninhabited `TSum []`,
+which `M06.infer` today rejects only on `Nil? variants` — becomes reachable, so
+`fail` can be typed at the empty type and demo 06's `fail 0` padding goes away.
+
+---
+
 So the real order is:
 
 1. **A surface type declaration**, of both shapes the core has: a sum
