@@ -1,9 +1,9 @@
 # demos — the language, doing something
 
-Eight programs. Each is one claim the design makes, run rather than argued.
+Nine programs. Each is one claim the design makes, run rather than argued.
 
 ```
-make demos          # run all eight and diff against the golden transcripts
+make demos          # run all nine and diff against the golden transcripts
 make demos-accept   # regenerate the goldens (read the diff first)
 
 ./_build/default/bin/catcat.exe -f demos/03_dictionary_top_down.cat
@@ -24,6 +24,7 @@ alters what a demo prints fails `make demos`. Every claim in
 | 06 | `06_failure.cat` | `try`/`catch` as a handler for `Fail`, composing with the rest |
 | 07 | `07_three_modes.cat` | **capstone** — one deploy script, run as production, dry run and audit |
 | 08 | `08_data_and_case.cat` | `data` and `case` need no new core: a constructor is `PInj`, a `case` is a handler |
+| 09 | `09_seals_and_caps.cat` | linearity is a capability list on a declaration, not a mode; `seal` types are nominal. **D-08**, **D-94** |
 
 Start at 07 if you want the point in one file, at 01 if you want the language.
 
@@ -50,6 +51,12 @@ Demo 08 is the first lift: `data` declares sums with type parameters, so
 { alt Cons ( i64 List ) … }` is refused, because a type that mentions itself
 needs a pointer and a nominal declaration (N02 Q-13). So there are still no
 lists, and arrays are still downstream.
+
+Demo 09 adds the other aggregate, `seal`, which is where linearity and
+nominality come from. **There is still no product form**: a seal's
+representation is a stack segment with no field names, so records are spelled
+by hand and there are no accessors. What that needs is in
+[`NOTES/N01_Decisions.md`](../NOTES/N01_Decisions.md) D-96.
 
 ## Gaps these found
 

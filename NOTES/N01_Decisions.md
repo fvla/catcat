@@ -3016,3 +3016,70 @@ A sealed type prints `<5>` and a sealed value `<5:42>`, both naming the
 exists to recover; here the id IS the identity, and the two renderings showing
 the same 5 is the point. `locate` on a `pack` or `unpack` word prints the name,
 the id and the declaration together.
+
+---
+
+## D-96. The record form is not a macro yet, and the obstacle is repetition
+
+D-89 step 3 said macros reach declaration position and the record form becomes a
+macro over `data` and `seal`. Step C built `seal`, so the pieces are there;
+running the test D-89 wanted turns up an obstacle that is not about declaration
+position at all.
+
+**What already works.** A record IS a `seal`, today, by hand:
+
+```
+seal Point ( i64 i64 ) { cap copy cap drop pack Point unpack p_open }
+define x  ( $x:i64 $y:i64 -- i64 ) { $x }
+define px ( Point -- i64 ) { p_open x }
+3 4 Point px      \ 3
+```
+
+So the type exists, with capabilities and an identity. What a `record`
+declaration would add is field NAMES and generated accessors — sugar over
+exactly the three lines above.
+
+**Why a macro cannot generate them.** Three obstacles, of increasing depth.
+
+1. *A template is a term list.* `E02.mprod.mp_body : list sterm`, and `E03`
+   dispatches a macro only where a term may start, so `macro decl ( $n ) { seal
+   $n ( i64 ) { pack q } }` is a parse error inside the template. This is the
+   one D-89 anticipated and it is the shallow one: `sdecl` templates plus a
+   declaration-position dispatch would fix it.
+2. *There is no type slot.* `mslot` is `MsBlock | MsWord | MsKeyword`. A field's
+   type cannot be captured at all. Also cheap to fix.
+3. **A record's field count is not fixed, and slots are.** This is the real one.
+   `record Point { field x i64 field y i64 }` needs a REPETITION — a keyed group
+   repeated until a terminator — which D-35 excluded deliberately: fixed slots,
+   alternation keyed on a consumed word, no ε-branch. Repetition is still
+   LL(1) (inside the braces the token in hand is either `field` or `}`, which is
+   exactly what `parse_alts` does by hand), so the exclusion is not forced by
+   D-30. But adding it means a template that expands ONCE PER ITEM, and a record
+   needs that in three different grammatical positions: inside a type list (the
+   representation), inside a declaration list (one accessor per field), and
+   inside a signature's parameters.
+
+**What it would NOT need, which is worth knowing.** No arithmetic in templates,
+which is the usual reason macro systems grow into languages. The accessor for
+field *i* does not need "pop *n−i−1* times": it can be a named-parameter helper
+whose signature is a repetition over ALL fields and whose body is the one field
+wanted —
+
+```
+define sel_x ( $x:i64 $y:i64 -- i64 ) { $x }
+```
+
+— so the outer repetition (per accessor) nests the inner one (over all fields)
+and nothing has to count. That works today, and the elaborator drops the unread
+parameters, which limits the trick to records whose other fields are `Drop`.
+
+**So the decision is: not now, and not silently.** Repetition slots are a change
+to the one part of the system whose LL(1) property is a load-bearing claim
+(D-30, D-35) and whose hygiene argument (D-73) rests on templates being
+substitution and nothing else. That is a design question to be answered
+deliberately, not a step to be completed. The alternative — making `record` a
+parser built-in like `data`, `seal` and `effect`, on D-38's precedent — is
+cheaper, would ship accessors immediately, and gives up the test D-89 wanted the
+macro vocabulary to face.
+
+Recorded as **N02 Q-24**.

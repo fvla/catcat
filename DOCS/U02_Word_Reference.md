@@ -115,6 +115,8 @@ catcat> define b ( Box[i64] -- ) { pop }
 error: pop: this value's type is not Drop; consume it explicitly
 ```
 
+A program can declare its own linear type with `seal` — see §5.
+
 `rot` is idiomatic and **not implemented**. Deep access exists in the core as
 `pick`/`roll` but is reachable only through named parameters (`$x`), never
 directly — which is the intent: locals exist so that deep shuffling does not
@@ -135,6 +137,7 @@ have to be written by hand.
 | `Box[t]` | owning unique pointer. Neither `Copy` nor `Drop` — linear |
 | `Rc[t]` | shared refcounted pointer |
 | a declared sum | whatever `data` declares — see [U01](U01_Grammar.md) §9 |
+| a sealed type | whatever `seal` declares — [U01](U01_Grammar.md) §9a. Prints `<n>`, where `n` is its nominal id |
 
 `Box` and `Rc` exist so that recursive types can be written at all: recursion is
 legal only *through* a pointer, exactly as in Rust. **No surface word constructs
@@ -148,7 +151,23 @@ type system stay environment-free.
 **Constructors are not words and are not listed in this file.** `data Color
 { alt Red ( ) … }` makes `Red` a constructor, which is applied like a word but
 lives in its own namespace and has no dictionary entry — `locate Red` reports
-what it constructs rather than a body. See [U01](U01_Grammar.md) §9.
+what it constructs rather than a body. See [U01](U01_Grammar.md) §9. A `seal`'s
+`pack` and `unpack` words are in that same namespace and are likewise not words.
+
+### Capabilities: which types `dup` and `pop` accept
+
+`dup` and `pop` are not universal (§4). Every type either has the `Copy`
+capability or does not, and the same for `Drop`:
+
+| Type | `Copy` | `Drop` | Because |
+|---|---|---|---|
+| every primitive | yes | yes | a machine word is copied by copying it |
+| `Box[t]`, `Rc[t]` | no | no | duplicating would alias unique ownership; discarding would leak, since releasing is an operation |
+| a declared sum | if every variant's payload has it | likewise | derived, not declared — which is why a one-variant `data` cannot be made linear |
+| a sealed type | exactly what its `cap` clauses say | likewise | **declared.** This is the only way to get a linear type |
+
+The one rule tying the last two rows together: a `seal` may drop a capability
+its representation has and may never add one ([U01](U01_Grammar.md) §9a).
 
 ---
 
@@ -162,10 +181,10 @@ define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
 
 Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`.
 `define` itself is not a reserved word either; it is recognised by position at
-the start of a declaration, and so are `data`, `effect`, `extern`, `macro` and
-`locate`. `then`, `else`, `endif`, `over`, `init`, `declare`, `alt` and `end`
-are likewise free — each is a keyword only inside the construct that introduces
-it. Six names are effectively taken — `if`, `unsafe`, `try`, `handle`, `with`
+the start of a declaration, and so are `data`, `seal`, `effect`, `extern`,
+`macro` and `locate`. `then`, `else`, `endif`, `over`, `init`, `declare`, `alt`,
+`cap`, `pack`, `unpack` and `end` are likewise free — each is a keyword only
+inside the construct that introduces it. Six names are effectively taken — `if`, `unsafe`, `try`, `handle`, `with`
 and `case` — because they are dispatched on wherever a term may start: a
 definition of one is accepted but can never be called
 ([U01](U01_Grammar.md) §1). `recurse` is a seventh inside any signed `define`,
@@ -173,7 +192,8 @@ where it names the word being defined. **Declaring a macro adds a name to that
 list**, silently.
 
 A **constructor** shadows a `define` of the same name whichever came first,
-because it is looked up earlier ([U01](U01_Grammar.md) §9). Nothing warns.
+because it is looked up earlier ([U01](U01_Grammar.md) §9). So does a `seal`'s
+`pack` or `unpack` name. Nothing warns.
 
 Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).
 

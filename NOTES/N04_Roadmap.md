@@ -166,8 +166,26 @@ done; B, C and D are specified below so they can be picked up cold.
 | B2 | the type table holds a TEMPLATE, instantiated on use, fuel-bounded | **done** (`1fb13d9`) |
 | B3 | parse `data N[#T] { alt C ( … ) }`; constructors as a namespace (D-91) | **done** (`06771c6`) |
 | B4 | `case`, named branches, `else` (D-90, D-92, D-93) | **done** (`4dc0c31`) |
-| C | capabilities on a declaration, so `TSeal` is reachable and a linear wrapper over a `Copy` representation is expressible | next |
-| D | macros in declaration position; the record form becomes a macro (D-89) | after C |
+| B5 | demo 08, and `U01`/`U02`/`U03` catch up | **done** (`8137599`) |
+| C | `seal`: capabilities on a declaration, a linear wrapper over a `Copy` representation, and nominality (D-94, D-95) | **done** (`7c9dd8b`) |
+| D | macros in declaration position; the record form becomes a macro (D-89) | **blocked, and the block is the finding** — D-96 |
+
+**Step C did one thing its brief did not ask for, and found one.** The brief was
+capabilities; `TSeal` also carries a `nom_id`, so the declaration that reaches it
+is *nominal*, which is the property D-90 had to record as missing. Nominality
+and recursion were one obstacle in D-90 and are two: the seal half needed none
+of Q-13's machinery. What it found is that `M06.prim_sig` let `PPack` WIDEN a
+capability set, which would have made a `Copy` wrapper over a `Box` well typed
+— fixed as D-94, in the core rather than only in the elaborator.
+
+**Step D is where the plan stops being a plan.** The record form cannot be a
+macro over the current vocabulary, and D-96 states exactly why: a record's field
+count is not fixed, so its production needs repetition, which D-35 excluded on
+purpose and which would need a template that expands per item in three separate
+grammatical positions. That is a design question and not a task, so it is not
+being done under the cover of a step. What a record needs from the language is
+already here — `seal Point ( i64 i64 )` is the product, capabilities and all —
+so what is missing is the naming and the accessors, not the type.
 
 **Step B is done, and three things about it did not go as written below.** The
 plan for it is kept unedited underneath, because the differences are the useful

@@ -1,0 +1,123 @@
+catcat> \ ======================================================================
+\ 09 — a type that cannot be copied, and one that can.
+\
+\ THE CLAIM (D-08, D-94, D-95): linearity is not a mode, an annotation or a
+\ borrow checker. It is a CAPABILITY LIST on a declaration. `M01.has_cap`
+\ reads a sealed type's capabilities off the type and never looks at what it
+\ wraps, so a linear handle over a perfectly copyable `i64` is expressible —
+\ and `dup` at that type simply has no signature.
+\
+\ The other direction is the one that has to be checked, and D-94 is where:
+\ sealing may DROP a capability and may never ADD one.
+\ ======================================================================
+catcat> \ --- 1. A linear type. No `cap` clause, so it has neither capability.
+catcat> seal Fd ( i64 ) { pack fd unpack fd_raw }
+seal Fd ( i64 ) {
+  pack fd
+  unpack fd_raw
+}
+catcat> 3 fd
+ok  <0:3>
+catcat> \ `<0:3>` — nominal id 0, holding 3. The value prints its identity because
+\ that is what it has; there is no name in a `dtype` to recover.
+catcat> \ --- 2. `dup` and `pop` are capability-gated in the ELABORATOR, before M06
+\ ever sees the term, so the message names the value and not the primitive.
+catcat> dup
+error: dup: this value's type is not Copy
+catcat> pop
+error: pop: this value's type is not Drop; consume it explicitly
+catcat> \ It has to be consumed explicitly, which is the whole point of linearity.
+catcat> fd_raw show print "\n" print
+3
+ok  (empty)
+catcat> \ --- 3. The same representation, declared `copy` and `drop`.
+catcat> seal Meters ( i64 ) { cap copy cap drop pack meters unpack raw_m }
+seal Meters ( i64 ) {
+  cap copy
+  cap drop
+  pack meters
+  unpack raw_m
+}
+catcat> 7 meters dup raw_m show print " " print raw_m show print "\n" print
+7 7
+ok  (empty)
+catcat> \ Two `i64`s underneath, one type that duplicates and one that does not.
+\ `M01.lemma_seal_caps` is the formal version: a seal's capabilities are
+\ independent of its representation.
+catcat> \ --- 4. SEALING NARROWS AND NEVER WIDENS (D-94). Independence runs one way.
+\ `Box` is a unique owning pointer and has neither capability, so a wrapper
+\ claiming `copy` over one would alias it the moment `unpack` handed it back.
+catcat> seal Cheat ( Box[i64] ) { cap copy pack cheat }
+error: Cheat declares 'cap copy', but its representation does not have that capability; a seal may drop a capability and never add one
+catcat> \ `M06.prim_sig` refuses `PPack` there too, so the rule holds for any term and
+\ not merely for ones this elaborator produced.
+catcat> \ --- 5. SEALS ARE NOMINAL, and this is what `data` cannot do. Two seals over
+\ the same representation are two types.
+catcat> seal Gd ( i64 ) { pack gd unpack gd_raw }
+seal Gd ( i64 ) {
+  pack gd
+  unpack gd_raw
+}
+catcat> 3 gd fd_raw
+error: fd_raw: the stack does not match what it opens
+catcat> 3 fd fd_raw show print "\n" print
+3
+ok  (empty)
+catcat> \ Compare demo 08 §10: two `data` declarations with the same variant shapes
+\ ARE interchangeable, because `TSum` has nowhere to put an identity.
+\ `TSeal` carries a `nom_id`, and the session allocates a fresh one per
+\ declaration — so the id in `<0:3>` above is the whole of the difference.
+catcat> \ --- 6. `locate` on a constructor shows the declaration and the operation.
+catcat> locate fd
+fd seals ( i64 ) into Fd, nominal id 0
+
+seal Fd ( i64 ) {
+  pack fd
+  unpack fd_raw
+}
+catcat> locate gd_raw
+gd_raw opens Gd, nominal id 2, back into ( i64 )
+
+seal Gd ( i64 ) {
+  pack gd
+  unpack gd_raw
+}
+catcat> \ --- 7. Type parameters, and where inference stops. `pack` infers, because
+\ what it consumes is on the stack.
+catcat> seal Cell[#T] ( #T ) { cap copy cap drop pack cell unpack uncell }
+seal Cell[#T] ( #T ) {
+  cap copy
+  cap drop
+  pack cell
+  unpack uncell
+}
+catcat> 5 cell
+ok  <3:5>
+catcat> "hi" cell
+ok  <3:5> <3:"hi">
+catcat> \ `unpack` runs the OTHER way: its input is the sealed type, so nothing it
+\ consumes can bind #T. It is written out, which is D-93's rule again.
+catcat> uncell
+error: uncell opens Cell, which takes type parameters, and nothing it consumes can bind them — an unpack runs the other way. Write them: uncell[i64]
+catcat> uncell[str] print "\n" print
+hi
+ok  <3:5>
+catcat> uncell[i64] show print "\n" print
+5
+ok  (empty)
+catcat> \ --- 8. A parameterised seal's capability claim is checked at every
+\ INSTANTIATION, because `cap copy` over `( #T )` is a claim about #T.
+catcat> define hold ( Cell[Box[i64]] -- ) { }
+error: Cell declares 'cap copy', but its representation does not have that capability; a seal may drop a capability and never add one
+catcat> \ --- 9. WHAT IS NOT HERE. There are no modules, so the only control over who
+\ may open a seal is whether the declaration names an unpack word at all.
+catcat> seal Token ( i64 ) { pack token }
+seal Token ( i64 ) {
+  pack token
+}
+catcat> 1 token
+ok  <4:1>
+catcat> \ Nothing can open it and nothing can discard it, so it is stuck on the stack
+\ for the rest of the session — an abstract, linear, unforgeable value, and a
+\ demonstration that the guarantee is against accident and not against a
+\ caller who can write the unpack name.

@@ -456,3 +456,37 @@ their own and are committed; B3 waits on this.
 *Closes when:* one of the three is chosen. The first is the recommendation,
 because the facility is needed anyway for D-56's library and building it once
 serves both.
+
+**Q-24. Does the macro vocabulary get repetition, or does `record` become a
+parser built-in?** Raised by D-96, which is the result of running D-89's own
+test: the record form cannot be a macro over the vocabulary D-35 fixed, because
+a record's field count is not fixed and slots are.
+
+*The two answers, and what each costs.*
+
+  * **Repetition slots.** A keyed group repeated until a terminator, captures
+    becoming lists, and a template that expands once per item. Still LL(1) —
+    inside `{ field … field … }` the token in hand is either `field` or `}`,
+    which is what `parse_alts` already does by hand — so D-30 does not forbid
+    it. It needs a repetition node in THREE grammatical positions (type list,
+    declaration list, signature parameters), and it makes a template something
+    that iterates rather than something that substitutes, which is the premise
+    D-73's hygiene argument rests on. It does NOT need arithmetic: the
+    named-parameter accessor trick in D-96 nests two repetitions and counts
+    nothing.
+  * **`record` as a parser built-in**, on D-38's precedent — `effect`, `handle`
+    and `data` are all built in for the same reason, that they need a
+    sub-grammar the slot vocabulary cannot describe. Ships accessors
+    immediately. Gives up the honest test D-89 wanted the vocabulary to face,
+    and leaves the macro system still unexercised beyond `if`.
+
+*Why it is a question and not a task:* the first answer changes what a macro IS,
+in the one part of the system whose LL(1) property is a load-bearing claim about
+the eventual verified parser generator (D-30). The second is a day's work and
+forecloses nothing, but it means the macro vocabulary's first real client is
+still hypothetical.
+
+*Cost of leaving open:* records have no field names and no generated accessors.
+The type itself is not blocked — `seal Point ( i64 i64 )` is a record with
+capabilities and an identity today (D-96) — so this is sugar, not a hole.
+*Closes when:* one of the two is chosen.

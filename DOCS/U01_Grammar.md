@@ -20,7 +20,8 @@ that is called out rather than glossed. For the designed language see
 ```ebnf
 program    = decl* ;
 
-decl       = define | data | effect | extern | macro | locate | expression ;
+decl       = define | data | seal | effect | extern | macro | locate
+           | expression ;
 
 define     = "define" word [ tparams ] "(" signature ")" "{" term* "}"
            | "define" word                        "{" term* "}" ;  (* inferred *)
@@ -29,6 +30,10 @@ targs      = "[" type+ "]" ;                                   (* see §3 *)
 
 data       = "data" word [ tparams ] "{" alt+ "}" ;            (* see §9 *)
 alt        = "alt" word "(" type* ")" ;
+
+seal       = "seal" word [ tparams ] "(" type* ")"             (* see §9a *)
+             "{" sclause* "}" ;
+sclause    = "cap" ( "copy" | "drop" ) | "pack" word | "unpack" word ;
 
 effect     = "effect" word "{" declare* "}" ;                  (* see §6 *)
 declare    = "declare" word "(" signature ")" ;
@@ -81,14 +86,14 @@ The `conditional` production is written out here for readability, but it is not
 built into the parser: it is one entry in a **macro table** (§5), and the parser
 that reads it is generic over the table. The table grows: `macro` adds to it.
 
-**`define`, `data`, `effect`, `extern`, `macro` and `locate` are not reserved
-words.** All six are recognised by *position* — first token of a declaration —
-so `define locate { 42 }` is legal and `locate` inside a body is an ordinary
-word. The same rule leaves `then`, `else`, `endif`, `over`, `init`, `declare`,
-`alt` and `end` free everywhere outside the construct that introduces them.
-`alt` is now used by two constructs — inside a `macro` declaration and inside a
-`data` — and is reserved in neither. What position-recognition
-does cost is the first slot of a declaration:
+**`define`, `data`, `seal`, `effect`, `extern`, `macro` and `locate` are not
+reserved words.** All seven are recognised by *position* — first token of a
+declaration — so `define locate { 42 }` is legal and `locate` inside a body is an
+ordinary word. The same rule leaves `then`, `else`, `endif`, `over`, `init`,
+`declare`, `alt`, `cap`, `pack`, `unpack` and `end` free everywhere outside the
+construct that introduces them. `alt` is used by two constructs — inside a
+`macro` declaration and inside a `data` — and is reserved in neither. What
+position-recognition does cost is the first slot of a declaration:
 
 ```
 catcat> define macro { 7 }
@@ -1425,12 +1430,103 @@ error: the type List refers to itself; a recursive type needs a pointer and a
        nominal declaration, which do not exist yet
 ```
 
-**A `data` is always a sum.** There is no product form and no way to give a
-declaration capabilities, so nothing can be declared linear or non-`Copy`. The
-core has `TSeal`, which does both; no surface syntax reaches it.
+**A `data` is always a sum.** There is no product form. Capabilities and
+nominality come from the other declaration, `seal` — see §9a.
 
-Both remaining limits are the same open question — see
+The first two limits are the same open question — see
 [N02](../NOTES/N02_Open_Questions.md) Q-13.
+
+---
+
+## 9a. Sealed types: `seal`
+
+```
+seal Fd     ( i64 )   { pack fd unpack fd_raw }
+seal Meters ( i64 )   { cap copy cap drop pack meters unpack raw_m }
+seal Cell[#T] ( #T )  { cap copy cap drop pack cell unpack uncell }
+```
+
+A `seal` declares a **nominal type over a representation**, which is the core's
+`TSeal`. The `( … )` is the representation: a stack segment, read by the same
+rule as a variant's payload — bottom-to-top, no `--`, no named parameters, no
+`!Eff`. The braces hold clauses in any order:
+
+| Clause | Effect |
+|---|---|
+| `cap copy` | the type may be `dup`ed |
+| `cap drop` | the type may be `pop`ped |
+| `pack w` | `w` builds one: `( repr -- T )` |
+| `unpack w` | `w` takes one apart: `( T -- repr )` |
+
+**No `cap` clause means the type is linear.** That is the point of the
+declaration and the only way to get a type the language will not silently
+duplicate or discard:
+
+```
+catcat> seal Fd ( i64 ) { pack fd unpack fd_raw }
+catcat> 3 fd
+ok  <0:3>
+catcat> dup
+error: dup: this value's type is not Copy
+catcat> pop
+error: pop: this value's type is not Drop; consume it explicitly
+```
+
+`<0:3>` is a sealed value: nominal id 0, holding 3. A sealed **type** prints
+`<0>`. Both name the id because the id is the identity — unlike a sum, which
+prints its shape because it has no identity to print.
+
+### Sealing narrows and never widens
+
+A seal's capabilities are read off the declaration and not derived from what it
+wraps, which is what makes a linear handle over a copyable `i64` expressible. The
+converse is refused, in the elaborator and again in `M06`:
+
+```
+catcat> seal Cheat ( Box[i64] ) { cap copy pack cheat }
+error: Cheat declares 'cap copy', but its representation does not have that
+       capability; a seal may drop a capability and never add one
+```
+
+For a parameterised seal the claim is checked at **every instantiation**, since
+`cap copy` over `( #T )` is a claim about `#T`: `Cell[i64]` is accepted and
+`Cell[Box[i64]]` is refused where it is written.
+
+### Sealed types are nominal
+
+The session allocates a fresh nominal id per declaration, so two seals over the
+same representation are two types:
+
+```
+catcat> seal Gd ( i64 ) { pack gd unpack gd_raw }
+catcat> 3 gd fd_raw
+error: fd_raw: the stack does not match what it opens
+```
+
+This is exactly what §9 says `data` cannot do. Redeclaring a `seal` therefore
+gives a **new** type rather than the same one again, and values of the old one
+are no longer accepted where the new one is wanted.
+
+### `pack` and `unpack` are optional
+
+A seal with no `unpack` clause has no word that opens it, so its representation
+is unreachable; one with no `pack` cannot be built. There are no modules, so
+this is the only control over who may cross the boundary — which means the
+guarantee is against accident and not against a caller who can write the unpack
+name.
+
+### What a `seal` cannot do
+
+**`unpack` cannot infer type parameters.** Its input is the sealed type, so
+nothing it consumes binds them — write `uncell[i64]`. This is §3's rule about
+`( Option[#T] -- )`, from the other side.
+
+**There are no field names.** A representation is a segment of positional types,
+so a record is spelled by hand and there are no accessors. What that needs is in
+[N01](../NOTES/N01_Decisions.md) D-96.
+
+**Nothing may mention itself**, the same restriction `data` has and for the same
+reason.
 
 ---
 
@@ -1448,10 +1544,10 @@ is otherwise invisible.
 | code sharing between identical instantiations | the *elaboration* is shared (§3); the emitted code is not, so each call site carries its own copy. The copies are structurally equal, so what is missing is a common-subexpression pass over the core, not anything about generics |
 | `let` and `let (…)` | not parsed |
 | generators, coroutines | not parsed; they wait on staging, not on handlers |
-| classes, `module`, `::`, `.` | not parsed. Sums are now declarable — see §9 — but nothing else on this line is |
+| classes, `module`, `::`, `.` | not parsed. Sums and sealed types are declarable — §9, §9a — but nothing else on this line is, and a `seal`'s abstraction comes from withholding its `unpack` name rather than from a module |
 | a **recursive** `data` | refused with a message: a type that mentions itself needs a pointer and a nominal declaration, which is N02 Q-13. So there are still no lists (§9) |
-| **nominal** types | declared types are their representation, so two `data` declarations with matching variant shapes are one type and interchangeable (§9). Same Q-13 |
-| records, and capabilities on a declaration | a `data` is always a sum; there is no product form and no way to declare a type linear or non-`Copy`. `TSeal` in the core does both, and nothing reaches it |
+| **nominal** `data` | a `data` is its representation, so two declarations with matching variant shapes are one type and interchangeable (§9). A `seal` is nominal (§9a); a `data` has nowhere to put an id. Same Q-13 |
+| records with named fields | `seal` gives the product — a segment sealed into one value, with capabilities (§9a) — but the fields are positional and there are no accessors. Generating them needs repetition in the macro vocabulary; see [N01](../NOTES/N01_Decisions.md) D-96 |
 | quotation `'…'`, backtick | not lexed. Strings ARE lexed (§2) |
 | a user-declared `case`-like macro | `case` is a parser built-in (§9) and `if` is a macro, but a macro's production is fixed when it is declared, so no macro can have branch keys that differ per type. This is not closing |
 | macro hygiene beyond the declaration check | §5's check is complete while no term binds a local. `let` will change that premise and need real renaming |

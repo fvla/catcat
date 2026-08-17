@@ -605,6 +605,77 @@ Nominal types are not built yet.
 
 ---
 
+## 9a. A type that cannot be copied
+
+The other declaration is `seal`, and it is where linearity lives:
+
+```
+catcat> seal Fd ( i64 ) { pack fd unpack fd_raw }
+catcat> 3 fd
+ok  <0:3>
+catcat> dup
+error: dup: this value's type is not Copy
+```
+
+`( i64 )` is the **representation** — what an `Fd` really is. `pack fd` names
+the word that builds one and `unpack fd_raw` the word that takes it apart. What
+is *not* there is any `cap` clause, and that is what makes the type linear: it
+cannot be duplicated and it cannot be dropped, so the only thing to do with it
+is `fd_raw` it and deal with what comes out.
+
+Ask for the capabilities and you get them back:
+
+```
+catcat> seal Meters ( i64 ) { cap copy cap drop pack meters unpack raw_m }
+catcat> 7 meters dup raw_m
+ok  <1:7> 7
+```
+
+Two declarations, the same `i64` underneath, and one of them duplicates. A
+capability is a property of the *type you declared*, not of what it wraps —
+which is exactly what a file handle, a lock or a database transaction needs.
+
+One rule keeps that honest: **a seal may drop a capability and never add one.**
+
+```
+catcat> seal Cheat ( Box[i64] ) { cap copy pack cheat }
+error: Cheat declares 'cap copy', but its representation does not have that
+       capability; a seal may drop a capability and never add one
+```
+
+### Sealed types are nominal
+
+Unlike a `data`, two seals over the same representation are two different
+types, and nothing will pass one for the other:
+
+```
+catcat> seal Gd ( i64 ) { pack gd unpack gd_raw }
+catcat> 3 gd fd_raw
+error: fd_raw: the stack does not match what it opens
+```
+
+That is what `<0:3>` is telling you: 0 is the type's identity, allocated when
+you declared it, and `Gd` got a different one.
+
+### There are no field names yet
+
+A representation is positional, so a record is written by hand:
+
+```
+catcat> seal Point ( i64 i64 ) { cap copy cap drop pack Point unpack p_open }
+catcat> define x ( $x:i64 $y:i64 -- i64 ) { $x }
+catcat> define px ( Point -- i64 ) { p_open x }
+catcat> 3 4 Point px
+ok  3
+```
+
+That works, and it is what a record compiles to — but you wrote the accessor
+yourself. Generating them is [N01](../NOTES/N01_Decisions.md) D-96.
+
+**Full example: [`demos/09_seals_and_caps.cat`](../demos/09_seals_and_caps.cat).**
+
+---
+
 ## 10. Putting it together
 
 [`demos/07_three_modes.cat`](../demos/07_three_modes.cat) is the one to read
@@ -634,20 +705,23 @@ to one, and was compiled before any of the three existed.
 
 ## 11. What is not here yet
 
-The honest ceiling: **there are no arrays, no lists and no string indexing**,
-and no records. Demo 07 ends with three service names written out as literals
-for exactly that reason.
+The honest ceiling: **there are no arrays, no lists and no string indexing**.
+Demo 07 ends with three service names written out as literals for exactly that
+reason.
 
-Section 9 above is the first part of that ceiling lifted — you can declare a
-sum type — and it makes the rest of the shape clear:
+Sections 9 and 9a are that ceiling being lifted — you can declare a sum type and
+a sealed one — and what is left is now specific:
 
-- **A `data` may not mention itself**, so there are no lists. A recursive type
-  needs a pointer *and* a nominal declaration, and the second is the harder
-  half: a type is currently its representation, nothing more.
-- **A `data` is always a sum.** There is no product form, so no records; the
-  core's `TSeal` would give both records and capabilities, and no surface
-  syntax reaches it.
-- **Nothing can be declared linear or non-`Copy`**, for the same reason.
+- **Nothing may mention itself**, so there are no lists. A recursive type needs
+  a pointer *and* a nominal declaration; §9a supplies the second for a `seal`,
+  and the pointer half is still open.
+- **A `data` is not nominal.** A sum is its representation, so two declarations
+  with matching variant shapes are one type. A `seal` does not have this
+  problem, because `TSeal` carries an identity and `TSum` has nowhere to put
+  one.
+- **Records have no field names and no generated accessors.** §9a shows the
+  shape a record has; naming the fields needs repetition in the macro
+  vocabulary, which does not exist.
 
 [U01 §10](U01_Grammar.md#10-not-yet-implemented) is the full list of what is
 specified and absent. [`NOTES/N04_Roadmap.md`](../NOTES/N04_Roadmap.md) §4 is

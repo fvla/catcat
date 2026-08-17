@@ -42,8 +42,12 @@ let rec render_value (v:rvalue) : Tot string =
   /// the REPL echo. There is no escaping on the way out: this is a diagnostic
   /// renderer, and `print` is what emits a string as itself.
   | RStr s      -> "\"" ^ s ^ "\""
-  | RSeal n vs  -> "<" ^ string_of_int n ^ ":" ^ render_list vs ^ ">"
-  | RSum tag vs -> "#" ^ string_of_int tag ^ "(" ^ render_list vs ^ ")"
+  /// A payload is a stack SEGMENT, so it prints by the same rule the stack
+  /// does: bottom-to-top, `rev` on the way out. Head-first would show a
+  /// two-field seal in the opposite order to the `( … )` that declared it,
+  /// which is a rendering that quietly contradicts the source.
+  | RSeal n vs  -> "<" ^ string_of_int n ^ ":" ^ render_seg vs ^ ">"
+  | RSum tag vs -> "#" ^ string_of_int tag ^ "(" ^ render_seg vs ^ ")"
   | RBox v      -> "box(" ^ render_value v ^ ")"
   | RRc v       -> "rc(" ^ render_value v ^ ")"
 
@@ -52,6 +56,15 @@ and render_list (vs:list rvalue) : Tot string =
   | []      -> ""
   | v :: [] -> render_value v
   | v :: r  -> render_value v ^ " " ^ render_list r
+
+/// The same list read the other way. Written out rather than `render_list (rev
+/// vs)` so the recursion stays structural: `rev` preserves length, not
+/// subterm-hood, and this module has no measure to spend on proving that.
+and render_seg (vs:list rvalue) : Tot string =
+  match vs with
+  | []      -> ""
+  | v :: [] -> render_value v
+  | v :: r  -> render_seg r ^ " " ^ render_value v
 
 /// Rendered bottom-to-top, matching the surface convention of D05 2: the top
 /// of the stack prints on the right, as a Forth programmer expects.
