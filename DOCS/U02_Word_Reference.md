@@ -4,7 +4,7 @@ Every word the language provides today. That is a short list: fifteen
 primitives, two constants, two IO operations, one abort, and three stack
 shuffles.
 
-> **Current as of commit `b1248aa`.**
+> **Current as of commit `8137599`.**
 > Source of truth:
 > [E06_Repl.fst](../P03_Elaboration/E06_Repl.fst) `prelude_nenv` (names and
 > signatures), [R03_Prelude.fst](../P02_Reference/R03_Prelude.fst) (word ids and
@@ -129,19 +129,26 @@ have to be written by hand.
 | `i8` `i16` `i32` `i64` | `i64` is what integer literals produce |
 | `u8` `u16` `u32` `u64` | valid; no operations |
 | `f32` `f64` | valid; no operations (§1) |
-| `bool` | `true`/`false`, or a comparison. Consumed by `if` |
+| `bool` | `true`/`false`, or a comparison. Consumed by `if`. Not a declared sum — `data` cannot yet replace it |
 | `str` | immutable string; `"…"` literals, see §7 |
 | `unit` | valid; no literal |
 | `Box[t]` | owning unique pointer. Neither `Copy` nor `Drop` — linear |
 | `Rc[t]` | shared refcounted pointer |
+| a declared sum | whatever `data` declares — see [U01](U01_Grammar.md) §9 |
 
 `Box` and `Rc` exist so that recursive types can be written at all: recursion is
 legal only *through* a pointer, exactly as in Rust. **No surface word constructs
 one yet** — the types are usable in signatures, the values are not yet
-reachable.
+reachable. Which is also why a `data` may not mention itself: the pointer that
+would break the cycle cannot be built.
 
 A pointer's capabilities do not depend on its pointee, which is what lets the
 type system stay environment-free.
+
+**Constructors are not words and are not listed in this file.** `data Color
+{ alt Red ( ) … }` makes `Red` a constructor, which is applied like a word but
+lives in its own namespace and has no dictionary entry — `locate Red` reports
+what it constructs rather than a body. See [U01](U01_Grammar.md) §9.
 
 ---
 
@@ -155,15 +162,18 @@ define hypotsq ( $x:i64 $y:i64 -- i64 ) { $x $x * $y $y * + }
 
 Definitions may shadow prelude names — nothing reserves `+`, `true` or `false`.
 `define` itself is not a reserved word either; it is recognised by position at
-the start of a declaration, and so are `effect`, `extern`, `macro` and
-`locate`. `then`,
-`else`, `endif`, `over`, `init`, `declare`, `alt` and `end` are likewise free —
-each is a keyword only inside the construct that introduces it. Five names are
-effectively taken — `if`, `unsafe`, `try`, `handle` and `with` — because they
-are dispatched on wherever a term may start: a definition of one is accepted but
-can never be called ([U01](U01_Grammar.md) §1). `recurse` is a sixth inside any
-signed `define`, where it names the word being defined. **Declaring a macro adds a name to that
+the start of a declaration, and so are `data`, `effect`, `extern`, `macro` and
+`locate`. `then`, `else`, `endif`, `over`, `init`, `declare`, `alt` and `end`
+are likewise free — each is a keyword only inside the construct that introduces
+it. Six names are effectively taken — `if`, `unsafe`, `try`, `handle`, `with`
+and `case` — because they are dispatched on wherever a term may start: a
+definition of one is accepted but can never be called
+([U01](U01_Grammar.md) §1). `recurse` is a seventh inside any signed `define`,
+where it names the word being defined. **Declaring a macro adds a name to that
 list**, silently.
+
+A **constructor** shadows a `define` of the same name whichever came first,
+because it is looked up earlier ([U01](U01_Grammar.md) §9). Nothing warns.
 
 Grammar, locals, and the inference rules are in [U01](U01_Grammar.md).
 
