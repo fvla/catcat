@@ -445,6 +445,24 @@ and subst_stys (su:tsub) (ts:list sty)
   | []     -> []
   | t :: r -> subst_ty su t :: subst_stys su r
 
+/// A `data` declaration's variants, substituted (D-90). Same shape as
+/// `subst_params`: instantiating a type is a surface rewrite, exactly as
+/// instantiating a generic word is.
+let rec subst_variants (su:tsub) (vs:list (string & list sty))
+  : Tot (list (string & list sty)) (decreases vs) =
+  match vs with
+  | []          -> []
+  | (n, p) :: r -> (n, subst_stys su p) :: subst_variants su r
+
+/// Termination measure for `E04.elab_variants`. Charges ONE PER VARIANT as well
+/// as the payload sizes, because a variant may carry nothing — `alt None ( )`
+/// has `stys_size [] = 0`, so a payload-only measure does not decrease across
+/// it. The same reason `E02.sterm_lists_size` charges one per branch.
+let rec variant_stys_size (vs:list (string & list sty)) : Tot nat (decreases vs) =
+  match vs with
+  | []          -> 0
+  | (_, p) :: r -> 1 + stys_size p + variant_stys_size r
+
 let rec subst_params (su:tsub) (ps:list sparam)
   : Tot (list sparam) (decreases ps) =
   match ps with

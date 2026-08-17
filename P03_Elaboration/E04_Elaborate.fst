@@ -108,12 +108,53 @@ noeq type gdecl =
 /// whole `nenv`, because type elaboration needs nothing else — not words, not
 /// effects, not generics — and keeping the dependency at its real size is what
 /// lets `elab_ty` stay callable from `explicit_sub`, which has no environment.
-type tenv = list (string & dtype)
+/// One `data` declaration, stored as a TEMPLATE (D-90) for the same reason a
+/// generic word is (D-79): `Option` is not a type until it is applied, and its
+/// variants mention parameters that are not `M01.dtype`s. Instantiating is a
+/// surface substitution followed by an ordinary elaboration, so nothing new is
+/// needed — `E02.subst_stys` is the same function generics use.
+///
+/// `td_variants` is in TAG ORDER, which is declaration order, and each payload
+/// is in surface order (bottom-to-top); `elab_ty` reverses it, as `elab_sig`
+/// does for a signature.
+type tdecl = {
+  td_name     : string;
+  td_params   : list string;
+  td_variants : list (string & list sty);
+}
 
-let rec lookup_ty_in (ts:tenv) (x:string) : Tot (option dtype) (decreases ts) =
+type tenv = list tdecl
+
+let rec lookup_ty_in (ts:tenv) (x:string) : Tot (option tdecl) (decreases ts) =
   match ts with
-  | []          -> None
-  | (n, d) :: r -> if n = x then Some d else lookup_ty_in r x
+  | []     -> None
+  | d :: r -> if d.td_name = x then Some d else lookup_ty_in r x
+
+/// Which declaration a constructor belongs to, and at which tag. Constructors
+/// live in their own namespace for lookup and become ORDINARY WORDS once
+/// installed, so this table answers only "what does this name construct".
+let rec find_ctor_in (vs:list (string & list sty)) (i:nat) (c:string)
+  : Tot (option (nat & list sty)) (decreases vs) =
+  match vs with
+  | []            -> None
+  | (n, p) :: r   -> if n = c then Some (i, p) else find_ctor_in r (i + 1) c
+
+let rec lookup_ctor (ts:tenv) (c:string)
+  : Tot (option (tdecl & nat & list sty)) (decreases ts) =
+  match ts with
+  | []     -> None
+  | d :: r -> (match find_ctor_in d.td_variants 0 c with
+               | Some (i, p) -> Some (d, i, p)
+               | None        -> lookup_ctor r c)
+
+/// Bind a declaration's parameters to the arguments a use site supplied.
+let rec ty_sub (ps:list string) (args:list sty) : Tot (option tsub) (decreases ps) =
+  match ps, args with
+  | [], []           -> Some []
+  | p :: pr, a :: ar -> (match ty_sub pr ar with
+                         | None    -> None
+                         | Some su -> Some ((p, a) :: su))
+  | _, _             -> None
 
 /// Names live in four namespaces because none of them can be called the way a
 /// word can — `handle E` names an effect, `f[…]` names a template, and a type
@@ -160,42 +201,92 @@ let prim_of_name (s:string) : Tot (option prim) =
   else if s = "str" then Some PStr
   else None
 
-let rec elab_ty (te:tenv) (t:sty) : Tot (either string dtype) (decreases (sty_size t)) =
+/// Surface type to core type, instantiating declarations as it goes (D-90).
+///
+/// FUEL, and why a structural measure cannot work. Elaborating `Option[i64]`
+/// substitutes `i64` for `#T` in the DECLARATION's payloads and elaborates
+/// those — terms that are not subterms of the input and may be larger than it,
+/// since a parameter can be replaced by a whole type. What does decrease is the
+/// number of declarations still reachable: a `data` may only mention types
+/// declared before it, the same ordering the Dictionary has (D-70), so
+/// `length te` is an exact bound and exhausting it means a cycle that the
+/// ordering already rules out. Callers pass `length te`.
+///
+/// The measure is `%[fuel; size; rank]`: fuel drops at every declared
+/// application, and everything else shrinks structurally at constant fuel.
+let rec elab_ty (fuel:nat) (te:tenv) (t:sty)
+  : Tot (either string dtype) (decreases %[fuel; (sty_size t <: nat); 0]) =
   match t with
   /// A primitive first, so no `data` declaration can shadow `i64`. Names in
   /// this table are the language's own and are not the program's to rebind —
   /// unlike words, which shadow freely (D-32).
-  | StyName n -> (match prim_of_name n with
-                  | Some p -> Inr (TPrim p)
-                  | None   -> (match lookup_ty_in te n with
-                               | Some d -> Inr d
-                               | None   -> Inl ("unknown type: " ^ n)))
+  | StyName n ->
+    (match prim_of_name n with
+     | Some p -> Inr (TPrim p)
+     | None   -> (match lookup_ty_in te n with
+                  | Some d -> if Nil? d.td_params
+                              then elab_data fuel te d []
+                              else Inl (n ^ " takes " ^ string_of_int (length d.td_params)
+                                        ^ " type arguments, as in " ^ n ^ "[i64]")
+                  | None   -> Inl ("unknown type: " ^ n)))
   /// `Box` and `Rc` are the two applied types the CORE provides, so their names
-  /// are resolved here rather than looked up, exactly as `i64` is. Everything
-  /// else applied is a declared type and is not reachable until D-90's table
-  /// holds templates — until then, saying so beats "unknown type".
+  /// resolve here rather than through the table, exactly as `i64` does (D-90).
   | StyApp n us ->
     (match n, us with
-     | "Box", [u] -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TBox d))
-     | "Rc",  [u] -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TRc d))
+     | "Box", [u] -> (match elab_ty fuel te u with Inl e -> Inl e | Inr d -> Inr (TBox d))
+     | "Rc",  [u] -> (match elab_ty fuel te u with Inl e -> Inl e | Inr d -> Inr (TRc d))
      | "Box", _   -> Inl "Box takes exactly one type argument, as in Box[i64]"
      | "Rc",  _   -> Inl "Rc takes exactly one type argument, as in Rc[i64]"
-     | _, _       -> Inl (n ^ " is not a type that takes arguments"))
+     | _, _       ->
+       (match lookup_ty_in te n with
+        | None   -> Inl ("unknown type: " ^ n)
+        | Some d ->
+          if length d.td_params <> length us
+          then Inl (n ^ " takes " ^ string_of_int (length d.td_params)
+                    ^ " type arguments but was given " ^ string_of_int (length us))
+          else elab_data fuel te d us))
   /// A variable that survived to here was never bound by an instantiation
-  /// (D-79). Inside a generic's stored body that is impossible — `E06` rewrites
-  /// every parameter before elaborating — so this reports the one case that can
-  /// reach it: a `#T` written in a signature that declares no such parameter.
-  | StyVar n  -> Inl ("#" ^ n ^ " is not a type parameter of this definition")
+  /// (D-79/D-90). Inside a stored template that is impossible — every parameter
+  /// is rewritten before elaborating — so this reports the one case that can
+  /// reach it: a `#T` written where no such parameter is declared.
+  | StyVar n  -> Inl ("#" ^ n ^ " is not a type parameter here")
   /// Already elaborated: the type an instantiation substituted in.
   | StyFixed d -> Inr d
 
-let rec elab_tys (te:tenv) (ts:list sty)
-  : Tot (either string (list dtype)) (decreases ts) =
+/// Instantiate a declaration at `args` and build its `TSum`. Fuel drops here,
+/// which is the one place it does.
+and elab_data (fuel:nat) (te:tenv) (d:tdecl) (args:list sty)
+  : Tot (either string dtype) (decreases %[fuel; (0 <: nat); 3]) =
+  if fuel = 0
+  then Inl ("the type " ^ d.td_name ^ " refers to itself; a recursive type needs \
+             a pointer and a nominal declaration, which do not exist yet")
+  else
+    (match ty_sub d.td_params args with
+     | None    -> Inl (d.td_name ^ ": wrong number of type arguments")
+     | Some su ->
+       (match elab_variants (fuel - 1) te (subst_variants su d.td_variants) with
+        | Inl e  -> Inl e
+        | Inr vs -> Inr (TSum vs)))
+
+/// One payload segment per variant, in tag order. THE REVERSAL again: a payload
+/// is written bottom-to-top and a core segment is head-is-top.
+and elab_variants (fuel:nat) (te:tenv) (vs:list (string & list sty))
+  : Tot (either string (list seg)) (decreases %[fuel; variant_stys_size vs; 2]) =
+  match vs with
+  | []            -> Inr []
+  | (_, p) :: r   -> (match elab_tys fuel te p with
+                      | Inl e   -> Inl e
+                      | Inr ds  -> (match elab_variants fuel te r with
+                                    | Inl e   -> Inl e
+                                    | Inr rest -> Inr (rev ds :: rest)))
+
+and elab_tys (fuel:nat) (te:tenv) (ts:list sty)
+  : Tot (either string (list dtype)) (decreases %[fuel; stys_size ts; 1]) =
   match ts with
   | []     -> Inr []
-  | t :: r -> (match elab_ty te t with
+  | t :: r -> (match elab_ty fuel te t with
                | Inl e -> Inl e
-               | Inr d -> (match elab_tys te r with
+               | Inr d -> (match elab_tys fuel te r with
                            | Inl e  -> Inl e
                            | Inr ds -> Inr (d :: ds)))
 
@@ -231,17 +322,30 @@ let rec match_ty (te:tenv) (su:tsub) (pat:sty) (d:dtype)
   /// A declared type matches by the representation it names, which is right
   /// while a type name is a pure abbreviation. It stops being right the moment
   /// two `data` declarations can have the same representation and still be
-  /// different types — see the note on nominality at `elab_data` (D-89).
+  /// different types — the nominality limit D-90 states.
   | StyName n  -> (match prim_of_name n, d with
                    | Some p, TPrim q -> if p = q then Some su else None
                    | Some _, _       -> None
-                   | None, _         -> (match lookup_ty_in te n with
-                                         | Some d' -> if d' = d then Some su else None
-                                         | None    -> None))
+                   | None, _         ->
+                     (match elab_ty (length te) te pat with
+                      | Inr d' -> if d' = d then Some su else None
+                      | Inl _  -> None))
+  /// `Box` and `Rc` match STRUCTURALLY, so `Box[#T]` binds `#T` from the stack.
+  /// A declared type does not: it is elaborated and compared, which means it
+  /// matches only when it is GROUND. `define f[#T] ( Option[#T] -- )` therefore
+  /// cannot be called implicitly — write the types, `f[i64]`. Binding a variable
+  /// through a declaration would mean running `elab_data` backwards, which is
+  /// unification over declarations and is exactly what D-31 says this language
+  /// does not have.
   | StyApp n us -> (match n, us, d with
                     | "Box", [u], TBox d' -> match_ty te su u d'
                     | "Rc",  [u], TRc d'  -> match_ty te su u d'
-                    | _, _, _             -> None)
+                    | "Box", _, _         -> None
+                    | "Rc",  _, _         -> None
+                    | _, _, _             ->
+                      (match elab_ty (length te) te pat with
+                       | Inr d' -> if d' = d then Some su else None
+                       | Inl _  -> None))
 
 /// Left to right over the declared inputs, TOP FIRST — the caller reverses the
 /// surface list, since the stack model runs top-first and a signature does not.
@@ -283,9 +387,9 @@ let rec named_suffix_ok (seen_named:bool) (ps:list sparam)
 let elab_sig (te:tenv) (s:ssig) : Tot (either string srow) =
   if not (named_suffix_ok false s.ss_in)
   then Inl "named parameters must be the topmost inputs; reorder the signature or name the ones beneath"
-  else match elab_tys te (param_tys s.ss_in) with
+  else match elab_tys (length te) te (param_tys s.ss_in) with
        | Inl e    -> Inl e
-       | Inr ins  -> (match elab_tys te s.ss_out with
+       | Inr ins  -> (match elab_tys (length te) te s.ss_out with
                       | Inl e     -> Inl e
                       | Inr outs  -> Inr ({ pre = rev ins; post = rev outs }))
 
@@ -451,7 +555,7 @@ let rec explicit_sub (te:tenv) (ps:list string) (tys:list sty)
   match ps, tys with
   | [], []           -> Inr []
   | p :: pr, t :: tr ->
-    (match elab_ty te t with
+    (match elab_ty (length te) te t with
      | Inl e -> Inl e
      | Inr d -> (match explicit_sub te pr tr with
                  | Inl e  -> Inl e
@@ -895,7 +999,7 @@ and elab_handle_parts (env:nenv) (base:nat) (ename:string) (sttys:list sty)
   match lookup_eff env ename with
   | None -> Inl ("unknown effect: " ^ ename)
   | Some eid ->
-    (match elab_tys env.ne_types sttys with
+    (match elab_tys (length env.ne_types) env.ne_types sttys with
      | Inl e -> Inl e
      /// THE REVERSAL again: `over ( a b )` reads bottom-to-top, the core wants
      /// head = top.
