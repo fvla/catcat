@@ -2583,3 +2583,68 @@ or two; whether the default handler is expressible in the language or only by
 the compiler; and how it interacts with the capability system, since `CDrop` is
 today a static licence to discard rather than a call to anything. That last one
 is the hard part, and it is the same question Q-17 asks from the abort path.
+
+---
+
+## D-89. Surface type declarations: `data … { alt … }`, and records via `TSeal`
+
+The two shapes the core has get two spellings, and neither existed. `D02` gives
+sums a complete core account (`TSum`, `PInj`, `TDispatch`) and no surface form;
+`D03` §3's `class Foo : Iface[Foo] over ( … )` couples a sealed type to an
+interface, which is a bigger construct than "declare a type". So this was
+genuinely undesigned rather than merely unimplemented.
+
+**Sums are declared one variant per `alt`:**
+
+```
+data Color {
+    alt Red   ( )
+    alt Green ( )
+    alt Blue  ( )
+}
+
+data Option[#T] {
+    alt None ( )
+    alt Some ( #T )
+}
+```
+
+*Why this spelling.* It is `effect E { declare op ( … ) }` with one word
+changed, so the parser's shape is one it already has and a reader has already
+met it. `alt` is a position-keyword in `macro` today, so nothing is reserved
+that was not. And it is LL(1) with no new punctuation: inside the braces every
+alternative is keyed on `alt` and `}` ends the list — no ε-branch, so D-30
+holds without an argument.
+
+Rejected: `data Color ( Red | Green | Blue )`, which costs a new self-delimiting
+token and stops being short the moment a variant carries a payload — `Some ( #T )`
+then has to be disambiguated from two things juxtaposed. And `declare` per
+variant, which is maximum consistency with `effect` and reads wrong: a
+constructor is not an operation.
+
+**A record is `TSeal` with explicit capabilities, and it is a MACRO.** Not a
+one-variant `data`, because `M01.has_cap` derives a `TSum`'s capabilities from
+its members, so a one-variant sum can never be *less* copyable than what it
+wraps. `TSeal` carries its own `list cap` precisely so a sealed type may drop a
+capability its representation happens to have (D-08) — which is the whole of
+what a file handle, a lock or a replacement for `Box` needs.
+
+### The sequencing this forces, which is not optional
+
+A macro cannot express this today, and the obstacle is structural rather than a
+missing case. `E02.mprod`'s templates are `list sterm` and `E03` dispatches a
+macro only where a **term** may start. A type declaration is not a term: it
+allocates a `nom_id` and extends a table. So:
+
+1. **`data` is a parser built-in**, on exactly D-38's ground — it needs a
+   sub-grammar (a block of `alt` clauses is not a term list), and the macro slot
+   vocabulary should not be stretched to cover that before it has been exercised.
+2. **A declaration carries capabilities**, so `TSeal` is reachable at all and a
+   linear wrapper over a `Copy` representation is expressible.
+3. **Then macros reach declaration position**, and the record form becomes a
+   macro over (1) and (2). That is also the honest test D-35 always wanted for
+   the macro vocabulary — the one D-38 deferred by keeping `effect` and `handle`
+   built in.
+
+Building the record form as a macro *first* is not available: there would be
+nothing for it to expand into.
