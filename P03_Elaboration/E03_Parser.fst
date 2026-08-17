@@ -90,26 +90,49 @@ let ll1_ok (ps:list mprod) : Tot bool =
 (* Types                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
-/// `Box[i64]` / `Rc[i64]` use the generic brackets; anything else is a name.
+/// A type is a name, optionally applied to arguments in brackets (D-90).
+///
+/// `Box` and `Rc` used to be special-cased here, each taking exactly one
+/// argument. They are not any more: `N[t₁ … tₙ]` is one production, the arity
+/// is whatever the declaration says, and `E04.elab_ty` decides what the name
+/// means. So `Box[i64]`, `Rc[str]` and `Option[i64]` all parse by the same rule
+/// and a program can introduce the third.
+///
+/// LL(1) with nothing to look ahead at: `[` is self-delimiting, so `Box[i64` is
+/// already three tokens and the decision to read arguments is made on the one
+/// token in hand (D-30). A bare `Option` with no brackets parses fine and is
+/// rejected later, by arity, where the message can say how many it wanted.
 let rec parse_ty (ts:list token)
   : Tot (r:presult sty { POk? r ==> length (POk?._1 r) <= length ts })
-        (decreases (length ts)) =
+        (decreases %[length ts; 0]) =
   match ts with
   | [] -> PErr "expected a type, found end of input"
   | TkHash n :: rest -> POk (StyVar n) rest
-  | TkWord w :: rest ->
-    if w = "Box" || w = "Rc" then
-      (match rest with
-       | TkLBrack :: inner ->
-         (match parse_ty inner with
-          | PErr e -> PErr e
-          | POk t after ->
-            (match after with
-             | TkRBrack :: tail -> POk (if w = "Box" then StyBox t else StyRc t) tail
-             | _ -> PErr ("expected ']' closing " ^ w)))
-       | _ -> PErr (w ^ " needs a type argument, as in " ^ w ^ "[i64]"))
-    else POk (StyName w) rest
+  | TkWord w :: TkLBrack :: inner ->
+    (match parse_ty_args w [] inner with
+     | PErr e -> PErr e
+     | POk args tail -> POk (StyApp w args) tail)
+  | TkWord w :: rest -> POk (StyName w) rest
   | t :: _ -> PErr ("expected a type, found " ^ render_token t)
+
+/// The arguments of an applied type, up to the closing `]`. `w` is carried only
+/// so the errors can name what is being applied.
+and parse_ty_args (w:string) (acc:list sty) (ts:list token)
+  : Tot (r:presult (list sty) { POk? r ==> length (POk?._1 r) < length ts })
+        (decreases %[length ts; 1]) =
+  match ts with
+  | [] -> PErr ("expected ']' closing " ^ w ^ ", found end of input")
+  | TkRBrack :: rest ->
+    if Nil? acc
+    then PErr (w ^ " needs at least one type argument, as in " ^ w ^ "[i64]")
+    else POk (rev acc) rest
+  | _ ->
+    (match parse_ty ts with
+     | PErr e -> PErr e
+     | POk t after ->
+       if length after >= length ts
+       then PErr ("expected a type argument or ']' closing " ^ w)
+       else parse_ty_args w (t :: acc) after)
 
 /// `[ t1 t2 … ]` after a word in term position — an explicit instantiation
 /// (D-82). Space-separated, like the `[#T #U]` of the declaration it answers.

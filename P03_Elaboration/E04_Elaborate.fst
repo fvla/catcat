@@ -170,8 +170,17 @@ let rec elab_ty (te:tenv) (t:sty) : Tot (either string dtype) (decreases (sty_si
                   | None   -> (match lookup_ty_in te n with
                                | Some d -> Inr d
                                | None   -> Inl ("unknown type: " ^ n)))
-  | StyBox u  -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TBox d))
-  | StyRc u   -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TRc d))
+  /// `Box` and `Rc` are the two applied types the CORE provides, so their names
+  /// are resolved here rather than looked up, exactly as `i64` is. Everything
+  /// else applied is a declared type and is not reachable until D-90's table
+  /// holds templates — until then, saying so beats "unknown type".
+  | StyApp n us ->
+    (match n, us with
+     | "Box", [u] -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TBox d))
+     | "Rc",  [u] -> (match elab_ty te u with Inl e -> Inl e | Inr d -> Inr (TRc d))
+     | "Box", _   -> Inl "Box takes exactly one type argument, as in Box[i64]"
+     | "Rc",  _   -> Inl "Rc takes exactly one type argument, as in Rc[i64]"
+     | _, _       -> Inl (n ^ " is not a type that takes arguments"))
   /// A variable that survived to here was never bound by an instantiation
   /// (D-79). Inside a generic's stored body that is impossible — `E06` rewrites
   /// every parameter before elaborating — so this reports the one case that can
@@ -229,12 +238,10 @@ let rec match_ty (te:tenv) (su:tsub) (pat:sty) (d:dtype)
                    | None, _         -> (match lookup_ty_in te n with
                                          | Some d' -> if d' = d then Some su else None
                                          | None    -> None))
-  | StyBox u   -> (match d with
-                   | TBox d' -> match_ty te su u d'
-                   | _       -> None)
-  | StyRc u    -> (match d with
-                   | TRc d'  -> match_ty te su u d'
-                   | _       -> None)
+  | StyApp n us -> (match n, us, d with
+                    | "Box", [u], TBox d' -> match_ty te su u d'
+                    | "Rc",  [u], TRc d'  -> match_ty te su u d'
+                    | _, _, _             -> None)
 
 /// Left to right over the declared inputs, TOP FIRST — the caller reverses the
 /// surface list, since the stack model runs top-first and a signature does not.

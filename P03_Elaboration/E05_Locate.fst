@@ -359,17 +359,16 @@ let show_prim_word (o:prim_word) : Tot string =
 /// names, `$x` slot references and unresolved effects. Two renderers is the
 /// honest cost of `locate` showing a macro as what it is rather than as what it
 /// would become.
-let rec show_sty (t:sty) : Tot string (decreases (sty_size t)) =
+let rec show_sty (t:sty) : Tot string (decreases %[(sty_size t <: nat); 0]) =
   match t with
-  | StyName n -> n
-  | StyVar n  -> "#" ^ n
-  | StyBox u  -> "Box[" ^ show_sty u ^ "]"
-  | StyRc u   -> "Rc[" ^ show_sty u ^ "]"
+  | StyName n   -> n
+  | StyVar n    -> "#" ^ n
+  | StyApp n us -> n ^ "[" ^ show_stys us ^ "]"
   /// An instantiated parameter (D-79) prints as the type it was bound to, which
   /// is what a reader wants: `locate` on an instance should show the instance.
-  | StyFixed d -> render_ty d
+  | StyFixed d  -> render_ty d
 
-let rec show_stys (ts:list sty) : Tot string (decreases ts) =
+and show_stys (ts:list sty) : Tot string (decreases %[stys_size ts; 1]) =
   match ts with
   | []      -> ""
   | t :: [] -> show_sty t

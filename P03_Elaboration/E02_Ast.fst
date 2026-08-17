@@ -35,10 +35,22 @@ open M01_Kinds
 /// means the parser needs no type table.
 type sty =
   | StyName : string -> sty
-  | StyBox  : sty -> sty
-  | StyRc   : sty -> sty
-  /// `#T` — a parametric type variable. Parsed and rejected by E04 for now;
-  /// present so generics do not require an AST change.
+  /// `N[t₁ … tₙ]` — a type applied to arguments (D-90).
+  ///
+  /// ONE CASE, NOT ONE PER TYPE CONSTRUCTOR. `Box[i64]` and `Rc[i64]` used to
+  /// be `StyBox`/`StyRc`, which meant the surface had exactly two parameterised
+  /// types and no way to write a third. They are now `StyApp "Box" [i64]`, and
+  /// `E04.elab_ty` maps the NAME to the core's `TBox` the same way
+  /// `prim_of_name` maps `i64` to `TPrim PI64`.
+  ///
+  /// That is a syntactic unification and not a re-declaration: `Box` still
+  /// denotes the core constructor, because a `data`-declared `Box` would be a
+  /// `TSum` and `M01.has_cap` derives a sum's capabilities from its members —
+  /// so `Box[i64]` would come out `Copy`, the opposite of a unique owning
+  /// pointer. See D-90.
+  | StyApp  : string -> list sty -> sty
+  /// `#T` — a parametric type variable, bound by a `[…]` on a `define` or a
+  /// `data`.
   | StyVar  : string -> sty
   /// A type that is already elaborated (D-79). Never parsed: it exists so that
   /// instantiating a generic is a SURFACE rewrite, `sty` for `sty`, with the
@@ -47,13 +59,21 @@ type sty =
   /// type elaboration in the module would need it threaded through.
   | StyFixed : dtype -> sty
 
+/// No explicit measure: both edges are structural, so F\* infers the ordering —
+/// the same shape as `M01.dtype_size`/`seg_size`. The lexicographic pattern
+/// CLAUDE.md warns about is needed when a measure is written in terms of the
+/// function being defined, which is not the case here.
 let rec sty_size (t:sty) : Tot pos =
   match t with
-  | StyName _ -> 1
-  | StyVar _  -> 1
-  | StyFixed _ -> 1
-  | StyBox u  -> 1 + sty_size u
-  | StyRc u   -> 1 + sty_size u
+  | StyName _   -> 1
+  | StyVar _    -> 1
+  | StyFixed _  -> 1
+  | StyApp _ us -> 1 + stys_size us
+
+and stys_size (ts:list sty) : Tot nat =
+  match ts with
+  | []     -> 0
+  | t :: r -> sty_size t + stys_size r
 
 (* ------------------------------------------------------------------------ *)
 (* Signatures                                                               *)
@@ -412,14 +432,15 @@ and subst_impls (caps:list mcap) (im:list (string & list sterm))
 /// ever reaches it.
 type tsub = list (string & sty)
 
-let rec subst_ty (su:tsub) (t:sty) : Tot sty (decreases (sty_size t)) =
+let rec subst_ty (su:tsub) (t:sty)
+  : Tot sty (decreases %[(sty_size t <: nat); 0]) =
   match t with
-  | StyVar n  -> (match assoc n su with Some u -> u | None -> t)
-  | StyBox u  -> StyBox (subst_ty su u)
-  | StyRc u   -> StyRc (subst_ty su u)
-  | _         -> t
+  | StyVar n    -> (match assoc n su with Some u -> u | None -> t)
+  | StyApp n us -> StyApp n (subst_stys su us)
+  | _           -> t
 
-let rec subst_stys (su:tsub) (ts:list sty) : Tot (list sty) (decreases ts) =
+and subst_stys (su:tsub) (ts:list sty)
+  : Tot (list sty) (decreases %[stys_size ts; 1]) =
   match ts with
   | []     -> []
   | t :: r -> subst_ty su t :: subst_stys su r
@@ -436,15 +457,14 @@ let rec subst_params (su:tsub) (ps:list sparam)
 /// can never be bound, so a call site would fail with a message about a
 /// substitution rather than about the typo that caused it.
 let rec sty_stray (ps:list string) (t:sty)
-  : Tot (option string) (decreases (sty_size t)) =
+  : Tot (option string) (decreases %[(sty_size t <: nat); 0]) =
   match t with
-  | StyVar n -> if mem n ps then None else Some n
-  | StyBox u -> sty_stray ps u
-  | StyRc u  -> sty_stray ps u
-  | _        -> None
+  | StyVar n    -> if mem n ps then None else Some n
+  | StyApp _ us -> stys_stray ps us
+  | _           -> None
 
-let rec stys_stray (ps:list string) (ts:list sty)
-  : Tot (option string) (decreases ts) =
+and stys_stray (ps:list string) (ts:list sty)
+  : Tot (option string) (decreases %[stys_size ts; 1]) =
   match ts with
   | []     -> None
   | t :: r -> (match sty_stray ps t with
