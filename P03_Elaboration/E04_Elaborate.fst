@@ -191,6 +191,11 @@ let lookup_eff (e:nenv) (x:string) : Tot (option eff_id) =
 (* Types                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
+/// Error messages count things, and "1 type parameters" reads as a bug in the
+/// compiler rather than in the program.
+let plural (n:nat) (one:string) (many:string) : Tot string =
+  string_of_int n ^ " " ^ (if n = 1 then one else many)
+
 let prim_of_name (s:string) : Tot (option prim) =
   if s = "i8" then Some PI8 else if s = "i16" then Some PI16
   else if s = "i32" then Some PI32 else if s = "i64" then Some PI64
@@ -225,9 +230,12 @@ let rec elab_ty (fuel:nat) (te:tenv) (t:sty)
      | Some p -> Inr (TPrim p)
      | None   -> (match lookup_ty_in te n with
                   | Some d -> if Nil? d.td_params
-                              then elab_data fuel te d []
-                              else Inl (n ^ " takes " ^ string_of_int (length d.td_params)
-                                        ^ " type arguments, as in " ^ n ^ "[i64]")
+                              then (match elab_data fuel te d [] with
+                                    | Inl e  -> Inl e
+                                    | Inr vs -> Inr (TSum vs))
+                              else Inl (n ^ " takes "
+                                        ^ plural (length d.td_params) "type argument" "type arguments"
+                                        ^ ", as in " ^ n ^ "[i64]")
                   | None   -> Inl ("unknown type: " ^ n)))
   /// `Box` and `Rc` are the two applied types the CORE provides, so their names
   /// resolve here rather than through the table, exactly as `i64` does (D-90).
@@ -242,9 +250,12 @@ let rec elab_ty (fuel:nat) (te:tenv) (t:sty)
         | None   -> Inl ("unknown type: " ^ n)
         | Some d ->
           if length d.td_params <> length us
-          then Inl (n ^ " takes " ^ string_of_int (length d.td_params)
-                    ^ " type arguments but was given " ^ string_of_int (length us))
-          else elab_data fuel te d us))
+          then Inl (n ^ " takes "
+                    ^ plural (length d.td_params) "type argument" "type arguments"
+                    ^ " but was given " ^ string_of_int (length us))
+          else (match elab_data fuel te d us with
+                | Inl e  -> Inl e
+                | Inr vs -> Inr (TSum vs))))
   /// A variable that survived to here was never bound by an instantiation
   /// (D-79/D-90). Inside a stored template that is impossible — every parameter
   /// is rewritten before elaborating — so this reports the one case that can
@@ -253,10 +264,16 @@ let rec elab_ty (fuel:nat) (te:tenv) (t:sty)
   /// Already elaborated: the type an instantiation substituted in.
   | StyFixed d -> Inr d
 
-/// Instantiate a declaration at `args` and build its `TSum`. Fuel drops here,
+/// Instantiate a declaration at `args` and give its VARIANTS. Fuel drops here,
 /// which is the one place it does.
+///
+/// It returns the segments rather than the `TSum` its callers in `elab_ty`
+/// immediately want, because a constructor call site needs the same list for its
+/// `PInj` (D-91). Wrapping at the two call sites that want a type is cheaper
+/// than having the constructor path match a `TSum` this function built itself
+/// and carry an arm for the shape it cannot return.
 and elab_data (fuel:nat) (te:tenv) (d:tdecl) (args:list sty)
-  : Tot (either string dtype) (decreases %[fuel; (0 <: nat); 3]) =
+  : Tot (either string (list seg)) (decreases %[fuel; (0 <: nat); 3]) =
   if fuel = 0
   then Inl ("the type " ^ d.td_name ^ " refers to itself; a recursive type needs \
              a pointer and a nominal declaration, which do not exist yet")
@@ -264,9 +281,7 @@ and elab_data (fuel:nat) (te:tenv) (d:tdecl) (args:list sty)
     (match ty_sub d.td_params args with
      | None    -> Inl (d.td_name ^ ": wrong number of type arguments")
      | Some su ->
-       (match elab_variants (fuel - 1) te (subst_variants su d.td_variants) with
-        | Inl e  -> Inl e
-        | Inr vs -> Inr (TSum vs)))
+       elab_variants (fuel - 1) te (subst_variants su d.td_variants))
 
 /// One payload segment per variant, in tag order. THE REVERSAL again: a payload
 /// is written bottom-to-top and a core segment is head-is-top.
@@ -572,7 +587,7 @@ let gen_call (te:tenv) (w:string) (g:gentry) (su0:tsub) (sh:shape)
   let pats = rev (param_tys g.g_sig.ss_in) in
   if length pats > length sh
   then Inl ("stack underflow calling " ^ w ^ ": it needs "
-            ^ string_of_int (length pats) ^ " inputs")
+            ^ plural (length pats) "input" "inputs")
   else
     (match match_tys te su0 pats (slot_tys sh) with
      | None -> Inl (w ^ ": the stack does not match its declared inputs")
@@ -585,6 +600,78 @@ let gen_call (te:tenv) (w:string) (g:gentry) (su0:tsub) (sh:shape)
           (match elab_sig te (subst_ssig su g.g_sig) with
            | Inl e   -> Inl (w ^ ": " ^ e)
            | Inr row -> Inr (su, row))))
+
+(* ------------------------------------------------------------------------ *)
+(* Constructor call sites                                                   *)
+(* ------------------------------------------------------------------------ *)
+
+/// The declaration's arguments, read back out of a substitution (D-91).
+///
+/// A parameter with no binding is one the payload never mentioned — `None` in
+/// `Option[#T]` — so the call site cannot recover it and is told to write it.
+/// This is `all_bound`'s job for a generic, done here in one pass because a
+/// constructor needs the arguments themselves and not merely the assurance that
+/// they exist.
+let rec ctor_args (c:string) (su:tsub) (ps:list string)
+  : Tot (either string (list sty)) (decreases ps) =
+  match ps with
+  | []     -> Inr []
+  | p :: r ->
+    (match assoc p su with
+     | None   -> Inl (c ^ ": #" ^ p ^ " is not determined by what it carries; \
+                      write the types at the call site, as in " ^ c ^ "[i64]")
+     | Some a -> (match ctor_args c su r with
+                  | Inl e    -> Inl e
+                  | Inr rest -> Inr (a :: rest)))
+
+/// One constructor at a COMPLETE substitution: the term it emits and the row it
+/// has. `PInj`'s own rule in `M06.prim_sig` is `pre = index variants tag`,
+/// `post = [TSum variants]`, and this reproduces it from the surface side —
+/// `rev` because a payload is written bottom-to-top and a segment is head-is-top.
+let ctor_row (te:tenv) (c:string) (d:tdecl) (tag:nat) (pay:list sty) (su:tsub)
+  : Tot (either string (term & srow)) =
+  match ctor_args c su d.td_params with
+  | Inl e     -> Inl e
+  | Inr args  ->
+    (match elab_tys (length te) te (subst_stys su pay) with
+     | Inl e  -> Inl (c ^ ": " ^ e)
+     | Inr ds ->
+       (match elab_data (length te) te d args with
+        | Inl e  -> Inl (c ^ ": " ^ e)
+        | Inr vs ->
+          Inr (TPrimOp (PInj vs tag),
+               { pre = rev ds; post = [TSum vs] })))
+
+/// Resolve one constructor call site against the modelled stack. `su0` is `[]`
+/// for `Some` and pre-filled for `Some[i64]`, exactly as in `gen_call`, so the
+/// explicit form is CHECKED against the stack rather than believed.
+///
+/// The pattern is the payload, and that is the whole of the inference: a
+/// parameter is bound by matching a declared payload type against a concrete
+/// stack type, which is `match_ty`'s one-directional discipline (D-79) and no
+/// more. `Some` infers `#T`; `None` cannot and says so.
+let ctor_call (te:tenv) (c:string) (d:tdecl) (tag:nat) (pay:list sty)
+              (su0:tsub) (sh:shape)
+  : Tot (either string (term & srow)) =
+  let pats = rev pay in
+  if length pats > length sh
+  then Inl ("stack underflow calling " ^ c ^ ": it carries "
+            ^ plural (length pats) "value" "values")
+  else
+    (match match_tys te su0 pats (slot_tys sh) with
+     | None    -> Inl (c ^ ": the stack does not match what it carries")
+     | Some su -> ctor_row te c d tag pay su)
+
+/// The arity check `Some[i64 str]` needs, shared by both passes.
+let ctor_at (te:tenv) (c:string) (d:tdecl) (tys:list sty)
+  : Tot (either string tsub) =
+  if length d.td_params <> length tys
+  then Inl (c ^ " constructs " ^ d.td_name ^ ", which has "
+            ^ plural (length d.td_params) "type parameter" "type parameters"
+            ^ ", but was given " ^ string_of_int (length tys))
+  else (match explicit_sub te d.td_params tys with
+        | Inl e   -> Inl (c ^ ": " ^ e)
+        | Inr su0 -> Inr su0)
 
 let elab_lit (n:int) : Tot (either string term) =
   if -(pow2 63) <= n && n < pow2 63
@@ -728,12 +815,29 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
      /// substitution, and the `TSpecialize` it leaves is the term that says so.
      | StWordAt w tys ->
        (match lookup_gen_in env.ne_gens w with
-        | None -> Inl (w ^ " is not generic, so it takes no type arguments")
+        | None ->
+          /// Not a generic; a constructor of a parameterised `data` takes type
+          /// arguments the same way and by the same syntax (D-91).
+          (match lookup_ctor env.ne_types w with
+           | None -> Inl (w ^ " is neither generic nor a constructor, so it \
+                          takes no type arguments")
+           | Some (d, tag, pay) ->
+             (match ctor_at env.ne_types w d tys with
+              | Inl e   -> Inl e
+              | Inr su0 ->
+                (match ctor_call env.ne_types w d tag pay su0 sh with
+                 | Inl e -> Inl e
+                 | Inr (ct, row) ->
+                   (match drop_n (length row.pre) sh with
+                    | None -> Inl ("stack underflow calling " ^ w)
+                    | Some sh' ->
+                      elab_terms env cs (base + sterm_size t)
+                        (anon_slots row.post @ sh') (ct :: acc) dacc rest))))
         | Some g ->
           if length g.g_params <> length tys
-          then Inl (w ^ " has " ^ string_of_int (length g.g_params)
-                    ^ " type parameters but was given "
-                    ^ string_of_int (length tys))
+          then Inl (w ^ " has "
+                    ^ plural (length g.g_params) "type parameter" "type parameters"
+                    ^ " but was given " ^ string_of_int (length tys))
           else
             (match explicit_sub env.ne_types g.g_params tys with
              | Inl e   -> Inl (w ^ ": " ^ e)
@@ -748,6 +852,11 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
                        (anon_slots row.post @ sh')
                        (TWord base :: acc) (GInst base w su :: dacc) rest))))
 
+     /// RESOLUTION ORDER: builtins, then generics, then constructors, then
+     /// ordinary words (D-91). A constructor therefore beats a `define` of the
+     /// same name whichever was written first — the same asymmetry a generic
+     /// already has, and the price of separate namespaces rather than one
+     /// ordered scope.
      | StWord w ->
        (match lookup_gen_in env.ne_gens w with
         /// The implicit form. Identical to `StWordAt` from `gen_call` onward;
@@ -764,17 +873,29 @@ let rec elab_terms (env:nenv) (cs:counts) (base:nat) (sh:shape) (acc:list term)
                   (TWord base :: acc) (GInst base w su :: dacc) rest))
 
         | None ->
+          (match lookup_ctor env.ne_types w with
+           | Some (d, tag, pay) ->
+             (match ctor_call env.ne_types w d tag pay [] sh with
+              | Inl e -> Inl e
+              | Inr (ct, row) ->
+                (match drop_n (length row.pre) sh with
+                 | None -> Inl ("stack underflow calling " ^ w)
+                 | Some sh' ->
+                   elab_terms env cs (base + sterm_size t)
+                     (anon_slots row.post @ sh') (ct :: acc) dacc rest))
+
+           | None ->
           (match lookup_name env w with
            | None -> Inl ("unknown word: " ^ w)
            | Some n ->
              (match drop_n (length n.n_sig.pre) sh with
               | None ->
                 Inl ("stack underflow calling " ^ w ^ ": it needs "
-                     ^ string_of_int (length n.n_sig.pre) ^ " inputs")
+                     ^ plural (length n.n_sig.pre) "input" "inputs")
               | Some sh' ->
                 elab_terms env cs (base + sterm_size t)
                   (anon_slots n.n_sig.post @ sh')
-                  (TWord n.n_id :: acc) dacc rest)))
+                  (TWord n.n_id :: acc) dacc rest))))
 
      | StBlock _ ->
        Inl "a { } block is only meaningful as a definition body or a branch"
@@ -1246,12 +1367,25 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
      /// Written types sidestep that, so `define f { g[i64] }` infers.
      | StWordAt w tys ->
        (match lookup_gen_in env.ne_gens w with
-        | None -> Inl (w ^ " is not generic, so it takes no type arguments")
+        | None ->
+          (match lookup_ctor env.ne_types w with
+           | None -> Inl (w ^ " is neither generic nor a constructor, so it \
+                          takes no type arguments")
+           | Some (d, tag, pay) ->
+             (match ctor_at env.ne_types w d tys with
+              | Inl e   -> Inl e
+              | Inr su0 ->
+                (match ctor_row env.ne_types w d tag pay su0 with
+                 | Inl e        -> Inl e
+                 | Inr (_, row) ->
+                   (match iapply_pre w st row.pre with
+                    | Inl e   -> Inl e
+                    | Inr st1 -> infer_terms env cs (ipush_post row.post st1) rest))))
         | Some g ->
           if length g.g_params <> length tys
-          then Inl (w ^ " has " ^ string_of_int (length g.g_params)
-                    ^ " type parameters but was given "
-                    ^ string_of_int (length tys))
+          then Inl (w ^ " has "
+                    ^ plural (length g.g_params) "type parameter" "type parameters"
+                    ^ " but was given " ^ string_of_int (length tys))
           else
             (match explicit_sub env.ne_types g.g_params tys with
              | Inl e   -> Inl (w ^ ": " ^ e)
@@ -1273,12 +1407,29 @@ let rec infer_terms (env:nenv) (cs:counts) (st:ist) (ts:list sterm)
           Inl (w ^ " is generic; in a definition with no written signature, \
                 instantiate it explicitly, as in " ^ w ^ "[i64]")
         | None ->
+       (match lookup_ctor env.ne_types w with
+        /// A constructor of an UNPARAMETERISED declaration needs nothing from
+        /// the stack model, so unlike a generic it resolves here. A
+        /// parameterised one has the generic's problem and gets its answer.
+        | Some (d, tag, pay) ->
+          if Cons? d.td_params
+          then Inl (w ^ " constructs " ^ d.td_name ^ ", which takes type \
+                    parameters; in a definition with no written signature, \
+                    instantiate it explicitly, as in " ^ w ^ "[i64]")
+          else (match ctor_row env.ne_types w d tag pay [] with
+                | Inl e        -> Inl e
+                | Inr (_, row) ->
+                  (match iapply_pre w st row.pre with
+                   | Inl e   -> Inl e
+                   | Inr st1 -> infer_terms env cs (ipush_post row.post st1) rest))
+
+        | None ->
        (match lookup_name env w with
         | None -> Inl ("unknown word: " ^ w)
         | Some n ->
           (match iapply_pre w st n.n_sig.pre with
            | Inl e   -> Inl e
-           | Inr st1 -> infer_terms env cs (ipush_post n.n_sig.post st1) rest)))
+           | Inr st1 -> infer_terms env cs (ipush_post n.n_sig.post st1) rest))))
 
      | StBlock _ ->
        Inl "a { } block is only meaningful as a definition body or a branch"

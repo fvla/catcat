@@ -1052,6 +1052,47 @@ let eval_decl (s:session) (d:sdecl) : Tot dresult =
         | Inl e  -> DDone s ("error: " ^ e)
         | Inr s' -> DDone s' ("effect " ^ name ^ render_ops s'.se_nenv decls)))
 
+  /// A `data` declaration installs a TEMPLATE and no words (D-90, D-91).
+  ///
+  /// WHAT IS CHECKED HERE, AND WHAT IS NOT. A parameterised declaration cannot
+  /// be elaborated until a use site supplies arguments — its payloads mention
+  /// `#T`, which is not an `M01.dtype` — so it is checked exactly as far as a
+  /// generic word's template is (D-79): the shape is checked now, the types at
+  /// instantiation. An unparameterised one has no such excuse and IS elaborated
+  /// here, which is what turns an unknown type or a self-reference into an error
+  /// where it was written rather than at the first constructor call.
+  ///
+  /// Redeclaring a type SHADOWS rather than errors, because `ne_types` is
+  /// newest-first and every lookup takes the first match — words behave the same
+  /// way (D-32). Nothing already elaborated is disturbed: a `dtype` is a value,
+  /// not a reference to a table entry.
+  | SdData name ps vs ->
+    if Some? (prim_of_name name) || name = "Box" || name = "Rc"
+    then DDone s ("error: " ^ name ^ " is a built-in type name and cannot be \
+                  redeclared")
+    else
+      (match dup_param [] ps with
+       | Some p -> DDone s ("error: " ^ name ^ " declares #" ^ p ^ " twice")
+       | None ->
+      (match dup_variant [] vs with
+       | Some c -> DDone s ("error: " ^ name ^ " declares the variant " ^ c
+                            ^ " twice")
+       | None ->
+      (match variants_stray ps vs with
+       | Some n -> DDone s ("error: " ^ name ^ " declares no type parameter #" ^ n)
+       | None ->
+        let td = { td_name = name; td_params = ps; td_variants = vs } in
+        let te' = td :: s.se_nenv.ne_types in
+        (match (if Nil? ps
+                then (match elab_data (length te') te' td [] with
+                      | Inl e -> Inl e
+                      | Inr _ -> Inr ())
+                else Inr ()) with
+         | Inl e -> DDone s ("error: " ^ e)
+         | Inr () ->
+           DDone ({ s with se_nenv = { s.se_nenv with ne_types = te' } })
+                 (show_data td)))))
+
   | SdExtern name sg ->
     let (s', msg) = install_extern s name sg in DDone s' msg
 

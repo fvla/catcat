@@ -397,7 +397,16 @@ means something the author wrote.
 Combined with Q-17, an abort still discards without consulting capabilities.
 *Closes when:* surface sums land and `fail`/`catch` get a typed payload.
 
-**Q-23. A constructor for a parameterised `data` has no home in `gentry`.**
+**Q-23. A constructor for a parameterised `data` has no home in `gentry`.** —
+**CLOSED by D-91**, which took the third option: constructors are their own
+namespace, resolved at the call site and elaborated straight to `PInj`. The
+first option — a second, already-elaborated body form for `gentry` — was the
+recommendation below and was NOT taken: it makes every consumer of `gentry`
+carry two cases in order to route a constructor through machinery it needs none
+of. It remains the likely answer for D-56's F\* library, which does need a
+generic whose body is a `term`; the point is that the two problems are not the
+same problem. The question as originally written follows.
+
 Found starting D-90's step B3, and it is the obstacle D-89 predicted from the
 other direction.
 

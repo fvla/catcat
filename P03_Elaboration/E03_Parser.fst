@@ -804,6 +804,85 @@ let parse_effect (ts:list token)
   | _ -> PErr "expected a name after 'effect'"
 
 (* ------------------------------------------------------------------------ *)
+(* Type declarations                                                        *)
+(* ------------------------------------------------------------------------ *)
+
+/// One variant's payload: types up to `)`, with `(` already consumed.
+///
+/// Deliberately NOT `parse_sig_body`. A payload is a stack SEGMENT, not a
+/// signature: no `--`, no named parameters, no `!Eff` markers. A variant holds
+/// values and nothing about holding them can perform.
+let rec parse_payload (acc:list sty) (ts:list token)
+  : Tot (r:presult (list sty) { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | [] -> PErr "expected ')' closing a variant's payload, found end of input"
+  | TkRParen :: rest -> POk (rev acc) rest
+  | _ ->
+    (match parse_ty ts with
+     | PErr e -> PErr e
+     | POk t after ->
+       if length after < length ts
+       then parse_payload (t :: acc) after
+       else PErr "a variant's payload made no progress")
+
+/// `alt C ( tys ) …` up to the closing `}`.
+///
+/// `alt` is recognised by POSITION — first token of a variant inside a `data`
+/// body — so it stays an ordinary word everywhere else, exactly as it already
+/// does inside a `macro` declaration (D-32). The two uses never meet.
+let rec parse_alts (acc:list (string & list sty)) (ts:list token)
+  : Tot (r:presult (list (string & list sty))
+         { POk? r ==> length (POk?._1 r) <= length ts })
+        (decreases (length ts)) =
+  match ts with
+  | TkRBrace :: rest ->
+    if Nil? acc
+    then PErr "a data declaration needs at least one variant, as in \
+               'data Color { alt Red ( ) }'"
+    else POk (rev acc) rest
+  | TkWord "alt" :: TkWord c :: TkLParen :: r1 ->
+    (match parse_payload [] r1 with
+     | PErr e -> PErr e
+     | POk p r2 ->
+       if length r2 < length ts
+       then parse_alts ((c, p) :: acc) r2
+       else PErr "a variant made no progress")
+  | TkWord "alt" :: TkWord c :: _ ->
+    PErr ("alt " ^ c ^ " needs a payload, as in 'alt " ^ c ^ " ( i64 )'; a \
+          variant carrying nothing writes '( )'")
+  | TkWord "alt" :: _ -> PErr "expected a constructor name after 'alt'"
+  | [] -> PErr "expected 'alt' or '}' closing the declaration, found end of input"
+  | t :: _ -> PErr ("expected 'alt' or '}' here, found " ^ render_token t)
+
+/// `data N { alt … }`, or `data N[#T] { alt … }` for a parameterised one
+/// (D-89, D-90). `data` is already consumed.
+///
+/// The choice between the two rests on the single token after the name — `[` or
+/// `{` — which is the same LL(1) shape `define` has, and for the same reason:
+/// `[` is self-delimiting, so `Option[#T` is already three tokens (D-30).
+let parse_data (ts:list token)
+  : Tot (r:presult sdecl { POk? r ==> length (POk?._1 r) <= length ts }) =
+  match ts with
+  | TkWord name :: TkLBrack :: rest ->
+    (match parse_tparams [] rest with
+     | PErr e -> PErr e
+     | POk ps after ->
+       (match after with
+        | TkLBrace :: r1 ->
+          (match parse_alts [] r1 with
+           | PErr e    -> PErr e
+           | POk vs r2 -> POk (SdData name ps vs) r2)
+        | _ -> PErr ("expected '{' after the type parameters of " ^ name)))
+  | TkWord name :: TkLBrace :: rest ->
+    (match parse_alts [] rest with
+     | PErr e    -> PErr e
+     | POk vs r2 -> POk (SdData name [] vs) r2)
+  | TkWord name :: _ ->
+    PErr ("expected '[' or '{' after 'data " ^ name ^ "'")
+  | _ -> PErr "expected a name after 'data'"
+
+(* ------------------------------------------------------------------------ *)
 (* Macro declarations                                                       *)
 (* ------------------------------------------------------------------------ *)
 
@@ -919,7 +998,7 @@ let parse_macro_decl (mt:list mprod) (ts:list token)
 /// changes the grammar the rest of the line is read with (D-54) — the session
 /// cannot appeal to one fixed grammar to argue that it advances.
 ///
-/// The four keyword-led forms consume their keyword, so `<=` on what follows
+/// The keyword-led forms consume their keyword, so `<=` on what follows
 /// suffices. The expression form gets it from `parse_terms`'s second conjunct:
 /// at the top level the only way to succeed is to reach the end of input, so
 /// the remainder is `[]`. End of input is now an error rather than an empty
@@ -933,6 +1012,7 @@ let parse_decl (mt:list mprod) (ts:list token)
   | [] -> PErr "expected a declaration, found end of input"
   | TkWord "define" :: rest -> parse_define mt rest
   | TkWord "effect" :: rest -> parse_effect rest
+  | TkWord "data"   :: rest -> parse_data rest
   | TkWord "extern" :: rest -> parse_extern rest
   | TkWord "macro"  :: rest -> parse_macro_decl mt rest
   | TkWord "locate" :: TkWord name :: rest -> POk (SdLocate name) rest

@@ -502,6 +502,33 @@ let ssig_stray (ps:list string) (s:ssig) : Tot (option string) =
   | Some n -> Some n
   | None   -> stys_stray ps s.ss_out
 
+/// The same check over a `data` declaration's payloads (D-90). A `#U` in
+/// `data Option[#T] { alt Some ( #U ) }` can never be bound, and reporting it
+/// where it is written beats reporting it at the first constructor call.
+let rec variants_stray (ps:list string) (vs:list (string & list sty))
+  : Tot (option string) (decreases vs) =
+  match vs with
+  | []          -> None
+  | (_, p) :: r -> (match stys_stray ps p with
+                    | Some n -> Some n
+                    | None   -> variants_stray ps r)
+
+/// The first variant name that appears twice. `find_ctor_in` returns the first
+/// match, so a repeat would be silently unreachable rather than wrong.
+let rec dup_variant (seen:list string) (vs:list (string & list sty))
+  : Tot (option string) (decreases vs) =
+  match vs with
+  | []          -> None
+  | (c, _) :: r -> if mem c seen then Some c else dup_variant (c :: seen) r
+
+/// The first type parameter that appears twice. `ty_sub` would bind the leftmost
+/// and `assoc` would read it, so the second is shadowed and means nothing.
+let rec dup_param (seen:list string) (ps:list string)
+  : Tot (option string) (decreases ps) =
+  match ps with
+  | []     -> None
+  | p :: r -> if mem p seen then Some p else dup_param (p :: seen) r
+
 let subst_ssig (su:tsub) (s:ssig) : Tot ssig =
   { ss_in  = subst_params su s.ss_in;
     ss_out = subst_stys su s.ss_out;
@@ -567,6 +594,16 @@ type sdecl =
   /// gets enforced: an operation has no body to infer from, so a declaration
   /// without a written signature has nothing to mean.
   | SdEffect      : string -> list (string & ssig) -> sdecl
+  /// `data N { alt C ( tys ) … }`, or `data N[#T] { … }` (D-89, D-90).
+  ///
+  /// The parameters are a separate field for the same reason `SdDefineGen`'s
+  /// are: a `#T` in a payload that names no declared parameter is an error, and
+  /// there has to be a list to check it against.
+  ///
+  /// Variants are in TAG ORDER, which is declaration order, and each payload is
+  /// in surface order — bottom-to-top, top on the right, like a signature's
+  /// inputs. `E04.elab_variants` does the reversal.
+  | SdData        : string -> list string -> list (string & list sty) -> sdecl
   /// `locate name` — print what `name` is: a macro production, a primitive, or
   /// a definition decompiled back to surface syntax (E05_Locate).
   ///

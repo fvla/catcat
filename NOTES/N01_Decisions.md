@@ -2740,3 +2740,72 @@ been cheaper; `else` was chosen for wide types, with the copying accepted.
 existing `else` rather than being reported. An exhaustiveness *warning* on
 `case`es that use `else` would recover most of what is lost, and costs nothing
 at run time; it is not built.
+
+---
+
+## D-91. Constructors are a fourth namespace, not generic words
+
+Closes N02 Q-23. `data Option[#T] { alt None ( ) alt Some ( #T ) }` wants `Some`
+to behave like `Some[#T] ( #T -- Option[#T] )` — a generic, since `Some` at
+`i64` and `Some` at `str` are different core terms. But a generic is stored as
+`E04.gentry`, whose `g_body` is `list sterm`, and a constructor's body is
+`TPrimOp (PInj vs tag)`: a core term with no surface spelling to store.
+
+Of the three ways out Q-23 recorded, **constructors get their own namespace**,
+resolved at the call site and elaborated straight to `PInj`. The two rejected:
+
+  * *Give `gentry` a second, already-elaborated body form.* It is the facility
+    D-56's F\* library will need anyway, so building it here would serve twice.
+    But it makes every consumer of `gentry` — `install_instance`, `locate`, the
+    instantiation cache (D-85) — carry two cases forever, in exchange for
+    routing a constructor through machinery it needs none of: no body to
+    re-elaborate, no signature to check, no instance to cache.
+  * *Give the surface a spelling for `PInj`.* Cheapest, and wrong for the reason
+    D-55 keeps tag injection out of the core's vocabulary: the surface would
+    gain a form whose only correct uses are the ones the elaborator already
+    generates.
+
+### Why a namespace is the honest shape
+
+There are already four — words, effects, generic words, types — and none of them
+can be reached the way the others can. A constructor is the fifth and is exactly
+as distinguishable: it names a variant of a declaration, its "signature" is the
+payload the declaration wrote, and it is applied at a call site like a word
+while being *declared* nowhere a word is. Naming it separately is describing
+what it is rather than encoding it as something else.
+
+Merging the namespaces later is a live possibility and this does not block it —
+a merged namespace would still need to know that `Some` constructs, which is
+what the table records.
+
+### Where the table lives, and why it is not a new field
+
+`nenv` gains no field. A constructor is uniquely determined by the declaration
+it belongs to, so `E04.lookup_ctor` searches `ne_types` and returns
+`(tdecl, tag, payload)`. The namespace is the *lookup*, not the storage.
+`ne_types` is newest-first, so a later `data` shadows an earlier one's
+constructors for free.
+
+### Resolution order, and the asymmetry it leaves
+
+At a call site: builtins, then generics, then **constructors**, then ordinary
+words. So a constructor beats a `define` of the same name whichever came first.
+
+This is the same asymmetry generics already have — `lookup_gen_in` runs before
+`lookup_name`, so a generic beats a word regardless of order — and it is the
+price of separate namespaces rather than one ordered scope. Worth stating
+plainly: `data C { alt Red ( ) }` followed by `define Red { … }` leaves `Red`
+constructing, and nothing reports the shadow. One ordered namespace fixes it and
+is the merge above.
+
+### The parameters come from the payload, by matching
+
+`Some` binds `#T` by matching its declared payload against the modelled stack —
+`match_tys`, the same function and the same one-directional discipline generics
+use (D-79). A parameter the payload does not mention is not determined, and the
+error says to write it: `None[i64]`, not `None`. That is D-31 holding — nothing
+is invented, and there is still no unifier.
+
+`elab_data` accordingly returns `list seg` rather than `dtype`, so the
+constructor path can take the variants it needs for `PInj` without matching on a
+`TSum` it built itself and carrying an arm that cannot fire.

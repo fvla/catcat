@@ -67,14 +67,59 @@ let render_prim (p:prim) : Tot string =
   | PBool -> "bool" | PUnit -> "unit"
   | PStr -> "str"
 
-let rec render_ty (d:dtype) : Tot string (decreases (dtype_size d)) =
+/// The renderer's own measure. `M01.dtype_size` charges nothing for a list
+/// ELEMENT, so a sum of empty variants — `data Color { alt Red ( ) alt Green
+/// ( ) }` — gives `variants_size = 0` and the recursion into the tail does not
+/// shrink. Charging one per element makes every edge below strictly decreasing,
+/// which is why the ranks in the `decreases` clauses are documentation rather
+/// than load-bearing. Same fix, same reason, as `E02.variant_stys_size`.
+let rec rsize (d:dtype) : Tot pos =
+  match d with
+  | TPrim _        -> 1
+  | TName _        -> 1
+  | TBox u         -> 1 + rsize u
+  | TRc  u         -> 1 + rsize u
+  | TSeal _ _ repr -> 1 + rseg_size repr
+  | TSum vs        -> 1 + rvars_size vs
+
+and rseg_size (s:seg) : Tot nat =
+  match s with
+  | []     -> 0
+  | d :: r -> 1 + rsize d + rseg_size r
+
+and rvars_size (vs:list seg) : Tot nat =
+  match vs with
+  | []     -> 0
+  | v :: r -> 1 + rseg_size v + rvars_size r
+
+/// A SUM PRINTS ITS SHAPE, NOT ITS NAME, and that is not a rendering gap — it
+/// is D-90's structural-not-nominal limitation surfacing where a reader can see
+/// it. `Option[i64]` and any other declaration with one empty variant and one
+/// carrying an `i64` are the SAME type today, so there is no name to recover:
+/// searching the table would find a declaration, not the one that was written.
+/// The payload spelling mirrors `alt`, so what prints is what would be declared.
+/// When N02 Q-13 lands and a `TName` carries a `nom_id`, this becomes the name.
+let rec render_ty (d:dtype) : Tot string (decreases %[(rsize d <: nat); 2]) =
   match d with
   | TPrim p      -> render_prim p
   | TName n      -> "@" ^ string_of_int n
   | TBox u       -> "Box[" ^ render_ty u ^ "]"
   | TRc u        -> "Rc[" ^ render_ty u ^ "]"
   | TSeal n _ _  -> "<" ^ string_of_int n ^ ">"
-  | TSum _       -> "sum"
+  | TSum vs      -> "sum[" ^ render_variants vs ^ " ]"
+
+/// A payload, bottom-to-top like every other surface list.
+and render_seg (s:seg) : Tot string (decreases %[rseg_size s; 0]) =
+  match s with
+  | []     -> ""
+  | d :: [] -> render_ty d
+  | d :: r  -> render_seg r ^ " " ^ render_ty d
+
+and render_variants (vs:list seg) : Tot string (decreases %[rvars_size vs; 1]) =
+  match vs with
+  | []     -> ""
+  | v :: r -> " ( " ^ (let a = render_seg v in if a = "" then "" else a ^ " ")
+              ^ ")" ^ render_variants r
 
 /// Rendered bottom-to-top, matching the surface convention: a core list is
 /// top-first, so it is reversed on the way out.
@@ -521,12 +566,44 @@ let show_gen (g:gentry) : Tot string =
   "define " ^ g.g_name ^ "[" ^ show_gparams g.g_params ^ "] "
   ^ show_ssig g.g_sig ^ " {\n  " ^ show_sterms g.g_body ^ "\n}"
 
+let rec show_alts (vs:list (string & list sty)) : Tot string (decreases vs) =
+  match vs with
+  | []          -> ""
+  | (c, p) :: r ->
+    "\n  alt " ^ c ^ " ( " ^ (let a = show_stys p in if a = "" then "" else a ^ " ")
+    ^ ")" ^ show_alts r
+
+/// A `data` prints as its TEMPLATE, for the same reason a generic does (D-90):
+/// `Option` is not a type until it is applied, and no instance has a name.
+let show_data (t:tdecl) : Tot string =
+  "data " ^ t.td_name
+  ^ (if Nil? t.td_params then "" else "[" ^ show_gparams t.td_params ^ "]")
+  ^ " {" ^ show_alts t.td_variants ^ "\n}"
+
+/// One constructor, shown as the declaration it belongs to plus which variant
+/// it is. It has no body to decompile — `PInj` is emitted at the call site and
+/// no word is installed (D-91) — so the declaration IS the answer.
+let show_ctor (c:string) (t:tdecl) (tag:nat) (pay:list sty) : Tot string =
+  c ^ " constructs " ^ t.td_name
+  ^ (if Nil? t.td_params then "" else "[" ^ show_gparams t.td_params ^ "]")
+  ^ " at tag " ^ string_of_int tag
+  ^ ", carrying ( " ^ (let a = show_stys pay in if a = "" then "" else a ^ " ") ^ ")"
+  ^ "\n\n" ^ show_data t
+
+/// Search order mirrors elaboration's (D-91), so what `locate` reports is what
+/// a call site would reach.
 let locate (mt:list mprod) (e:nenv) (w:wenv) (d:rdict) (x:string) : Tot string =
   match lookup_macro mt x with
   | Some p -> show_macro p
   | None ->
+    match lookup_ty_in e.ne_types x with
+    | Some t -> show_data t
+    | None ->
     match lookup_gen_in e.ne_gens x with
     | Some g -> show_gen g
+    | None ->
+    match lookup_ctor e.ne_types x with
+    | Some (t, tag, pay) -> show_ctor x t tag pay
     | None ->
     match lookup_name e x with
     | None -> "error: no word named '" ^ x ^ "'"
