@@ -1,5 +1,9 @@
 name = "catcat"
-defaultTargets = ["Catcat"]
+defaultTargets = ["catcat"]
 
 [[lean_lib]]
 name = "Catcat"
+
+[[lean_exe]]
+name = "catcat"
+root = "Main"

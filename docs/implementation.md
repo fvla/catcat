@@ -47,3 +47,52 @@ It walks a computation that may perform operations.
 - An operation with no clause is passed outward, with the handler re-installed on its continuation.
 - A clause of a plain handler runs with the state on top of the arguments. Its own operations are emitted as they are, which puts them outside this handler. When it finishes, the handler resumes on the continuation with the new state.
 - A clause of a recursive handler runs on the arguments alone, and `reenter` handles what it produces.
+
+## Layer 1 (`Catcat/Layer1`)
+
+| File | Contents |
+|---|---|
+| `Syntax.lean` | `Item`, the reader, printing |
+| `Types.lean` | `Ty`, `Val`, `Name`, `Def`, `Env`, signature parsing |
+| `Prim.lean` | the primitive table: fixed signatures and what each primitive computes |
+| `Lower.lean` | lowering from syntax to kernel terms |
+| `Run.lean` | decoding code values, the root model, `runSource` |
+
+`Main.lean` is the command-line tool: `catcat FILE [FUEL]`.
+
+### Lowering tracks the stack type
+
+`lower` walks the items left to right carrying a `Shape`, the stack type so far. That is what lets it resolve an operation whose signature depends on the stack, such as `drop`, without a unifier.
+
+The kernel's `infer` does not see a `Shape`. It computes a signature for the finished term from the labels alone. `runSource` checks that the two agree, so a mistake in lowering shows up as a disagreement, not as a wrong answer.
+
+### Open shapes
+
+A code block written without a signature is lowered from a `Shape` whose `inputs` field is `some []`. Popping a value the block has not pushed then records the expected type as an input, where a closed shape would report an underflow. The inputs collected by the end are the block's `pre`.
+
+This only works for operations with a fixed signature. `drop` on an open, empty stack has no type to go by, so it is an error that asks for a signature.
+
+### Termination of `lower`
+
+`lower` recurses in two ways. Moving along a block shortens the item list. Entering a block or splicing a word's body does not, so those calls go through `depth`, which decreases. The measure is the pair `(depth, items.length)`.
+
+A form such as `if { a } { b }` takes several items. The match on the head reports how many extra items it used, and the recursive call drops that many. Returning the remaining list directly would hide from Lean that it is shorter.
+
+### Code values hold syntax
+
+A `Val.code` holds the block's items, its signature and the `Env` it was written in. `Val.term?` lowers it again each time it is run.
+
+It cannot hold a `Term` instead. A `Term` is built from operation names, a `Name` can be a literal `Val`, so a `Val` containing a `Term` would be defined in terms of itself across the kernel's type parameters. Holding syntax avoids that, and it is also the representation the language asks for: nothing can take the syntax back out.
+
+For the same reason an `Env` holds each definition as syntax, and a recursive word seen from inside its own body is stored as a signature (`Def.label`), from which its operation label is rebuilt.
+
+### Splicing
+
+A word defined without a signature is lowered again at every call site. Two consequences:
+
+- A definition that is never called is never checked.
+- A word that calls another word twice doubles the term. Deep chains of such words grow exponentially. The emitter will share bodies; the interpreter does not.
+
+### Defaults
+
+`runSource` takes `fuel` (ten million) and `depth` (one thousand). Running out of either is an error, not a crash.

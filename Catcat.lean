@@ -1,2 +1,1 @@
-import Catcat.Kernel.Typing
-import Catcat.Kernel.Eval
+import Catcat.Layer1.Run
