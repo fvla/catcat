@@ -1,0 +1,34 @@
+# An interpreter for a small postfix language, written in catcat. The program
+# being interpreted and its evaluation stack are both syntax objects.
+
+define dup  { pick [ 0 ] }
+define swap { roll [ 1 ] }
+
+define first { 0 1 slice }
+define rest  { dup len 1 swap slice }
+define last  { dup len dup 1 - swap slice }
+define most  { dup len 1 - 0 swap slice }  # everything but the last item
+define value { view { } { drop 0 } { drop 0 } { drop 0 } }
+
+define pop { dup most swap last value }    # stack -- stack top
+
+define apply {                             # stack word -- stack
+  let [ $*word ]
+  pop let [ $*b ]
+  pop let [ $*a ]
+  $*word [ add ] eq if { $*a $*b + } {
+  $*word [ sub ] eq if { $*a $*b - } {
+  $*word [ mul ] eq if { $*a $*b * } { 0 } } }
+  int>syn cat
+}
+
+define step {                              # stack item -- stack
+  view { int>syn cat } { apply } { drop } { drop }
+}
+
+define eval ( Syn Syn -- Syn ) {           # stack program -- stack
+  dup len if { dup rest let [ $*more ] first step $*more eval } { drop }
+}
+
+[ ] [ 2 3 add 4 mul ] eval                 # (2 + 3) * 4
+[ ] [ 10 2 sub 3 mul 1 add ] eval          # (10 - 2) * 3 + 1

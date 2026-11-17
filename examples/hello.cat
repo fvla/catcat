@@ -1,0 +1,26 @@
+# Output. `emit` writes one character. Text is a sequence of character codes.
+
+define dup  { pick [ 0 ] }
+define swap { roll [ 1 ] }
+
+define first { 0 1 slice }
+define rest  { dup len 1 swap slice }
+define value { view { } { drop 0 } { drop 0 } { drop 0 } }
+
+define print ( Syn -- ) {
+  dup len if { dup first value emit rest print } { drop }
+}
+
+define digits ( int -- ) {                 # a non-negative integer, in decimal
+  dup 9 swap < if { dup 10 / digits } { }
+  10 % 48 + emit
+}
+
+define number {
+  dup 0 < if { 45 emit 0 swap - } { }
+  digits
+}
+
+[ 72 101 108 108 111 44 32 119 111 114 108 100 33 10 ] print
+2026 number 10 emit
+-42 number 10 emit

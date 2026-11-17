@@ -1,0 +1,21 @@
+# Code generated at run time. `power` builds the syntax of a block that raises
+# its input to a fixed power with no loop, and `compile` turns that syntax into
+# code. Syntax can become code; code cannot be turned back into syntax.
+
+define swap { roll [ 1 ] }
+
+define times ( int -- Syn ) {              # n copies of  pick [ 1 ] *
+  pick [ 0 ] if { 1 - times [ pick [ 1 ] * ] cat } { drop [ ] }
+}
+
+define power {                             # n -- Syn, for n at least 1
+  1 - times [ pick [ 0 ] ] swap cat [ roll [ 1 ] drop ] cat
+}
+
+5 power                                    # the generated syntax
+
+# If the syntax does not have the signature asked for, fall back to the identity.
+5 power compile ( int -- int ) { } { ( int -- int ) { } }
+let [ $*fifth ]
+2 $*fifth run
+3 $*fifth run

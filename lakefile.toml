@@ -1,5 +1,6 @@
 name = "catcat"
 defaultTargets = ["catcat"]
+testDriver = "test"
 
 [[lean_lib]]
 name = "Catcat"
@@ -7,3 +8,7 @@ name = "Catcat"
 [[lean_exe]]
 name = "catcat"
 root = "Main"
+
+[[lean_exe]]
+name = "test"
+root = "Test"

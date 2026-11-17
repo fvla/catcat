@@ -1,0 +1,1 @@
+define f { 1 } define f { f 10 + } f

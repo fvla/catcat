@@ -1,0 +1,4 @@
+[ 7 ] view { 1 + } { drop -1 } { drop -2 } { drop -3 }
+[ w ] view { } { drop -1 } { drop -2 } { drop -3 }
+[ [ a b ] ] view { } { len } { len 100 + } { len }
+[ a b ] view { } { len } { len 100 + } { len 200 + }

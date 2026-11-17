@@ -1,0 +1,16 @@
+# Dynamic variables. `let` binds the value on top of the stack for the rest of
+# the block; `set` writes the innermost binding.
+
+# A word may read a variable bound by whoever calls it.
+define scaled { $*scale * }
+
+2 let [ $*scale ]
+5 scaled                              # 10
+
+{ 10 let [ $*scale ] 5 scaled } run   # 50: an inner binding shadows the outer one
+5 scaled                              # 10 again: the inner binding ended with its block
+
+0 let [ $*count ]
+define bump { $*count 1 + set [ $*count ] }
+bump bump bump
+$*count                               # 3

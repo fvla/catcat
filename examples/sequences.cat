@@ -1,0 +1,35 @@
+# Syntax objects are the language's one data structure: immutable sequences of
+# tokens and groups. These are the usual list functions, built from `len`,
+# `slice`, `cat` and `view`.
+
+define dup  { pick [ 0 ] }
+define swap { roll [ 1 ] }
+
+define first { 0 1 slice }                 # the first item, as a one-item sequence
+define rest  { dup len 1 swap slice }      # everything after it
+
+# The integer in a one-item sequence, or 0 if it is anything else.
+define value { view { } { drop 0 } { drop 0 } { drop 0 } }
+
+define upto ( int -- Syn ) {               # 4 upto  gives  [ 1 2 3 4 ]
+  dup if { dup 1 - upto swap int>syn cat } { drop [ ] }
+}
+
+define sum ( Syn -- int ) {
+  dup len if { dup first value swap rest sum + } { drop 0 }
+}
+
+define reverse ( Syn -- Syn ) {
+  dup len if { dup rest reverse swap first cat } { }
+}
+
+# Applies the code in $*f to every integer. The caller supplies $*f.
+define map ( Syn -- Syn ) {
+  dup len if { dup first value $*f run int>syn swap rest map cat } { }
+}
+
+10 upto
+10 upto sum
+[ a [ b c ] 3 ] reverse
+( int -- int ) { dup * } let [ $*f ]
+5 upto map

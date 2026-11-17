@@ -1,0 +1,10 @@
+# Recursion. A recursive word declares its signature, because inside its own
+# body it is an operation, and an operation's label carries its signature.
+
+define fact ( int -- int ) {
+  pick [ 0 ] if { pick [ 0 ] 1 - fact * } { drop 1 }
+}
+
+5 fact
+20 fact
+30 fact      # integers are unbounded

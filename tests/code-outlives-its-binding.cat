@@ -1,0 +1,1 @@
+{ 3 let [ $*x ] { $*x } } run run

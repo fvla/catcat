@@ -1,0 +1,31 @@
+define dup  { pick [ 0 ] }
+define swap { roll [ 1 ] }
+
+define first { 0 1 slice }
+define rest  { dup len 1 swap slice }
+define value { view { } { drop 0 } { drop 0 } { drop 0 } }
+
+define print ( Syn -- ) {
+  dup len if { dup first value emit rest print } { drop }
+}
+
+define digits ( int -- ) {
+  dup 9 swap < if { dup 10 / digits } { }
+  10 % 48 + emit
+}
+
+define fizz { [ 70 105 122 122 ] print }
+define buzz { [ 66 117 122 122 ] print }
+
+define line {                              # n --
+  dup 15 % 0 = if { drop fizz buzz } {
+  dup  3 % 0 = if { drop fizz } {
+  dup  5 % 0 = if { drop buzz } { digits } } }
+  10 emit
+}
+
+define count ( int -- ) {                  # prints lines 1 to n
+  dup if { dup 1 - count line } { drop }
+}
+
+15 count

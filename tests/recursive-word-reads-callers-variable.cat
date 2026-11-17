@@ -1,0 +1,3 @@
+# n times the value of $*x, by repeated addition
+define times ( int -- int ) { pick [ 0 ] if { 1 - times $*x + } { } }
+6 let [ $*x ] 4 times

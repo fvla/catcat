@@ -1,0 +1,3 @@
+[ 5 + ] compile ( int -- int ) { let [ $*c ] 1 $*c run } { -1 }
+[ 5 nope ] compile ( int -- int ) { drop 1 } { 0 }
+[ 5 ] compile ( int -- int ) { drop 1 } { 0 }
