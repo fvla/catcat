@@ -96,3 +96,64 @@ A word defined without a signature is lowered again at every call site. Two cons
 ### Defaults
 
 `runSource` takes `fuel` (ten million) and `depth` (one thousand). Running out of either is an error, not a crash.
+
+## JavaScript (`Catcat/JS`)
+
+| File | Contents |
+|---|---|
+| `Syntax.lean` | the subset: `Expr`, `Stmt`, `Program` |
+| `Print.lean` | printing a program as JavaScript text |
+| `Eval.lean` | the meaning of the subset: values, a heap of arrays, `Program.run` |
+| `Runtime.lean` | the functions every emitted program starts with |
+| `Emit.lean` | kernel terms to the subset |
+
+### The subset
+
+Strict mode. Bindings are `const` only. Integers are `BigInt`. Arrays are the one mutable object, changed only by `push`, `pop` and assignment to a literal index. There are function declarations, arrow functions, calls, `if`, blocks, `return` and `throw`. There are no loops, no numbers and no `===` between objects.
+
+It is small enough to give a meaning to in a page (`Eval.lean`) and large enough for the emitter. `Program.run` is that meaning. Its fuel bounds the depth of calls, which is what a real engine's stack does.
+
+### What is trusted
+
+Two things are assumed and one is tested.
+
+- **Assumed:** a JavaScript engine runs the printed text of a program the way `Program.run` runs the program. This is the model of the external language.
+- **Assumed:** each of the three builtins means what its comment in `Syntax.lean` says.
+- **Tested, to be proved:** the emitted program, run by `Program.run`, behaves as the kernel evaluator does on the term. `lake test` checks this on every program, and also checks `node` against both.
+
+### Values
+
+| catcat | JavaScript |
+|---|---|
+| `int` | a BigInt |
+| empty syntax object | `undefined` |
+| non-empty syntax object | `[item, rest]` |
+| integer token | `[0n, n]` |
+| word token | `[1n, word]` |
+| group | `[2n, open, close, items]` |
+| code | `[function, text]`; the text is only for printing |
+
+The data stack is one global array, `S`. Every primitive pops its arguments from it and pushes its results.
+
+### Handlers
+
+Which handler an operation reaches is fixed by where the operation sits in the term, so it is decided when the program is emitted. No handler stack exists at run time.
+
+- A handler at nesting depth `d` becomes a block. Its state, if any, is popped into an array `h{d}`. Each clause becomes a function `c{d}_{j}`.
+- A clause function pushes the state, runs the clause, and pops the new state back into `h{d}`.
+- Performing a handled operation is a call to its clause function.
+- A plain clause is emitted in the context outside its handler. A recursive clause is emitted inside it, so it can call itself.
+
+### Code values
+
+A code value is the exception, because its handlers are those in scope where it runs, not where it was written.
+
+- Its body is a function of one parameter, `E`: the handlers in scope at the `run`, as a list of `[key, clause]` pairs, innermost first.
+- `run` builds that list from the handlers around it and passes it.
+- Inside the body, an operation with no handler of its own is looked up in `E` by key. The key is the operation's name and signature, so a binding of another type is never picked up by mistake.
+
+### Limits
+
+- `compile` cannot be emitted: it needs lowering at run time.
+- catcat recursion becomes JS recursion, so depth is bounded by the engine's stack (roughly ten thousand calls in `node`). The model's fuel plays the same role. `lake test` skips a program that hits either bound.
+- A handler for a primitive, and a recursive handler with several clauses, are rejected. Layer 1 produces neither.

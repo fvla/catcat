@@ -8,6 +8,8 @@ def Val.term? (depth : Nat) : Val → Option T
   | .code sig body env => (closed (lower depth) env sig body).toOption
   | _ => none
 
+def unhandled (x : String) : String := s!"`{x}` is performed but nothing handles it"
+
 def root (depth : Nat) (o : Op Ty Name) (args : List Val) (w : World) :
     Except String (Nat × List Val × World) :=
   match o.name, args with
@@ -20,26 +22,28 @@ def root (depth : Nat) (o : Op Ty Name) (args : List Val) (w : World) :
     let c := Val.code sig body env
     pure (if (c.term? depth).isSome then (0, [c], w) else (1, [], w))
   | .compile .., _ => throw "compile: not a syntax object"
-  | .user x, _ => throw s!"`{x}` is performed but nothing handles it"
+  | .user x, _ => throw (unhandled x)
 
 structure Outcome where
   out : String
   /-- The final stack, top first. -/
   result : Except String (List Val)
 
-/-- `depth` bounds how far blocks and spliced words may nest during lowering. -/
+/-- The program's term and the types of its final stack. `depth` bounds how far blocks and
+spliced words may nest during lowering. -/
+def prepare (src : String) (depth : Nat := 1000) : Except String (T × List Ty) := do
+  let (t, sh) ← lower depth {} {} (← read src)
+  -- Lowering tracks types on its own; the kernel's checker must reach the same answer.
+  unless t.infer codeTy == some ⟨[], sh.stack⟩ do
+    throw "internal: lowering and the kernel disagree about the program's type"
+  match t.free.filterMap fun o => match o.name with | .user x => some x | _ => none with
+  | [] => pure (t, sh.stack)
+  | x :: _ => throw (unhandled x)
+
 def runSource (src : String) (fuel : Nat := 10000000) (depth : Nat := 1000) : Outcome :=
-  let prepared : Except String T := do
-    let (t, sh) ← lower depth {} {} (← read src)
-    -- Lowering tracks types on its own; the kernel's checker must reach the same answer.
-    unless t.infer codeTy == some ⟨[], sh.stack⟩ do
-      throw "internal: lowering and the kernel disagree about the program's type"
-    match t.free.filterMap fun o => match o.name with | .user x => some x | _ => none with
-    | [] => pure t
-    | x :: _ => throw s!"`{x}` is performed but nothing handles it"
-  match prepared with
+  match prepare src depth with
   | .error e => ⟨"", .error e⟩
-  | .ok t =>
+  | .ok (t, _) =>
     let (result, w) := (den (Val.term? depth) fuel t [] .pure).exec (root depth) {}
     ⟨w.out, result⟩
 

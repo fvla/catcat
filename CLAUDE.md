@@ -14,8 +14,9 @@ A concatenative language on an effect-handler kernel, specified and implemented 
 ```
 nix develop                              # provides elan; lean-toolchain pins the compiler
 lake build
-lake test                                # every program in examples/ and tests/
+lake test                                # every program in examples/ and tests/, three ways
 lake exe catcat examples/factorial.cat
+lake exe catcat js examples/factorial.cat
 ```
 
 `lake build` and `lake test` must pass before a commit.

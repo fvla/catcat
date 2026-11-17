@@ -14,7 +14,7 @@ define fact ( int -- int ) {
 
 ## Status
 
-Early. The kernel, the bootstrap language and an interpreter work. Nothing is proved yet, and there is no compiler. See [docs/roadmap.md](docs/roadmap.md).
+Early. The kernel, the bootstrap language, an interpreter and a JavaScript emitter work. Nothing is proved yet. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Building
 
@@ -28,11 +28,14 @@ lake build
 Without Nix, install [elan](https://github.com/leanprover/elan); `lean-toolchain` selects the compiler. There are no other dependencies.
 
 ```
-lake exe catcat examples/factorial.cat    # run a program
-lake test                                 # run every example and test
+lake exe catcat examples/factorial.cat       # run a program
+lake exe catcat js examples/factorial.cat    # print it as JavaScript
+lake test                                    # run every example and test
 ```
 
 A program prints whatever it emitted, then its final stack, bottom first. An optional second argument sets the fuel, which bounds recursion: `lake exe catcat FILE 100000000`.
+
+`lake test` runs each program three ways and compares them: the interpreter, a Lean model of the JavaScript subset running the emitted program, and `node` running its printed text (skipped when `node` is not installed).
 
 ## Layout
 
@@ -40,6 +43,7 @@ A program prints whatever it emitted, then its final stack, bottom first. An opt
 |---|---|
 | `Catcat/Kernel/` | layer 0: terms, typing, evaluation |
 | `Catcat/Layer1/` | layer 1: reader, lowering, primitives, interpreter |
+| `Catcat/JS/` | a model of a JavaScript subset, and the emitter that targets it |
 | `Main.lean`, `Test.lean` | the command-line tool and the test runner |
 | `examples/` | programs, each with its expected output |
 | `tests/` | small cases for single behaviours and errors |

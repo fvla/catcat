@@ -11,7 +11,8 @@
       devShells = forAllSystems (pkgs: {
         # elan installs the compiler named in lean-toolchain. The nixpkgs build of elan
         # patches what it downloads, so the toolchain runs on NixOS without nix-ld.
-        default = pkgs.mkShell { packages = [ pkgs.elan ]; };
+        # node is optional: `lake test` uses it to run emitted JavaScript when it is present.
+        default = pkgs.mkShell { packages = [ pkgs.elan pkgs.nodejs ]; };
       });
     };
 }
