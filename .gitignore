@@ -1,5 +1,0 @@
-_build/
-.fstar-cache/
-generated/*.ml
-generated/*.mli
-result
